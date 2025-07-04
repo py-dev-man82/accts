@@ -10,14 +10,7 @@ PROJECT_DIR="$HOME/tgaccts"
 mkdir -p "$PROJECT_DIR"
 cd "$PROJECT_DIR"
 
-# 3. Clone your repo (or pull latest)
-if [ ! -d ".git" ]; then
-  git clone https://github.com/py-dev-man82/Accts.git .
-else
-  git pull origin main
-fi
-
-# 3a. Interactive config.py update
+# 3. Interactive config.py update
 CONFIG_FILE="config.py"
 if [ -f "$CONFIG_FILE" ]; then
   echo "Configuring $CONFIG_FILE …"
