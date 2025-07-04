@@ -1,50 +1,115 @@
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update from telegram.ext import CallbackQueryHandler, MessageHandler, filters, ContextTypes, Application from secure_db import secure_db from tinydb import Query from datetime import datetime
+# handlers/sales.py
 
-State constants for sales flow
-
-( SALE_SEL_CUST, SALE_SEL_STORE, SALE_SEL_ITEM, SALE_ASK_QTY, SALE_ASK_PRICE, SALE_ASK_NOTE, SALE_CONFIRM ) = range(7)
-
-Register function to wire handlers
-
-def register_sales_handlers(app: Application): # Entry: /start menu 'add_sale' callback app.add_handler(CallbackQueryHandler(select_sale_customer, pattern='^manage_sales$')) app.add_handler(CallbackQueryHandler(select_sale_customer, pattern='^add_sale$')) app.add_handler(CallbackQueryHandler(select_sale_store, pattern='^sale_cust_')) app.add_handler(CallbackQueryHandler(select_sale_item, pattern='^sale_store_')) app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, ask_sale_price), group=SALE_ASK_QTY) app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, ask_sale_note),  group=SALE_ASK_PRICE) app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, confirm_sale),    group=SALE_ASK_NOTE) app.add_handler(CallbackQueryHandler(finalize_sale, pattern='^sale_(yes|no)$'), group=SALE_CONFIRM)
-
-Handlers implementation
-
-async def select_sale_customer(update: Update, context: ContextTypes.DEFAULT_TYPE): query = update.callback_query; await query.answer() rows = secure_db.all('customers') buttons = [[InlineKeyboardButton(r['name'], callback_data=f"sale_cust_{r.doc_id}")] for r in rows] buttons.append([InlineKeyboardButton("◀️ Cancel", callback_data='back_main')]) await query.edit_message_text("Select customer:", reply_markup=InlineKeyboardMarkup(buttons)) return SALE_SEL_CUST
-
-async def select_sale_store(update: Update, context: ContextTypes.DEFAULT_TYPE): query = update.callback_query; await query.answer() cust_id = int(query.data.split('')[-1]); context.user_data['sale_cust_id'] = cust_id rows = secure_db.all('stores') buttons = [[InlineKeyboardButton(r['name'], callback_data=f"sale_store{r.doc_id}")] for r in rows] buttons.append([InlineKeyboardButton("◀️ Cancel", callback_data='back_main')]) await query.edit_message_text("Select store:", reply_markup=InlineKeyboardMarkup(buttons)) return SALE_SEL_STORE
-
-async def select_sale_item(update: Update, context: ContextTypes.DEFAULT_TYPE): query = update.callback_query; await query.answer() store_id = int(query.data.split('')[-1]); context.user_data['sale_store_id'] = store_id rows = secure_db.all('items') buttons = [[InlineKeyboardButton(r['name'], callback_data=f"sale_item{r.doc_id}")] for r in rows] buttons.append([InlineKeyboardButton("◀️ Cancel", callback_data='back_main')]) await query.edit_message_text("Select item:", reply_markup=InlineKeyboardMarkup(buttons)) return SALE_SEL_ITEM
-
-async def ask_sale_qty(update: Update, context: ContextTypes.DEFAULT_TYPE): query = update.callback_query; await query.answer() item_id = int(query.data.split('_')[-1]); context.user_data['sale_item_id'] = item_id await query.edit_message_text("Enter quantity:") return SALE_ASK_QTY
-
-async def ask_sale_price(update: Update, context: ContextTypes.DEFAULT_TYPE): qty_text = update.message.text try: qty = int(qty_text); context.user_data['sale_qty'] = qty except ValueError: await update.message.reply_text("Please enter a valid integer quantity:") return SALE_ASK_QTY await update.message.reply_text("Enter unit price (local currency):") return SALE_ASK_PRICE
-
-async def ask_sale_note(update: Update, context: ContextTypes.DEFAULT_TYPE): price_text = update.message.text try: price = float(price_text); context.user_data['sale_price'] = price except ValueError: await update.message.reply_text("Please enter a valid number for price:") return SALE_ASK_PRICE await update.message.reply_text("Enter an optional note (or 'none'):") return SALE_ASK_NOTE
-
-async def confirm_sale(update: Update, context: ContextTypes.DEFAULT_TYPE): note = update.message.text.strip() if note.lower() == 'none': note = '' context.user_data['sale_note'] = note
-
-# Build summary
-cust = secure_db.all('customers')[context.user_data['sale_cust_id']-1]['name']
-store= secure_db.all('stores')[context.user_data['sale_store_id']-1]['name']
-item = secure_db.all('items')[context.user_data['sale_item_id']-1]['name']
-qty  = context.user_data['sale_qty']
-price= context.user_data['sale_price']
-total= qty * price
-text = (
-    f"🛒 Sale Summary:\n"
-    f"Customer: {cust}\n"
-    f"Store:    {store}\n"
-    f"Item:     {item}\n"
-    f"Quantity: {qty}\n"
-    f"Unit Pr:  {price:.2f}\n"
-    f"Total:    {total:.2f}\n"
-    f"Note:     {note or '—'}"
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.ext import (
+    ConversationHandler,
+    CallbackQueryHandler,
+    MessageHandler,
+    CommandHandler,
+    filters,
+    ContextTypes
 )
-kb = InlineKeyboardMarkup([[InlineKeyboardButton("✅ Confirm", callback_data='sale_yes'),
-                             InlineKeyboardButton("❌ Cancel", callback_data='sale_no')]])
-await update.message.reply_text(text, reply_markup=kb)
-return SALE_CONFIRM
+from datetime import datetime
+from tinydb import Query
+from secure_db import secure_db
 
-async def finalize_sale(update: Update, context: ContextTypes.DEFAULT_TYPE): query = update.callback_query; await query.answer() if query.data == 'sale_yes': # Insert sale record secure_db.insert('customer_sales', { 'customer_id': context.user_data['sale_cust_id'], 'store_id':    context.user_data['sale_store_id'], 'item_id':     context.user_data['sale_item_id'], 'qty':         context.user_data['sale_qty'], 'unit_price':  context.user_data['sale_price'], 'note':        context.user_data['sale_note'], 'created_at':  datetime.utcnow().isoformat() }) # TODO: deduct inventory and record handling fees here await query.edit_message_text(f"✅ Recorded sale total {context.user_data['sale_qty']*context.user_data['sale_price']:.2f}.") else: await query.edit_message_text("❌ Sale cancelled.") return ConversationHandler.END
+# State constants for Sales flow
+(
+    SALE_SEL_CUST,
+    SALE_SEL_STORE,
+    SALE_SEL_ITEM,
+    SALE_ASK_QTY,
+    SALE_ASK_PRICE,
+    SALE_ASK_NOTE,
+    SALE_CONFIRM
+) = range(7)
 
+# Register Sales handlers
+def register_sales_handlers(app):
+    sales_conv = ConversationHandler(
+        entry_points=[CommandHandler('add_sale', start_sale)],
+        states={
+            SALE_SEL_CUST: [CallbackQueryHandler(select_sale_customer, pattern='^sale_cust_\d+$')],
+            SALE_SEL_STORE: [CallbackQueryHandler(select_sale_store, pattern='^sale_store_\d+$')],
+            SALE_SEL_ITEM: [MessageHandler(filters.TEXT & ~filters.COMMAND, select_sale_item)],
+            SALE_ASK_QTY: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_sale_quantity)],
+            SALE_ASK_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_sale_price)],
+            SALE_ASK_NOTE: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_sale_note)],
+            SALE_CONFIRM: [CallbackQueryHandler(confirm_sale)]
+        },
+        fallbacks=[CommandHandler('cancel', cancel_sale)],
+        allow_reentry=True
+    )
+    app.add_handler(sales_conv)
+
+# --- Sales Flow Handlers ---
+async def start_sale(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Show customer list
+    customers = secure_db.all('customers')
+    buttons = [[InlineKeyboardButton(c['name'], callback_data=f'sale_cust_{c.doc_id}')] for c in customers]
+    await update.message.reply_text('Select customer:', reply_markup=InlineKeyboardMarkup(buttons))
+    return SALE_SEL_CUST
+
+async def select_sale_customer(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    cid = int(update.callback_query.data.split('_')[-1])
+    context.user_data['sale_customer_id'] = cid
+    # Next: list stores
+    stores = secure_db.all('stores')
+    buttons = [[InlineKeyboardButton(s['name'], callback_data=f'sale_store_{s.doc_id}')] for s in stores]
+    await update.callback_query.edit_message_text('Select store:', reply_markup=InlineKeyboardMarkup(buttons))
+    return SALE_SEL_STORE
+
+async def select_sale_store(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    sid = int(update.callback_query.data.split('_')[-1])
+    context.user_data['sale_store_id'] = sid
+    await update.callback_query.edit_message_text('Enter item ID:')
+    return SALE_SEL_ITEM
+
+async def select_sale_item(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data['sale_item_id'] = int(update.message.text.strip())
+    await update.message.reply_text('Enter quantity:')
+    return SALE_ASK_QTY
+
+async def ask_sale_quantity(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data['sale_qty'] = int(update.message.text.strip())
+    await update.message.reply_text('Enter unit price:')
+    return SALE_ASK_PRICE
+
+async def ask_sale_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data['sale_price'] = float(update.message.text.strip())
+    await update.message.reply_text('Optional note:')
+    return SALE_ASK_NOTE
+
+async def ask_sale_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data['sale_note'] = update.message.text.strip()
+    kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton('✅ Confirm', callback_data='sale_confirm'),
+        InlineKeyboardButton('❌ Cancel',  callback_data='sale_cancel'),
+    ]])
+    summary = (
+        f"Item {context.user_data['sale_item_id']} x{context.user_data['sale_qty']} @"
+        f"{context.user_data['sale_price']:.2f}"
+    )
+    await update.message.reply_text(summary, reply_markup=kb)
+    return SALE_CONFIRM
+
+async def confirm_sale(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.callback_query.data == 'sale_confirm':
+        data = context.user_data
+        secure_db.insert('customer_sales', {
+            'customer_id': data['sale_customer_id'],
+            'store_id': data['sale_store_id'],
+            'item_id': data['sale_item_id'],
+            'qty': data['sale_qty'],
+            'unit_price': data['sale_price'],
+            'note': data.get('sale_note',''),
+            'created_at': datetime.utcnow().isoformat()
+        })
+        await update.callback_query.edit_message_text('✅ Sale recorded.')
+    else:
+        await update.callback_query.edit_message_text('❌ Sale cancelled.')
+    return ConversationHandler.END
+
+async def cancel_sale(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text('Sale entry cancelled.')
+    return ConversationHandler.END
