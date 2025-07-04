@@ -6,7 +6,7 @@ from datetime import datetime
 from tinydb import Query
 from secure_db import secure_db
 
-State constants
+#State constants
 
 ( C_NAME, C_CUR, C_CONFIRM, C_SEL_EDIT, C_NEW_NAME, C_NEW_CUR, C_CONFIRM_EDIT, C_SEL_REMOVE, C_CONFIRM_REMOVE, C_SEL_VIEW ) = range(10)
 
