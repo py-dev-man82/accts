@@ -37,4 +37,3 @@ chmod 600 data/db.json
 echo "Created data/db.json (empty) with restrictive permissions."
 
 echo "✅ Secure DB setup complete."
-echo "Now edit config.py to set your DB_PASSPHRASE, then restart your bot."
