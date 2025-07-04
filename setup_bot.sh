@@ -16,6 +16,24 @@ if [ ! -d ".git" ]; then
 else
   git pull origin main
 fi
+# 3a. Interactive config.py update
+CONFIG_FILE="config.py"
+if [ -f "$CONFIG_FILE" ]; then
+  echo "Configuring $CONFIG_FILE …"
+  read -p "Enter your BOT_TOKEN: " BOT_TOKEN
+  read -p "Enter your Telegram user ID (ADMIN_TELEGRAM_ID): " ADMIN_ID
+  read -p "Enter your DB_PASSPHRASE: " DB_PASS
+
+  sed -i "s|^BOT_TOKEN.*|BOT_TOKEN         = \"${BOT_TOKEN}\"|"         "$CONFIG_FILE"
+  sed -i "s|^ADMIN_TELEGRAM_ID.*|ADMIN_TELEGRAM_ID = ${ADMIN_ID}|"     "$CONFIG_FILE"
+  sed -i "s|^DB_PASSPHRASE.*|DB_PASSPHRASE     = \"${DB_PASS}\"|"       "$CONFIG_FILE"
+
+  echo "✅ Updated $CONFIG_FILE"
+else
+  echo "⚠️  $CONFIG_FILE not found—skipping configuration"
+fi
+
+
 
 # 4. Prepare data directory
 mkdir -p data
