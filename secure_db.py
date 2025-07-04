@@ -1,7 +1,8 @@
 # secure_db.py
 
-import threading, json
-from time import time
+import threading
+import json
+import base64
 from datetime import datetime
 from tinydb import TinyDB
 from tinydb.storages import JSONStorage
@@ -9,13 +10,17 @@ from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.hazmat.primitives import hashes
 from cryptography.fernet import Fernet
 from cryptography.hazmat.backends import default_backend
-import base64
 
-# Configuration for auto-lock timeout and key derivation salt
-UNLOCK_TIMEOUT = 300  # seconds of inactivity before auto-lock
-KDF_SALT      = b'your-static-salt-here'  # replace with a secure random salt
+import config
+
+# Auto-lock after this many seconds of inactivity
+UNLOCK_TIMEOUT = 300
+
+# Replace this with your generated 16-byte salt (raw bytes literal)
+KDF_SALT = b'\x9f\x8a\x17\xa4\x01\xbb\xcd\x23\x45\x67\x89\xab\xcd\xef\x01\x23'
 
 class EncryptedJSONStorage(JSONStorage):
+    """TinyDB storage that encrypts/decrypts the JSON blob via Fernet."""
     def __init__(self, path, fernet: Fernet, **kwargs):
         super().__init__(path, **kwargs)
         self.fernet = fernet
@@ -40,6 +45,7 @@ class EncryptedJSONStorage(JSONStorage):
             f.write(token)
 
 class SecureDB:
+    """Encrypted TinyDB wrapper with auto-lock/unlock."""
     def __init__(self, db_path, passphrase: str):
         self.db_path = db_path
         self.passphrase = passphrase.encode('utf-8')
@@ -94,17 +100,16 @@ class SecureDB:
         return self.table(table_name).all()
 
     def insert(self, table_name, doc):
-        tbl = self.table(table_name)
-        return tbl.insert(doc)
+        return self.table(table_name).insert(doc)
 
     def search(self, table_name, query):
-        tbl = self.table(table_name)
-        return tbl.search(query)
+        return self.table(table_name).search(query)
 
     def update(self, table_name, fields, doc_ids):
-        tbl = self.table(table_name)
-        tbl.update(fields, doc_ids=doc_ids)
+        self.table(table_name).update(fields, doc_ids=doc_ids)
 
     def remove(self, table_name, doc_ids):
-        tbl = self.table(table_name)
-        tbl.remove(doc_ids=doc_ids)
+        self.table(table_name).remove(doc_ids=doc_ids)
+
+# Global instance for import in handlers
+secure_db = SecureDB(config.DB_PATH, config.DB_PASSPHRASE)
