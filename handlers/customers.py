@@ -1,50 +1,130 @@
-handlers/customers.py
+# handlers/customers.py
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update from telegram.ext import ( ConversationHandler, CallbackQueryHandler, MessageHandler, CommandHandler, filters, ContextTypes ) from datetime import datetime from tinydb import Query from secure_db import secure_db
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.ext import (
+    ConversationHandler,
+    CallbackQueryHandler,
+    MessageHandler,
+    CommandHandler,
+    filters,
+    ContextTypes
+)
+from datetime import datetime
+from tinydb import Query
+from secure_db import secure_db
 
-State constants for Customer CRUD flow
+# State constants for Customer CRUD flow
+(
+    C_NAME, C_CUR, C_CONFIRM,
+    C_SEL_EDIT, C_NEW_NAME, C_NEW_CUR, C_CONFIRM_EDIT,
+    C_SEL_REMOVE, C_CONFIRM_REMOVE, C_SEL_VIEW
+) = range(10)
 
-( C_NAME, C_CUR, C_CONFIRM, C_SEL_EDIT, C_NEW_NAME, C_NEW_CUR, C_CONFIRM_EDIT, C_SEL_REMOVE, C_CONFIRM_REMOVE, C_SEL_VIEW ) = range(10)
+# Register Customer Handlers
+def register_customer_handlers(app):
+    customer_conv_handler = ConversationHandler(
+        entry_points=[
+            CommandHandler('add_customer', add_customer),
+            CommandHandler('edit_customer', edit_customer),
+            CommandHandler('remove_customer', remove_customer),
+            CommandHandler('view_customer', view_customer),
+        ],
+        states={
+            C_NAME: [MessageHandler(filters.text, get_customer_name)],
+            C_CUR: [MessageHandler(filters.text, get_customer_currency)],
+            C_CONFIRM: [CallbackQueryHandler(confirm_customer)],
+            C_SEL_EDIT: [CallbackQueryHandler(select_edit_customer)],
+            C_NEW_NAME: [MessageHandler(filters.text, new_customer_name)],
+            C_NEW_CUR: [MessageHandler(filters.text, new_customer_currency)],
+            C_CONFIRM_EDIT: [CallbackQueryHandler(confirm_edit_customer)],
+            C_SEL_REMOVE: [CallbackQueryHandler(select_remove_customer)],
+            C_CONFIRM_REMOVE: [CallbackQueryHandler(confirm_remove_customer)],
+            C_SEL_VIEW: [CallbackQueryHandler(view_customer_details)],
+        },
+        fallbacks=[
+            CommandHandler('cancel', cancel_customer)
+        ]
+    )
+    
+    app.add_handler(customer_conv_handler)
 
-async def ask_cust_name(update: Update, context: ContextTypes.DEFAULT_TYPE): """Start add-customer flow.""" await update.callback_query.edit_message_text("Enter new customer name:") return C_NAME
+# Handlers for different customer CRUD operations
+async def add_customer(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Please enter the customer name.")
+    return C_NAME
 
-async def ask_cust_cur(update: Update, context: ContextTypes.DEFAULT_TYPE): name = update.message.text.strip() context.user_data['cust_name'] = name buttons = [[InlineKeyboardButton(c, callback_data=c)] for c in ['GBP','USD','EUR']] kb = InlineKeyboardMarkup(buttons) await update.message.reply_text("Select currency:", reply_markup=kb) return C_CUR
+async def get_customer_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    customer_name = update.message.text
+    context.user_data['customer_name'] = customer_name
+    await update.message.reply_text(f"Customer name is {customer_name}. Now, enter the currency.")
+    return C_CUR
 
-async def confirm_cust(update: Update, context: ContextTypes.DEFAULT_TYPE): cur = update.callback_query.data context.user_data['cust_cur'] = cur name = context.user_data['cust_name'] kb = InlineKeyboardMarkup([[InlineKeyboardButton("✅ Yes", callback_data='yes'), InlineKeyboardButton("❌ No",  callback_data='no')]]) await update.callback_query.edit_message_text( f"Confirm add:\n{name} ({cur})?", reply_markup=kb) return C_CONFIRM
+async def get_customer_currency(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    customer_currency = update.message.text
+    context.user_data['customer_currency'] = customer_currency
+    await update.message.reply_text(f"Currency is {customer_currency}. Confirm to save?")
+    return C_CONFIRM
 
-async def finalize_cust(update: Update, context: ContextTypes.DEFAULT_TYPE): if update.callback_query.data == 'yes': name = context.user_data['cust_name'] cur  = context.user_data['cust_cur'] secure_db.insert('customers', { 'name': name, 'currency': cur, 'created_at': datetime.utcnow().isoformat() }) await update.callback_query.edit_message_text(f"✅ Added customer {name}.") else: await update.callback_query.edit_message_text("❌ Cancelled.") return ConversationHandler.END
+async def confirm_customer(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    customer_name = context.user_data.get('customer_name')
+    customer_currency = context.user_data.get('customer_currency')
+    secure_db.insert('customers', {'name': customer_name, 'currency': customer_currency})
+    await update.message.reply_text(f"Customer {customer_name} with currency {customer_currency} added.")
+    return ConversationHandler.END
 
-Edit Customer
+async def edit_customer(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Placeholder for the edit logic
+    await update.message.reply_text("Enter the name of the customer to edit.")
+    return C_SEL_EDIT
 
-async def select_cust_edit(update: Update, context: ContextTypes.DEFAULT_TYPE): rows = secure_db.all('customers') buttons = [[InlineKeyboardButton(r['name'], callback_data=f"cust_edit_{r.doc_id}")] for r in rows] buttons.append([InlineKeyboardButton("◀️ Cancel", callback_data='cancel')]) kb = InlineKeyboardMarkup(buttons) await update.callback_query.edit_message_text("Select customer to edit:", reply_markup=kb) return C_SEL_EDIT
+async def select_edit_customer(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Handle customer selection for editing
+    await update.message.reply_text("Select a field to edit.")
+    return C_NEW_NAME
 
-async def ask_cust_new_name(update: Update, context: ContextTypes.DEFAULT_TYPE): cid = int(update.callback_query.data.split('_')[-1]) context.user_data['edit_cust_id'] = cid cust = secure_db.all('customers')[cid-1] await update.callback_query.edit_message_text( f"Current name: {cust['name']}\nEnter new name:") return C_NEW_NAME
+async def new_customer_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    new_name = update.message.text
+    context.user_data['new_name'] = new_name
+    await update.message.reply_text(f"New name is {new_name}. Now enter the new currency.")
+    return C_NEW_CUR
 
-async def ask_cust_new_cur(update: Update, context: ContextTypes.DEFAULT_TYPE): new_name = update.message.text.strip() context.user_data['edit_cust_new_name'] = new_name buttons = [[InlineKeyboardButton(c, callback_data=c)] for c in ['GBP','USD','EUR']] kb = InlineKeyboardMarkup(buttons) await update.message.reply_text("Select new currency:", reply_markup=kb) return C_NEW_CUR
+async def new_customer_currency(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    new_currency = update.message.text
+    context.user_data['new_currency'] = new_currency
+    await update.message.reply_text(f"New currency is {new_currency}. Confirm to update?")
+    return C_CONFIRM_EDIT
 
-async def confirm_cust_edit(update: Update, context: ContextTypes.DEFAULT_TYPE): new_cur = update.callback_query.data context.user_data['edit_cust_new_cur'] = new_cur nm = context.user_data['edit_cust_new_name'] kb = InlineKeyboardMarkup([[InlineKeyboardButton("✅ Yes", callback_data='yes'), InlineKeyboardButton("❌ No",  callback_data='no')]]) await update.callback_query.edit_message_text( f"Confirm update to:\n{nm} ({new_cur})?", reply_markup=kb) return C_CONFIRM_EDIT
+async def confirm_edit_customer(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Confirm customer update
+    new_name = context.user_data.get('new_name')
+    new_currency = context.user_data.get('new_currency')
+    # Logic to update customer in database
+    await update.message.reply_text(f"Customer updated to {new_name} with currency {new_currency}.")
+    return ConversationHandler.END
 
-async def finalize_cust_edit(update: Update, context: ContextTypes.DEFAULT_TYPE): if update.callback_query.data == 'yes': cid = context.user_data['edit_cust_id'] secure_db.update('customers', { 'name': context.user_data['edit_cust_new_name'], 'currency': context.user_data['edit_cust_new_cur'] }, doc_ids=[cid]) await update.callback_query.edit_message_text("✅ Customer updated.") else: await update.callback_query.edit_message_text("❌ Cancelled.") return ConversationHandler.END
+async def remove_customer(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Enter the name of the customer to remove.")
+    return C_SEL_REMOVE
 
-Remove Customer
+async def select_remove_customer(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Handle customer removal selection
+    await update.message.reply_text("Are you sure you want to remove this customer?")
+    return C_CONFIRM_REMOVE
 
-async def select_cust_remove(update: Update, context: ContextTypes.DEFAULT_TYPE): rows = secure_db.all('customers') buttons = [[InlineKeyboardButton(r['name'], callback_data=f"cust_rem_{r.doc_id}")] for r in rows] buttons.append([InlineKeyboardButton("◀️ Cancel", callback_data='cancel')]) kb = InlineKeyboardMarkup(buttons) await update.callback_query.edit_message_text("Select customer to remove:", reply_markup=kb) return C_SEL_REMOVE
+async def confirm_remove_customer(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Logic to remove customer from database
+    await update.message.reply_text("Customer removed.")
+    return ConversationHandler.END
 
-async def confirm_cust_remove(update: Update, context: ContextTypes.DEFAULT_TYPE): cid = int(update.callback_query.data.split('_')[-1]) context.user_data['remove_cust_id'] = cid name = secure_db.all('customers')[cid-1]['name'] kb = InlineKeyboardMarkup([[InlineKeyboardButton("✅ Yes", callback_data='yes'), InlineKeyboardButton("❌ No",  callback_data='no')]]) await update.callback_query.edit_message_text(f"Delete {name}?", reply_markup=kb) return C_CONFIRM_REMOVE
+async def view_customer(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Select the customer to view.")
+    return C_SEL_VIEW
 
-async def finalize_cust_remove(update: Update, context: ContextTypes.DEFAULT_TYPE): if update.callback_query.data == 'yes': cid = context.user_data['remove_cust_id'] secure_db.remove('customers', doc_ids=[cid]) await update.callback_query.edit_message_text("✅ Customer removed.") else: await update.callback_query.edit_message_text("❌ Cancelled.") return ConversationHandler.END
+async def view_customer_details(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Display customer details
+    await update.message.reply_text("Displaying customer details.")
+    return ConversationHandler.END
 
-View Customer
-
-async def select_cust_view(update: Update, context: ContextTypes.DEFAULT_TYPE): rows = secure_db.all('customers') buttons = [[InlineKeyboardButton(r['name'], callback_data=f"cust_view_{r.doc_id}")] for r in rows] buttons.append([InlineKeyboardButton("◀️ Back", callback_data='cancel')]) kb = InlineKeyboardMarkup(buttons) await update.callback_query.edit_message_text("Select customer to view:", reply_markup=kb) return C_SEL_VIEW
-
-async def show_cust_details(update: Update, context: ContextTypes.DEFAULT_TYPE): cid = int(update.callback_query.data.split('_')[-1]) r = secure_db.all('customers')[cid-1] text = ( f"👤 ID: {cid}\n" f"Name: {r['name']}\n" f"Currency: {r['currency']}\n" f"Created: {r['created_at']}" ) await update.callback_query.edit_message_text(text) return ConversationHandler.END
-
-Cancel handler
-
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE): if update.callback_query: await update.callback_query.answer() await update.callback_query.edit_message_text("❌ Cancelled.") else: await update.message.reply_text("❌ Cancelled.") return ConversationHandler.END
-
-Registration
-
-def register_customer_handlers(app): # Entry points app.add_handler(CallbackQueryHandler(ask_cust_name,    pattern='^add_customer$')) app.add_handler(CallbackQueryHandler(select_cust_edit,  pattern='^edit_customer$')) app.add_handler(CallbackQueryHandler(select_cust_remove,pattern='^remove_customer$')) app.add_handler(CallbackQueryHandler(select_cust_view,  pattern='^view_customer$')) # Handlers for each step app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, ask_cust_cur),               group=C_NAME) app.add_handler(CallbackQueryHandler(confirm_cust,       pattern='^(GBP|USD|EUR)$')) app.add_handler(CallbackQueryHandler(finalize_cust,      pattern='^(yes|no)$')) app.add_handler(CallbackQueryHandler(ask_cust_new_name,  pattern='^cust_edit_\d+$')) app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, ask_cust_new_cur),           group=C_NEW_NAME) app.add_handler(CallbackQueryHandler(confirm_cust_edit,  pattern='^([A-Za-z]{3})$')) app.add_handler(CallbackQueryHandler(finalize_cust_edit, pattern='^(yes|no)$')) app.add_handler(CallbackQueryHandler(confirm_cust_remove,pattern='^cust_rem_\d+$')) app.add_handler(CallbackQueryHandler(finalize_cust_remove,pattern='^(yes|no)$')) app.add_handler(CallbackQueryHandler(show_cust_details,  pattern='^cust_view_\d+$')) app.add_handler(CommandHandler('cancel', cancel))
-
+async def cancel_customer(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Customer action cancelled.")
+    return ConversationHandler.END
