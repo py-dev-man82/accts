@@ -1,115 +1,99 @@
-# secure_db.py
+secure_db.py
 
-import threading
-import json
-import base64
-from datetime import datetime
-from tinydb import TinyDB
-from tinydb.storages import JSONStorage
-from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
-from cryptography.hazmat.primitives import hashes
-from cryptography.fernet import Fernet
-from cryptography.hazmat.backends import default_backend
+import threading import json import base64 from datetime import datetime from tinydb import TinyDB from tinydb.storages import JSONStorage from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC from cryptography.hazmat.primitives import hashes from cryptography.fernet import Fernet from cryptography.hazmat.backends import default_backend
 
 import config
 
-# Auto-lock after this many seconds of inactivity
+Auto-lock after this many seconds of inactivity
+
 UNLOCK_TIMEOUT = 300
 
-# Replace this with your generated 16-byte salt (raw bytes literal)
+Replace this with your generated 16-byte salt (ASCII-escaped \xNN form)
+
 KDF_SALT = b'\x9f\x8a\x17\xa4\x01\xbb\xcd\x23\x45\x67\x89\xab\xcd\xef\x01\x23'
 
-class EncryptedJSONStorage(JSONStorage):
-    """TinyDB storage that encrypts/decrypts the JSON blob via Fernet."""
-    def __init__(self, path, fernet: Fernet, **kwargs):
-        super().__init__(path, **kwargs)
-        self.fernet = fernet
+class EncryptedJSONStorage(JSONStorage): """TinyDB storage that encrypts/decrypts the JSON blob via Fernet.""" def init(self, path, fernet: Fernet, **kwargs): super().init(path, **kwargs) self.fernet = fernet
 
-    def read(self):
-        try:
-            with open(self._handle, 'rb') as f:
-                token = f.read()
-            if not token:
-                return {}
-            data = self.fernet.decrypt(token)
-            return json.loads(data.decode('utf-8'))
-        except FileNotFoundError:
+def read(self):
+    try:
+        with open(self._handle, 'rb') as f:
+            token = f.read()
+        if not token:
             return {}
-        except Exception:
-            return {}
+        data = self.fernet.decrypt(token)
+        return json.loads(data.decode('utf-8'))
+    except FileNotFoundError:
+        return {}
+    except Exception:
+        return {}
 
-    def write(self, data):
-        raw = json.dumps(data).encode('utf-8')
-        token = self.fernet.encrypt(raw)
-        with open(self._handle, 'wb') as f:
-            f.write(token)
+def write(self, data):
+    raw = json.dumps(data).encode('utf-8')
+    token = self.fernet.encrypt(raw)
+    with open(self._handle, 'wb') as f:
+        f.write(token)
 
-class SecureDB:
-    """Encrypted TinyDB wrapper with auto-lock/unlock."""
-    def __init__(self, db_path, passphrase: str):
-        self.db_path = db_path
-        self.passphrase = passphrase.encode('utf-8')
-        self.fernet = None
-        self.db = None
-        self._lock = threading.Lock()
-        self._timer = None
-        self.unlock()
+class SecureDB: """Encrypted TinyDB wrapper with auto-lock/unlock.""" def init(self, db_path, passphrase: str): self.db_path = db_path self.passphrase = passphrase.encode('utf-8') self.fernet = None self.db = None self._lock = threading.Lock() self._timer = None self.unlock()
 
-    def _derive_key(self):
-        kdf = PBKDF2HMAC(
-            algorithm=hashes.SHA256(),
-            length=32,
-            salt=KDF_SALT,
-            iterations=200_000,
-            backend=default_backend()
+def _derive_key(self):
+    kdf = PBKDF2HMAC(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=KDF_SALT,
+        iterations=200_000,
+        backend=default_backend()
+    )
+    key = base64.urlsafe_b64encode(kdf.derive(self.passphrase))
+    return Fernet(key)
+
+def unlock(self):
+    with self._lock:
+        self.fernet = self._derive_key()
+        self.db = TinyDB(
+            self.db_path,
+            storage=lambda p: EncryptedJSONStorage(p, self.fernet)
         )
-        key = base64.urlsafe_b64encode(kdf.derive(self.passphrase))
-        return Fernet(key)
-
-    def unlock(self):
-        with self._lock:
-            self.fernet = self._derive_key()
-            self.db = TinyDB(self.db_path,
-                             storage=lambda p: EncryptedJSONStorage(p, self.fernet))
-            self._reset_timer()
-
-    def _reset_timer(self):
-        if self._timer:
-            self._timer.cancel()
-        self._timer = threading.Timer(UNLOCK_TIMEOUT, self.lock)
-        self._timer.daemon = True
-        self._timer.start()
-
-    def lock(self):
-        with self._lock:
-            if self.db:
-                self.db.close()
-            self.db = None
-            self.fernet = None
-
-    def ensure_unlocked(self):
-        if not self.db:
-            raise RuntimeError("🔒 Database is locked. Use /unlock first.")
         self._reset_timer()
 
-    def table(self, name):
-        self.ensure_unlocked()
-        return self.db.table(name)
+def _reset_timer(self):
+    if self._timer:
+        self._timer.cancel()
+    self._timer = threading.Timer(UNLOCK_TIMEOUT, self.lock)
+    self._timer.daemon = True
+    self._timer.start()
 
-    def all(self, table_name):
-        return self.table(table_name).all()
+def lock(self):
+    with self._lock:
+        if self.db:
+            self.db.close()
+        self.db = None
+        self.fernet = None
 
-    def insert(self, table_name, doc):
-        return self.table(table_name).insert(doc)
+def ensure_unlocked(self):
+    if not self.db:
+        raise RuntimeError("🔒 Database is locked. Use /unlock first.")
+    self._reset_timer()
 
-    def search(self, table_name, query):
-        return self.table(table_name).search(query)
+def table(self, name):
+    self.ensure_unlocked()
+    return self.db.table(name)
 
-    def update(self, table_name, fields, doc_ids):
-        self.table(table_name).update(fields, doc_ids=doc_ids)
+def all(self, table_name):
+    return self.table(table_name).all()
 
-    def remove(self, table_name, doc_ids):
-        self.table(table_name).remove(doc_ids=doc_ids)
+def insert(self, table_name, doc):
+    return self.table(table_name).insert(doc)
 
-# Global instance for import in handlers
+def search(self, table_name, query):
+    return self.table(table_name).search(query)
+
+def update(self, table_name, fields, doc_ids):
+    self.table(table_name).update(fields, doc_ids=doc_ids)
+
+def remove(self, table_name, doc_ids):
+    self.table(table_name).remove(doc_ids=doc_ids)
+
+Global instance for import in handlers and bot.py
+
 secure_db = SecureDB(config.DB_PATH, config.DB_PASSPHRASE)
+
