@@ -3,7 +3,7 @@ set -e
 
 # 1. Update and install system packages
 sudo apt update && sudo apt upgrade -y
-sudo apt install -y python3 python3-venv python3-pip git build-essential
+sudo apt install -y git python3 python3-venv python3-pip build-essential
 
 # 2. Create project directory
 PROJECT_DIR="$HOME/tgaccts"
@@ -16,6 +16,7 @@ if [ ! -d ".git" ]; then
 else
   git pull origin main
 fi
+
 # 3a. Interactive config.py update
 CONFIG_FILE="config.py"
 if [ -f "$CONFIG_FILE" ]; then
@@ -24,28 +25,26 @@ if [ -f "$CONFIG_FILE" ]; then
   read -p "Enter your Telegram user ID (ADMIN_TELEGRAM_ID): " ADMIN_ID
   read -p "Enter your DB_PASSPHRASE: " DB_PASS
 
-  sed -i "s|^BOT_TOKEN.*|BOT_TOKEN         = \"${BOT_TOKEN}\"|"         "$CONFIG_FILE"
-  sed -i "s|^ADMIN_TELEGRAM_ID.*|ADMIN_TELEGRAM_ID = ${ADMIN_ID}|"     "$CONFIG_FILE"
-  sed -i "s|^DB_PASSPHRASE.*|DB_PASSPHRASE     = \"${DB_PASS}\"|"       "$CONFIG_FILE"
+  sed -i "s|^BOT_TOKEN.*|BOT_TOKEN         = \"${BOT_TOKEN}\"|"     "$CONFIG_FILE"
+  sed -i "s|^ADMIN_TELEGRAM_ID.*|ADMIN_TELEGRAM_ID = ${ADMIN_ID}|"   "$CONFIG_FILE"
+  sed -i "s|^DB_PASSPHRASE.*|DB_PASSPHRASE     = \"${DB_PASS}\"|"   "$CONFIG_FILE"
 
   echo "✅ Updated $CONFIG_FILE"
 else
   echo "⚠️  $CONFIG_FILE not found—skipping configuration"
 fi
 
-
-
 # 4. Prepare data directory
 mkdir -p data
 chmod 700 data
 
 # 5. Run the secure DB setup script
-if [ -x "$(which setup_secure_db.sh 2>/dev/null)" ] || [ -f "setupdb.sh" ]; then
+if [ -f setup_secure_db.sh ]; then
   echo "Running secure DB setup..."
-  chmod +x setupdb.sh
-  ./setupdb.sh
+  chmod +x setup_secure_db.sh
+  ./setup_secure_db.sh
 else
-  echo "Warning: setup_secure_db.sh not found or not executable. Skipping DB setup."
+  echo "⚠️  Warning: setup_secure_db.sh not found—skipping DB init"
 fi
 
 # 6. Create and activate Python venv
@@ -62,13 +61,22 @@ pip install \
     xlsxwriter \
     reportlab
 
-# 8. (Optional) Initialize POT starting balance
-# Uncomment and adjust if needed:
-# python3 - << 'EOF'
-# from secure_db import secure_db
-# from config import POT_START
-# secure_db.insert('pot', {'date': datetime.utcnow().isoformat(), 'starting_balance': POT_START})
-# EOF
+# 8. Interactive: Initialize POT starting balance
+read -p "Enter initial POT starting balance (leave blank to skip): " POT_START
+if [ -n "$POT_START" ]; then
+  echo "Initializing POT with starting balance \$${POT_START}..."
+  python3 - <<EOF
+from secure_db import secure_db
+from datetime import datetime
+secure_db.insert('pot', {
+    'date': datetime.utcnow().isoformat(),
+    'starting_balance': ${POT_START}
+})
+EOF
+  echo "✅ POT starting balance set to \$${POT_START}"
+else
+  echo "Skipping POT initialization."
+fi
 
 # 9. Deactivate venv
 deactivate
@@ -95,7 +103,7 @@ EOF
 # 11. Enable and start service
 sudo systemctl daemon-reload
 sudo systemctl enable telegram-bot.service
-sudo systemctl start telegram-bot.service
+sudo systemctl restart telegram-bot.service
 
 # 12. Final message
 echo "✅ Deployment complete!"
