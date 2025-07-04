@@ -1,60 +1,50 @@
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update from telegram.ext import ( CallbackQueryHandler, MessageHandler, CommandHandler, filters, ContextTypes, ConversationHandler ) from secure_db import SecureDB from datetime import datetime from tinydb import Query
+handlers/partners.py
 
-SecureDB instance
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update from telegram.ext import ( ConversationHandler, CallbackQueryHandler, MessageHandler, CommandHandler, filters, ContextTypes ) from datetime import datetime from tinydb import Query from secure_db import secure_db
 
-secure_db = SecureDB
+State constants for Partner CRUD flow
 
-State constants
+( P_NAME, P_CUR, P_CONFIRM, P_SEL_EDIT, P_NEW_NAME, P_NEW_CUR, P_CONFIRM_EDIT, P_SEL_REMOVE, P_CONFIRM_REMOVE, P_SEL_VIEW ) = range(10)
 
-( P_NAME, P_CUR, P_CONFIRM, P_SEL_EDIT, P_NEW_NAME, P_NEW_CUR, P_CONFIRM_EDIT, P_SEL_REMOVE, P_CONFIRM_REMOVE, P_SEL_VIEW, ) = range(21)
+def register_partner_handlers(app): partner_conv = ConversationHandler( entry_points=[ CommandHandler('add_partner', add_partner), CommandHandler('edit_partner', edit_partner), CommandHandler('remove_partner', remove_partner), CommandHandler('view_partner', view_partner), ], states={ P_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_partner_name)], P_CUR: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_partner_currency)], P_CONFIRM: [CallbackQueryHandler(confirm_partner)], P_SEL_EDIT: [CallbackQueryHandler(select_edit_partner)], P_NEW_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, new_partner_name)], P_NEW_CUR: [MessageHandler(filters.TEXT & ~filters.COMMAND, new_partner_currency)], P_CONFIRM_EDIT: [CallbackQueryHandler(confirm_edit_partner)], P_SEL_REMOVE: [CallbackQueryHandler(select_remove_partner)], P_CONFIRM_REMOVE: [CallbackQueryHandler(confirm_remove_partner)], P_SEL_VIEW: [CallbackQueryHandler(view_partner_details)], }, fallbacks=[CommandHandler('cancel', cancel_partner)], allow_reentry=True ) app.add_handler(partner_conv)
 
-Register partner CRUD handlers
+--- Add Partner ---
 
-def register_partner_handlers(app): # Add Partner app.add_handler(CallbackQueryHandler(ask_part_name,    pattern='^add_partner$')) app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, ask_part_cur), group=P_NAME) app.add_handler(CallbackQueryHandler(confirm_part,      pattern='^[A-Z]{3}$'), group=P_CUR) app.add_handler(CallbackQueryHandler(finalize_part,     pattern='^(yes|no)$'), group=P_CONFIRM)
+async def add_partner(update: Update, context: ContextTypes.DEFAULT_TYPE): await update.message.reply_text("Enter new partner name:") return P_NAME
 
-# Edit Partner
-app.add_handler(CallbackQueryHandler(select_part_edit,  pattern='^edit_partner$'))
-app.add_handler(CallbackQueryHandler(ask_part_new_name, pattern='^part_edit_'), group=P_SEL_EDIT)
-app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, ask_part_new_cur), group=P_NEW_NAME)
-app.add_handler(CallbackQueryHandler(confirm_part_edit, pattern='^[A-Z]{3}$'), group=P_NEW_CUR)
-app.add_handler(CallbackQueryHandler(finalize_part_edit, pattern='^(yes|no)$'), group=P_CONFIRM_EDIT)
+async def get_partner_name(update: Update, context: ContextTypes.DEFAULT_TYPE): name = update.message.text.strip() context.user_data['partner_name'] = name await update.message.reply_text(f"Partner name '{name}'. Now enter currency:") return P_CUR
 
-# Remove Partner
-app.add_handler(CallbackQueryHandler(select_part_remove, pattern='^remove_partner$'))
-app.add_handler(CallbackQueryHandler(confirm_part_remove, pattern='^part_rem_'), group=P_SEL_REMOVE)
-app.add_handler(CallbackQueryHandler(finalize_part_remove, pattern='^(yes|no)$'), group=P_CONFIRM_REMOVE)
+async def get_partner_currency(update: Update, context: ContextTypes.DEFAULT_TYPE): cur = update.message.text.strip() context.user_data['partner_currency'] = cur kb = InlineKeyboardMarkup([[ InlineKeyboardButton("✅ Yes", callback_data='partner_yes'), InlineKeyboardButton("❌ No",  callback_data='partner_no') ]]) await update.message.reply_text( f"Currency: {cur}\nSave this partner?", reply_markup=kb ) return P_CONFIRM
 
-# View Partner
-app.add_handler(CallbackQueryHandler(select_part_view,    pattern='^view_partner$'))
-app.add_handler(CallbackQueryHandler(show_part_details,   pattern='^part_view_'))
+async def confirm_partner(update: Update, context: ContextTypes.DEFAULT_TYPE): if update.callback_query.data == 'partner_yes': secure_db.insert('partners', { 'name': context.user_data['partner_name'], 'currency': context.user_data['partner_currency'], 'created_at': datetime.utcnow().isoformat() }) await update.callback_query.edit_message_text( f"✅ Partner '{context.user_data['partner_name']}' added." ) else: await update.callback_query.edit_message_text("❌ Add cancelled.") return ConversationHandler.END
 
-Handler implementations
+--- Edit Partner (placeholders) ---
 
-async def ask_part_name(update: Update, context: ContextTypes.DEFAULT_TYPE): await update.callback_query.edit_message_text("Enter new partner name:") return P_NAME
+async def edit_partner(update: Update, context: ContextTypes.DEFAULT_TYPE): await update.message.reply_text("Edit feature not implemented.") return ConversationHandler.END
 
-async def ask_part_cur(update: Update, context: ContextTypes.DEFAULT_TYPE): name = update.message.text.strip() context.user_data['part_name'] = name kb = InlineKeyboardMarkup([[InlineKeyboardButton(c, callback_data=c)] for c in ['GBP','USD','EUR']]) await update.message.reply_text("Select currency:", reply_markup=kb) return P_CUR
+async def select_edit_partner(update: Update, context: ContextTypes.DEFAULT_TYPE): return ConversationHandler.END
 
-async def confirm_part(update: Update, context: ContextTypes.DEFAULT_TYPE): cur = update.callback_query.data context.user_data['part_cur'] = cur name = context.user_data['part_name'] await update.callback_query.edit_message_text( f"Confirm add:\n{name} ({cur})?", reply_markup=InlineKeyboardMarkup([ [InlineKeyboardButton("✅ Yes", callback_data='yes'), InlineKeyboardButton("❌ No", callback_data='no')] ]) ) return P_CONFIRM
+async def new_partner_name(update: Update, context: ContextTypes.DEFAULT_TYPE): return ConversationHandler.END
 
-async def finalize_part(update: Update, context: ContextTypes.DEFAULT_TYPE): if update.callback_query.data == 'yes': secure_db.insert('partners', { 'name': context.user_data['part_name'], 'currency': context.user_data['part_cur'], 'created_at': datetime.utcnow().isoformat() }) await update.callback_query.edit_message_text("✅ Partner added.") else: await update.callback_query.edit_message_text("❌ Cancelled.") return ConversationHandler.END
+async def new_partner_currency(update: Update, context: ContextTypes.DEFAULT_TYPE): return ConversationHandler.END
 
-async def select_part_edit(update: Update, context: ContextTypes.DEFAULT_TYPE): rows = secure_db.all('partners') btns = [[InlineKeyboardButton(r['name'], callback_data=f"part_edit_{r.doc_id}")] for r in rows] btns.append([InlineKeyboardButton("◀️ Cancel", callback_data='back_main')]) await update.callback_query.edit_message_text("Select partner to edit:", reply_markup=InlineKeyboardMarkup(btns)) return P_SEL_EDIT
+async def confirm_edit_partner(update: Update, context: ContextTypes.DEFAULT_TYPE): return ConversationHandler.END
 
-async def ask_part_new_name(update: Update, context: ContextTypes.DEFAULT_TYPE): cid = int(update.callback_query.data.split('_')[-1]) context.user_data['edit_part_id'] = cid name = secure_db.all('partners')[cid-1]['name'] await update.callback_query.edit_message_text(f"Current name: {name}\nEnter new name:") return P_NEW_NAME
+--- Remove Partner ---
 
-async def ask_part_new_cur(update: Update, context: ContextTypes.DEFAULT_TYPE): new_name = update.message.text.strip() context.user_data['edit_part_new_name'] = new_name kb = InlineKeyboardMarkup([[InlineKeyboardButton(c, callback_data=c)] for c in ['GBP','USD','EUR']]) await update.message.reply_text("Select new currency:", reply_markup=kb) return P_NEW_CUR
+async def remove_partner(update: Update, context: ContextTypes.DEFAULT_TYPE): await update.message.reply_text("Remove feature not implemented.") return ConversationHandler.END
 
-async def confirm_part_edit(update: Update, context: ContextTypes.DEFAULT_TYPE): new_cur = update.callback_query.data context.user_data['edit_part_new_cur'] = new_cur nm, cu = context.user_data['edit_part_new_name'], new_cur await update.callback_query.edit_message_text( f"Confirm update to:\n{nm} ({cu})?", reply_markup=InlineKeyboardMarkup([ [InlineKeyboardButton("✅ Yes", callback_data='yes'), InlineKeyboardButton("❌ No", callback_data='no')] ]) ) return P_CONFIRM_EDIT
+async def select_remove_partner(update: Update, context: ContextTypes.DEFAULT_TYPE): return ConversationHandler.END
 
-async def finalize_part_edit(update: Update, context: ContextTypes.DEFAULT_TYPE): if update.callback_query.data == 'yes': pid = context.user_data['edit_part_id'] secure_db.update('partners', { 'name': context.user_data['edit_part_new_name'], 'currency': context.user_data['edit_part_new_cur'] }, doc_ids=[pid]) await update.callback_query.edit_message_text("✅ Partner updated.") else: await update.callback_query.edit_message_text("❌ Cancelled.") return ConversationHandler.END
+async def confirm_remove_partner(update: Update, context: ContextTypes.DEFAULT_TYPE): return ConversationHandler.END
 
-async def select_part_remove(update: Update, context: ContextTypes.DEFAULT_TYPE): rows = secure_db.all('partners') btns = [[InlineKeyboardButton(r['name'], callback_data=f"part_rem_{r.doc_id}")] for r in rows] btns.append([InlineKeyboardButton("◀️ Cancel", callback_data='back_main')]) await update.callback_query.edit_message_text("Select partner to remove:", reply_markup=InlineKeyboardMarkup(btns)) return P_SEL_REMOVE
+--- View Partner ---
 
-async def confirm_part_remove(update: Update, context: ContextTypes.DEFAULT_TYPE): pid = int(update.callback_query.data.split('_')[-1]) context.user_data['remove_part_id'] = pid name = secure_db.all('partners')[pid-1]['name'] await update.callback_query.edit_message_text( f"Delete {name}?", reply_markup=InlineKeyboardMarkup([ [InlineKeyboardButton("✅ Yes", callback_data='yes'), InlineKeyboardButton("❌ No", callback_data='no')] ]) ) return P_CONFIRM_REMOVE
+async def view_partner(update: Update, context: ContextTypes.DEFAULT_TYPE): await update.message.reply_text("View feature not implemented.") return ConversationHandler.END
 
-async def finalize_part_remove(update: Update, context: ContextTypes.DEFAULT_TYPE): if update.callback_query.data == 'yes': pid = context.user_data['remove_part_id'] secure_db.remove('partners', doc_ids=[pid]) await update.callback_query.edit_message_text("✅ Partner removed.") else: await update.callback_query.edit_message_text("❌ Cancelled.") return ConversationHandler.END
+async def view_partner_details(update: Update, context: ContextTypes.DEFAULT_TYPE): return ConversationHandler.END
 
-async def select_part_view(update: Update, context: ContextTypes.DEFAULT_TYPE): rows = secure_db.all('partners') btns = [[InlineKeyboardButton(r['name'], callback_data=f"part_view_{r.doc_id}")] for r in rows] btns.append([InlineKeyboardButton("◀️ Back", callback_data='back_main')]) await update.callback_query.edit_message_text("Select partner to view:", reply_markup=InlineKeyboardMarkup(btns)) return P_SEL_VIEW
+--- Cancel Handler ---
 
-async def show_part_details(update: Update, context: ContextTypes.DEFAULT_TYPE): pid = int(update.callback_query.data.split('_')[-1]) r = secure_db.all('partners')[pid-1] await update.callback_query.edit_message_text( f"🤝 Partner Details\nID: {pid}\nName: {r['name']}\nCurrency: {r['currency']}\nCreated: {r['created_at']}" ) return ConversationHandler.END
+async def cancel_partner(update: Update, context: ContextTypes.DEFAULT_TYPE): await update.message.reply_text("Operation cancelled.") return ConversationHandler.END
 
