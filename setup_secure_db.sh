@@ -2,7 +2,7 @@
 
 1. Ensure we're in the repo root
 
-ddir="$(dirname "$0")" && cd "$ddir"
+dir="$(dirname "$0")" && cd "$dir"
 
 2. Check secure_db.py exists
 
@@ -16,15 +16,17 @@ echo "Generated new KDF_SALT: $SALT_BYTES"
 
 4. Replace existing KDF_SALT line in secure_db.py
 
-Matches lines starting with KDF_SALT =
+Assumes line begins with KDF_SALT =
 
-sed -i "s|^KDF_SALT =.*|KDF_SALT = $SALT_BYTES|" secure_db.py
+sed -i "/^KDF_SALT =/c\KDF_SALT = $SALT_BYTES" secure_db.py
 
 echo "Updated secure_db.py with new salt."
 
 5. Prepare data directory
 
-mkdir -p data ochmod 700 data touch data/db.json chmod 600 data/db.json
+mkdir -p data chmod 700 data
+
+touch data/db.json chmod 600 data/db.json
 
 echo "Created data/db.json (empty) with restrictive permissions."
 
