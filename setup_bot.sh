@@ -10,7 +10,23 @@ PROJECT_DIR="$HOME/tgaccts"
 mkdir -p "$PROJECT_DIR"
 cd "$PROJECT_DIR"
 
-# 3. Interactive config.py update
+
+# 3. Prepare data directory
+mkdir -p data
+chmod 700 data
+
+
+
+# 4. Run the secure DB setup script
+if [ -f setup_secure_db.sh ]; then
+  echo "Running secure DB setup..."
+  chmod +x setup_secure_db.sh
+  ./setup_secure_db.sh
+else
+  echo "⚠️  Warning: setup_secure_db.sh not found—skipping DB init"
+fi
+
+# 5. Interactive config.py update
 CONFIG_FILE="config.py"
 if [ -f "$CONFIG_FILE" ]; then
   echo "Configuring $CONFIG_FILE …"
@@ -25,19 +41,6 @@ if [ -f "$CONFIG_FILE" ]; then
   echo "✅ Updated $CONFIG_FILE"
 else
   echo "⚠️  $CONFIG_FILE not found—skipping configuration"
-fi
-
-# 4. Prepare data directory
-mkdir -p data
-chmod 700 data
-
-# 5. Run the secure DB setup script
-if [ -f setup_secure_db.sh ]; then
-  echo "Running secure DB setup..."
-  chmod +x setup_secure_db.sh
-  ./setup_secure_db.sh
-else
-  echo "⚠️  Warning: setup_secure_db.sh not found—skipping DB init"
 fi
 
 # 6. Create and activate Python venv
