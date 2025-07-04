@@ -11,7 +11,7 @@ from telegram.ext import (
 )
 from datetime import datetime
 from tinydb import Query
-from secure_db import secure_db
+from bot import secure_db   # use the instance from bot.py
 
 # State constants for Customer CRUD flow
 (
@@ -20,7 +20,6 @@ from secure_db import secure_db
     C_SEL_REMOVE, C_CONFIRM_REMOVE, C_SEL_VIEW
 ) = range(10)
 
-# Register Customer Handlers
 def register_customer_handlers(app):
     customer_conv_handler = ConversationHandler(
         entry_points=[
@@ -30,76 +29,79 @@ def register_customer_handlers(app):
             CommandHandler('view_customer', view_customer),
         ],
         states={
-            C_NAME: [MessageHandler(filters.text, get_customer_name)],
-            C_CUR: [MessageHandler(filters.text, get_customer_currency)],
+            C_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_customer_name)],
+            C_CUR: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_customer_currency)],
             C_CONFIRM: [CallbackQueryHandler(confirm_customer)],
             C_SEL_EDIT: [CallbackQueryHandler(select_edit_customer)],
-            C_NEW_NAME: [MessageHandler(filters.text, new_customer_name)],
-            C_NEW_CUR: [MessageHandler(filters.text, new_customer_currency)],
+            C_NEW_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, new_customer_name)],
+            C_NEW_CUR: [MessageHandler(filters.TEXT & ~filters.COMMAND, new_customer_currency)],
             C_CONFIRM_EDIT: [CallbackQueryHandler(confirm_edit_customer)],
             C_SEL_REMOVE: [CallbackQueryHandler(select_remove_customer)],
             C_CONFIRM_REMOVE: [CallbackQueryHandler(confirm_remove_customer)],
             C_SEL_VIEW: [CallbackQueryHandler(view_customer_details)],
         },
-        fallbacks=[
-            CommandHandler('cancel', cancel_customer)
-        ]
+        fallbacks=[CommandHandler('cancel', cancel_customer)],
+        allow_reentry=True
     )
-    
     app.add_handler(customer_conv_handler)
 
-# Handlers for different customer CRUD operations
 async def add_customer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Please enter the customer name.")
     return C_NAME
 
 async def get_customer_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    customer_name = update.message.text
+    customer_name = update.message.text.strip()
     context.user_data['customer_name'] = customer_name
-    await update.message.reply_text(f"Customer name is {customer_name}. Now, enter the currency.")
+    await update.message.reply_text(f"Customer name is '{customer_name}'. Now enter the currency.")
     return C_CUR
 
 async def get_customer_currency(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    customer_currency = update.message.text
+    customer_currency = update.message.text.strip()
     context.user_data['customer_currency'] = customer_currency
-    await update.message.reply_text(f"Currency is {customer_currency}. Confirm to save?")
+    buttons = [
+        InlineKeyboardButton("✅ Yes", callback_data='confirm_cust'),
+        InlineKeyboardButton("❌ No",  callback_data='cancel_cust')
+    ]
+    await update.message.reply_text(
+        f"Currency set to '{customer_currency}'. Confirm to save?",
+        reply_markup=InlineKeyboardMarkup([buttons])
+    )
     return C_CONFIRM
 
 async def confirm_customer(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    customer_name = context.user_data.get('customer_name')
-    customer_currency = context.user_data.get('customer_currency')
-    secure_db.insert('customers', {'name': customer_name, 'currency': customer_currency})
-    await update.message.reply_text(f"Customer {customer_name} with currency {customer_currency} added.")
+    if update.callback_query.data == 'confirm_cust':
+        name = context.user_data['customer_name']
+        cur  = context.user_data['customer_currency']
+        secure_db.insert('customers', {
+            'name': name,
+            'currency': cur,
+            'created_at': datetime.utcnow().isoformat()
+        })
+        await update.callback_query.edit_message_text(f"✅ Added customer '{name}' ({cur}).")
+    else:
+        await update.callback_query.edit_message_text("❌ Cancelled.")
     return ConversationHandler.END
 
 async def edit_customer(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Placeholder for the edit logic
+    # Placeholder: list customers to select for editing
     await update.message.reply_text("Enter the name of the customer to edit.")
     return C_SEL_EDIT
 
 async def select_edit_customer(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Handle customer selection for editing
-    await update.message.reply_text("Select a field to edit.")
-    return C_NEW_NAME
+    # Placeholder for selecting and editing
+    await update.callback_query.edit_message_text("Feature coming soon.")
+    return ConversationHandler.END
 
 async def new_customer_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    new_name = update.message.text
-    context.user_data['new_name'] = new_name
-    await update.message.reply_text(f"New name is {new_name}. Now enter the new currency.")
-    return C_NEW_CUR
+    # Placeholder
+    return ConversationHandler.END
 
 async def new_customer_currency(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    new_currency = update.message.text
-    context.user_data['new_currency'] = new_currency
-    await update.message.reply_text(f"New currency is {new_currency}. Confirm to update?")
-    return C_CONFIRM_EDIT
+    # Placeholder
+    return ConversationHandler.END
 
 async def confirm_edit_customer(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Confirm customer update
-    new_name = context.user_data.get('new_name')
-    new_currency = context.user_data.get('new_currency')
-    # Logic to update customer in database
-    await update.message.reply_text(f"Customer updated to {new_name} with currency {new_currency}.")
+    # Placeholder
     return ConversationHandler.END
 
 async def remove_customer(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -107,24 +109,28 @@ async def remove_customer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return C_SEL_REMOVE
 
 async def select_remove_customer(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Handle customer removal selection
-    await update.message.reply_text("Are you sure you want to remove this customer?")
+    # Placeholder
+    await update.callback_query.edit_message_text("Are you sure you want to remove this customer?")
     return C_CONFIRM_REMOVE
 
 async def confirm_remove_customer(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Logic to remove customer from database
-    await update.message.reply_text("Customer removed.")
+    if update.callback_query.data == 'confirm_remove':
+        # Placeholder for deletion logic
+        await update.callback_query.edit_message_text("✅ Customer removed.")
+    else:
+        await update.callback_query.edit_message_text("❌ Cancelled.")
     return ConversationHandler.END
 
 async def view_customer(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Select the customer to view.")
+    # Placeholder: show list of customers
+    await update.message.reply_text("Select a customer to view.")
     return C_SEL_VIEW
 
 async def view_customer_details(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Display customer details
-    await update.message.reply_text("Displaying customer details.")
+    # Placeholder for details display
+    await update.callback_query.edit_message_text("Customer details here.")
     return ConversationHandler.END
 
 async def cancel_customer(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Customer action cancelled.")
+    await update.message.reply_text("Action cancelled.")
     return ConversationHandler.END
