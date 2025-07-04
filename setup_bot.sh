@@ -12,7 +12,7 @@ cd "\$PROJECT_DIR"
 
 # 3. Clone your repo (or pull latest)
 if [ ! -d ".git" ]; then
-  git clone https://github.com/<your-username>/<your-repo>.git .
+  git clone https://github.com/py-dev-man82/Accts.git .
 else
   git pull origin main
 fi
