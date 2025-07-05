@@ -1,41 +1,37 @@
 #!/usr/bin/env bash
 set -e
 
------------------------------
+# -----------------------------
+# run_tests.sh
+# -----------------------------
+# Discovers and runs pytest suite, logs output to test_report.txt
 
-run_tests.sh
+# 1) Determine project root (parent of this script's directory)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$PROJECT_ROOT"
 
------------------------------
+# 2) Ensure tests directory exists
+if [[ ! -d "tests" ]]; then
+  echo "ERROR: tests/ directory not found in $PROJECT_ROOT"
+  exit 1
+fi
 
-Discovers and runs pytest suite, logs output to test_report.txt
-
-1) Determine project root (parent of this script's directory)
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)" cd "$PROJECT_ROOT"
-
-2) Ensure tests directory exists
-
-if [[ ! -d "tests" ]]; then echo "ERROR: tests/ directory not found in $PROJECT_ROOT" exit 1 fi
-
-3) Activate virtualenv if present
-
+# 3) Activate virtualenv
 if [[ -f "venv/bin/activate" ]]; then
+  source venv/bin/activate
+else
+  echo "WARNING: virtualenv not found, proceeding without venv"
+fi
 
-shellcheck disable=SC1091
+# 4) Install pytest if missing
+pip install pytest pytest-asyncio --quiet
 
-source venv/bin/activate else echo "WARNING: venv not found at $PROJECT_ROOT/venv, proceeding without activation" fi
+# 5) Run pytest and redirect output
+REPORT="test_report.txt"
+echo "=== TEST RUN START: $(date) ===" > "$REPORT"
+pytest -q --disable-warnings --maxfail=1 >> "$REPORT" 2>&1 || true
+echo "" >> "$REPORT"
+echo "=== TEST RUN END: $(date) ===" >> "$REPORT"
 
-4) Ensure pytest is installed
-
-pip install --upgrade pip pip install pytest pytest-asyncio
-
-5) Run pytest and capture output
-
-REPORT="$PROJECT_ROOT/test_report.txt" echo "=== TEST RUN START: $(date) ===" > "$REPORT" pytest -q --disable-warnings --maxfail=1 >> "$REPORT" 2>&1 || true
-
-echo "" >> "$REPORT" echo "=== TEST RUN END: $(date) ===" >> "$REPORT"
-
-6) Summary
-
-echo "Test execution finished. See $REPORT for details."
-
+echo "✅ Tests complete. Results in $REPORT"
