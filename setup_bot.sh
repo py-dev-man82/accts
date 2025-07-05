@@ -4,7 +4,7 @@ set -e
 # 1) Install system packages
 echo "Installing system packages…"
 sudo apt update && sudo apt upgrade -y
-sudo apt install -y python3 python3-venv python3-pip build-essential git
+sudo apt install -y python3 python3-venv python3-pip build-essential git vim
 
 # 2) Define and cd into PROJECT_DIR (~/accts)
 PROJECT_DIR="$HOME/accts"
@@ -47,13 +47,8 @@ if [ -f "$CONFIG_FILE" ]; then
     echo "→ ADMIN_TELEGRAM_ID unchanged"
   fi
 
-  read -p "Enter DB_PASSPHRASE (leave blank to keep existing): " DB_PASS
-  if [ -n "$DB_PASS" ]; then
-    sed -i "s|^DB_PASSPHRASE.*|DB_PASSPHRASE     = \"${DB_PASS}\"|" "$CONFIG_FILE"
-    echo "→ DB_PASSPHRASE updated"
-  else
-    echo "→ DB_PASSPHRASE unchanged"
-  fi
+  # NOTE: DB_PASSPHRASE is now entered at runtime via /unlock, not stored in config.py
+
 else
   echo "⚠️  $CONFIG_FILE not found—skipping configuration"
 fi
@@ -105,7 +100,7 @@ After=network.target
 [Service]
 User=$USER
 WorkingDirectory=$PROJECT_DIR
-ExecStart=$VPN ? $PROJECT_DIR/venv/bin/python $PROJECT_DIR/bot.py
+ExecStart=$PROJECT_DIR/venv/bin/python $PROJECT_DIR/bot.py
 Restart=always
 RestartSec=10
 Environment=PYTHONUNBUFFERED=1
