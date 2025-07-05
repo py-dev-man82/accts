@@ -13,10 +13,10 @@ from cryptography.hazmat.backends import default_backend
 
 import config
 
-# Auto-lock after inactivity (seconds)
+# Seconds of inactivity before auto-lock
 UNLOCK_TIMEOUT = 300
 
-# 16-byte salt in ASCII-escaped form
+# 16-byte salt literal (ASCII-escaped)
 KDF_SALT = b'\x9f\x8a\x17\xa4\x01\xbb\xcd\x23\x45\x67\x89\xab\xcd\xef\x01\x23'
 
 class EncryptedJSONStorage(JSONStorage):
@@ -25,15 +25,20 @@ class EncryptedJSONStorage(JSONStorage):
         self.fernet = fernet
 
     def read(self):
-        with open(self._handle, 'rb') as f:
-            token = f.read()
-        if not token:
+        try:
+            with open(self._handle, 'rb') as f:
+                token = f.read()
+            if not token:
+                return {}
+            data = self.fernet.decrypt(token)
+            return json.loads(data.decode('utf-8'))
+        except FileNotFoundError:
             return {}
-        data = self.fernet.decrypt(token)
-        return json.loads(data.decode('utf-8'))
+        except Exception:
+            return {}
 
     def write(self, data):
-        raw = json.dumps(data).encode('utf-8')
+        raw   = json.dumps(data).encode('utf-8')
         token = self.fernet.encrypt(raw)
         with open(self._handle, 'wb') as f:
             f.write(token)
@@ -47,7 +52,7 @@ class SecureDB:
         self._lock       = threading.Lock()
         self._timer      = None
 
-        # Test mode: open plain DB immediately
+        # --- Test mode: open unencrypted at import time ---
         if not config.ENABLE_ENCRYPTION:
             self.db = TinyDB(self.db_path, storage=JSONStorage)
 
@@ -63,9 +68,8 @@ class SecureDB:
         return Fernet(key)
 
     def unlock(self, passphrase: str):
+        # No-op in test mode
         if not config.ENABLE_ENCRYPTION:
-            # No-op in test mode
-            self.db = TinyDB(self.db_path, storage=JSONStorage)
             return
 
         with self._lock:
@@ -85,9 +89,10 @@ class SecureDB:
         self._timer.start()
 
     def lock(self):
+        # No-op in test mode
         if not config.ENABLE_ENCRYPTION:
-            # No-op in test mode
             return
+
         with self._lock:
             if self.db:
                 self.db.close()
@@ -96,31 +101,39 @@ class SecureDB:
             self._passphrase = None
 
     def ensure_unlocked(self):
+        # Skip in test mode
         if not config.ENABLE_ENCRYPTION:
             return
-        if self.db is None:
+
+        # Production: enforce lock
+        if not self.db:
             raise RuntimeError("🔒 Database is locked. Use /unlock <passphrase> first.")
         self._reset_timer()
 
+    # All CRUD methods call ensure_unlocked(), but it’s a no-op if encryption disabled.
     def table(self, name):
-        # No ensure here to simplify
+        self.ensure_unlocked()
         return self.db.table(name)
 
     def all(self, table_name):
+        self.ensure_unlocked()
         return self.db.table(table_name).all()
 
     def insert(self, table_name, doc):
+        self.ensure_unlocked()
         return self.db.table(table_name).insert(doc)
 
     def search(self, table_name, query):
+        self.ensure_unlocked()
         return self.db.table(table_name).search(query)
 
     def update(self, table_name, fields, doc_ids):
+        self.ensure_unlocked()
         self.db.table(table_name).update(fields, doc_ids=doc_ids)
 
     def remove(self, table_name, doc_ids):
+        self.ensure_unlocked()
         self.db.table(table_name).remove(doc_ids=doc_ids)
 
-# Single shared instance
-enable = config.ENABLE_ENCRYPTION
+# Global instance—`self.db` is set immediately if testing mode
 secure_db = SecureDB(config.DB_PATH)
