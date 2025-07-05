@@ -16,10 +16,11 @@ import config
 # Auto-lock after this many seconds of inactivity
 UNLOCK_TIMEOUT = 300
 
-# Your 16-byte salt, in ASCII-escaped \xNN form:
+# 16-byte salt for key derivation (use your generated salt here)
 KDF_SALT = b'\x9f\x8a\x17\xa4\x01\xbb\xcd\x23\x45\x67\x89\xab\xcd\xef\x01\x23'
 
 class EncryptedJSONStorage(JSONStorage):
+    """TinyDB storage that encrypts/decrypts the JSON blob via Fernet."""
     def __init__(self, path, fernet: Fernet, **kwargs):
         super().__init__(path, **kwargs)
         self.fernet = fernet
@@ -44,6 +45,7 @@ class EncryptedJSONStorage(JSONStorage):
             f.write(token)
 
 class SecureDB:
+    """Encrypted TinyDB wrapper with optional encryption toggle."""
     def __init__(self, db_path):
         self.db_path     = db_path
         self._passphrase = None
@@ -51,7 +53,7 @@ class SecureDB:
         self.db          = None
         self._lock       = threading.Lock()
         self._timer      = None
-        # starts locked
+        # starts locked or plain based on ENABLE_ENCRYPTION
 
     def _derive_fernet(self):
         kdf = PBKDF2HMAC(
@@ -64,11 +66,20 @@ class SecureDB:
         key = base64.urlsafe_b64encode(kdf.derive(self._passphrase))
         return Fernet(key)
 
-    def unlock(self, passphrase: str):
+    def unlock(self, passphrase: str = None):
+        """Unlock or open the database. Passphrase required if encryption is enabled."""
+        if not config.ENABLE_ENCRYPTION:
+            # Plain JSON storage for testing
+            self.db = TinyDB(self.db_path, storage=JSONStorage)
+            return
+
+        # Encrypted path
+        if passphrase is None:
+            raise ValueError("Passphrase is required to unlock encrypted DB.")
         with self._lock:
             self._passphrase = passphrase.encode('utf-8')
             self.fernet      = self._derive_fernet()
-            self.db = TinyDB(
+            self.db          = TinyDB(
                 self.db_path,
                 storage=lambda p: EncryptedJSONStorage(p, self.fernet)
             )
@@ -82,6 +93,9 @@ class SecureDB:
         self._timer.start()
 
     def lock(self):
+        """Close and re-lock the database (no-op in testing mode)."""
+        if not config.ENABLE_ENCRYPTION:
+            return
         with self._lock:
             if self.db:
                 self.db.close()
@@ -90,6 +104,7 @@ class SecureDB:
             self._passphrase = None
 
     def ensure_unlocked(self):
+        """Raise if DB is not unlocked."""
         if not self.db:
             raise RuntimeError("🔒 Database is locked. Use /unlock <passphrase> first.")
         self._reset_timer()
@@ -113,5 +128,5 @@ class SecureDB:
     def remove(self, table_name, doc_ids):
         self.table(table_name).remove(doc_ids=doc_ids)
 
-# Global instance, initially locked
+# Global instance
 secure_db = SecureDB(config.DB_PATH)
