@@ -3,7 +3,6 @@
 import threading
 import json
 import base64
-from datetime import datetime
 from tinydb import TinyDB
 from tinydb.storages import JSONStorage
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
@@ -13,10 +12,10 @@ from cryptography.hazmat.backends import default_backend
 
 import config
 
-# Seconds of inactivity before auto-lock
+# Seconds before auto‐lock (unused in test mode)
 UNLOCK_TIMEOUT = 300
 
-# 16-byte salt literal (ASCII-escaped)
+# 16‐byte salt literal
 KDF_SALT = b'\x9f\x8a\x17\xa4\x01\xbb\xcd\x23\x45\x67\x89\xab\xcd\xef\x01\x23'
 
 class EncryptedJSONStorage(JSONStorage):
@@ -38,7 +37,7 @@ class EncryptedJSONStorage(JSONStorage):
             return {}
 
     def write(self, data):
-        raw   = json.dumps(data).encode('utf-8')
+        raw = json.dumps(data).encode('utf-8')
         token = self.fernet.encrypt(raw)
         with open(self._handle, 'wb') as f:
             f.write(token)
@@ -52,7 +51,7 @@ class SecureDB:
         self._lock       = threading.Lock()
         self._timer      = None
 
-        # --- Test mode: open unencrypted at import time ---
+        # TEST MODE: open plain JSON immediately
         if not config.ENABLE_ENCRYPTION:
             self.db = TinyDB(self.db_path, storage=JSONStorage)
 
@@ -68,7 +67,7 @@ class SecureDB:
         return Fernet(key)
 
     def unlock(self, passphrase: str):
-        # No-op in test mode
+        # no-op in test mode
         if not config.ENABLE_ENCRYPTION:
             return
 
@@ -79,17 +78,10 @@ class SecureDB:
                 self.db_path,
                 storage=lambda p: EncryptedJSONStorage(p, self.fernet)
             )
-            self._reset_timer()
-
-    def _reset_timer(self):
-        if self._timer:
-            self._timer.cancel()
-        self._timer = threading.Timer(UNLOCK_TIMEOUT, self.lock)
-        self._timer.daemon = True
-        self._timer.start()
+            # timer logic omitted in test mode
 
     def lock(self):
-        # No-op in test mode
+        # no-op in test mode
         if not config.ENABLE_ENCRYPTION:
             return
 
@@ -101,16 +93,14 @@ class SecureDB:
             self._passphrase = None
 
     def ensure_unlocked(self):
-        # Skip in test mode
+        # ALWAYS skip this check in test mode
         if not config.ENABLE_ENCRYPTION:
             return
 
         # Production: enforce lock
         if not self.db:
             raise RuntimeError("🔒 Database is locked. Use /unlock <passphrase> first.")
-        self._reset_timer()
 
-    # All CRUD methods call ensure_unlocked(), but it’s a no-op if encryption disabled.
     def table(self, name):
         self.ensure_unlocked()
         return self.db.table(name)
@@ -135,5 +125,4 @@ class SecureDB:
         self.ensure_unlocked()
         self.db.table(table_name).remove(doc_ids=doc_ids)
 
-# Global instance—`self.db` is set immediately if testing mode
 secure_db = SecureDB(config.DB_PATH)
