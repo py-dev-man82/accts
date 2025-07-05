@@ -8,3 +8,10 @@ ADMIN_TELEGRAM_ID = 7826749230
 
 # Path to the encrypted TinyDB file
 DB_PATH           = "data/db.json" 
+
+
+
+
+# During development/testing, set this to False
+# in production set back to True
+ENABLE_ENCRYPTION = False
