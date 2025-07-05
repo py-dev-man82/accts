@@ -11,86 +11,79 @@ from telegram.ext import (
 )
 from datetime import datetime
 from tinydb import Query
-from bot import require_unlock
+
+from utils import require_unlock
 from secure_db import secure_db
 
 # State constants for the customer flow
-(
-    C_NAME,
-    C_CUR,
-    C_CONFIRM
-) = range(3)
+(C_NAME, C_CUR, C_CONFIRM) = range(3)
 
-# Entry point: starts when /add_customer or corresponding button pressed
 @require_unlock
 async def add_customer(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Acknowledge callback if from button
+    # Entry point via /add_customer or button
     if update.callback_query:
         await update.callback_query.answer()
-    await update.message.reply_text(
-        "Enter new customer name:"
-    )
+        await update.callback_query.edit_message_text("Enter new customer name:")
+    else:
+        await update.message.reply_text("Enter new customer name:")
     return C_NAME
 
-# Collect customer name
 async def get_customer_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data['customer_name'] = update.message.text.strip()
+    name = update.message.text.strip()
+    context.user_data['customer_name'] = name
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("USD", callback_data="cur_USD"),
+         InlineKeyboardButton("EUR", callback_data="cur_EUR")]
+    ])
     await update.message.reply_text(
-        f"Name: {context.user_data['customer_name']}\nEnter currency code (e.g. USD):"
+        f"Name: {name}\nSelect currency:", reply_markup=kb
     )
     return C_CUR
 
-# Collect currency
 async def get_customer_currency(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data['customer_currency'] = update.message.text.strip().upper()
+    await update.callback_query.answer()
+    currency = update.callback_query.data.split("_")[1]
+    context.user_data['customer_currency'] = currency
     kb = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("✅ Yes", callback_data="customer_yes"),
-            InlineKeyboardButton("❌ No", callback_data="customer_no")
-        ]
+        [InlineKeyboardButton("✅ Yes", callback_data="cust_yes"),
+         InlineKeyboardButton("❌ No",  callback_data="cust_no")]
     ])
-    await update.message.reply_text(
-        f"Customer: {context.user_data['customer_name']} ({context.user_data['customer_currency']})\nSave this customer?",
+    await update.callback_query.edit_message_text(
+        f"Name: {context.user_data['customer_name']}\n"
+        f"Currency: {currency}\nSave?",
         reply_markup=kb
     )
     return C_CONFIRM
 
-# Confirmation callback
 @require_unlock
 async def confirm_customer(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    if query.data == 'customer_yes':
+    await update.callback_query.answer()
+    if update.callback_query.data == 'cust_yes':
         secure_db.insert('customers', {
             'name': context.user_data['customer_name'],
             'currency': context.user_data['customer_currency'],
             'created_at': datetime.utcnow().isoformat()
         })
-        await query.edit_message_text(
+        await update.callback_query.edit_message_text(
             f"✅ Customer '{context.user_data['customer_name']}' added."
         )
     else:
-        await query.edit_message_text("❌ Add customer cancelled.")
+        await update.callback_query.edit_message_text("❌ Add cancelled.")
     return ConversationHandler.END
 
-# Fallback/cancel handler
-async def cancel_customer(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Operation cancelled.")
-    return ConversationHandler.END
 
-# Register this conversation flow on the Application
 def register_customer_handlers(app):
-    customer_conv = ConversationHandler(
+    conv = ConversationHandler(
         entry_points=[
             CommandHandler("add_customer", add_customer),
             CallbackQueryHandler(add_customer, pattern="^add_customer$")
         ],
         states={
-            C_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_customer_name)],
-            C_CUR: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_customer_currency)],
-            C_CONFIRM: [CallbackQueryHandler(confirm_customer, pattern="^customer_(yes|no)$")]
+            C_NAME:    [MessageHandler(filters.TEXT & ~filters.COMMAND, get_customer_name)],
+            C_CUR:     [CallbackQueryHandler(get_customer_currency, pattern="^cur_")],
+            C_CONFIRM: [CallbackQueryHandler(confirm_customer, pattern="^cust_")]
         },
-        fallbacks=[CommandHandler("cancel", cancel_customer)],
+        fallbacks=[CommandHandler("cancel", confirm_customer)],
         per_message=False
     )
-    app.add_handler(customer_conv)
+    app.add_handler(conv)
