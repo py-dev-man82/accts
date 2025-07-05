@@ -16,12 +16,10 @@ import config
 # Auto-lock after this many seconds of inactivity
 UNLOCK_TIMEOUT = 300
 
-# --- Replace this placeholder with your generated 16-byte salt (ASCII-escaped) ---
-KDF_SALT = b'\x12\x34\x56\x78\x9a\xbc\xde\xf0\x12\x34\x56\x78\x9a\xbc\xde\xf0'
-# ------------------------------------------------------------------------------
+# Your 16-byte salt, in ASCII-escaped \xNN form:
+KDF_SALT = b'\x9f\x8a\x17\xa4\x01\xbb\xcd\x23\x45\x67\x89\xab\xcd\xef\x01\x23'
 
 class EncryptedJSONStorage(JSONStorage):
-    """TinyDB storage that encrypts/decrypts the JSON blob via Fernet."""
     def __init__(self, path, fernet: Fernet, **kwargs):
         super().__init__(path, **kwargs)
         self.fernet = fernet
@@ -46,17 +44,16 @@ class EncryptedJSONStorage(JSONStorage):
             f.write(token)
 
 class SecureDB:
-    """Encrypted TinyDB wrapper with auto-lock/unlock."""
-    def __init__(self, db_path, passphrase: str):
-        self.db_path = db_path
-        self.passphrase = passphrase.encode('utf-8')
-        self.fernet = None
-        self.db = None
-        self._lock = threading.Lock()
-        self._timer = None
-        self.unlock()
+    def __init__(self, db_path):
+        self.db_path     = db_path
+        self._passphrase = None
+        self.fernet      = None
+        self.db          = None
+        self._lock       = threading.Lock()
+        self._timer      = None
+        # starts locked
 
-    def _derive_key(self):
+    def _derive_fernet(self):
         kdf = PBKDF2HMAC(
             algorithm=hashes.SHA256(),
             length=32,
@@ -64,14 +61,17 @@ class SecureDB:
             iterations=200_000,
             backend=default_backend()
         )
-        key = base64.urlsafe_b64encode(kdf.derive(self.passphrase))
+        key = base64.urlsafe_b64encode(kdf.derive(self._passphrase))
         return Fernet(key)
 
-    def unlock(self):
+    def unlock(self, passphrase: str):
         with self._lock:
-            self.fernet = self._derive_key()
-            self.db = TinyDB(self.db_path,
-                             storage=lambda p: EncryptedJSONStorage(p, self.fernet))
+            self._passphrase = passphrase.encode('utf-8')
+            self.fernet      = self._derive_fernet()
+            self.db = TinyDB(
+                self.db_path,
+                storage=lambda p: EncryptedJSONStorage(p, self.fernet)
+            )
             self._reset_timer()
 
     def _reset_timer(self):
@@ -85,12 +85,13 @@ class SecureDB:
         with self._lock:
             if self.db:
                 self.db.close()
-            self.db = None
-            self.fernet = None
+            self.db          = None
+            self.fernet      = None
+            self._passphrase = None
 
     def ensure_unlocked(self):
         if not self.db:
-            raise RuntimeError("🔒 Database is locked. Use /unlock first.")
+            raise RuntimeError("🔒 Database is locked. Use /unlock <passphrase> first.")
         self._reset_timer()
 
     def table(self, name):
@@ -112,5 +113,5 @@ class SecureDB:
     def remove(self, table_name, doc_ids):
         self.table(table_name).remove(doc_ids=doc_ids)
 
-# Global instance for import in handlers
-secure_db = SecureDB(config.DB_PATH, config.DB_PASSPHRASE)
+# Global instance, initially locked
+secure_db = SecureDB(config.DB_PATH)
