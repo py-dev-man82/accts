@@ -16,7 +16,7 @@ import config
 # Auto-lock after this many seconds of inactivity
 UNLOCK_TIMEOUT = 300
 
-# Your 16-byte salt, in ASCII-escaped \xNN form
+# 16-byte salt, in ASCII-escaped form
 KDF_SALT = b'\x9f\x8a\x17\xa4\x01\xbb\xcd\x23\x45\x67\x89\xab\xcd\xef\x01\x23'
 
 class EncryptedJSONStorage(JSONStorage):
@@ -52,7 +52,7 @@ class SecureDB:
         self._lock       = threading.Lock()
         self._timer      = None
 
-        # If encryption is disabled, open immediately with plain JSONStorage
+        # If encryption disabled, open immediately with plain JSONStorage
         if not config.ENABLE_ENCRYPTION:
             self.db = TinyDB(self.db_path, storage=JSONStorage)
 
@@ -69,7 +69,7 @@ class SecureDB:
 
     def unlock(self, passphrase: str):
         if not config.ENABLE_ENCRYPTION:
-            # no-op in test mode
+            # No-op in test mode
             return
 
         with self._lock:
@@ -90,7 +90,7 @@ class SecureDB:
 
     def lock(self):
         if not config.ENABLE_ENCRYPTION:
-            # no-op in test mode
+            # No-op in test mode
             return
 
         with self._lock:
@@ -101,6 +101,11 @@ class SecureDB:
             self._passphrase = None
 
     def ensure_unlocked(self):
+        # **Always** skip this check in test mode
+        if not config.ENABLE_ENCRYPTION:
+            return
+
+        # In production, enforce it
         if not self.db:
             raise RuntimeError("🔒 Database is locked. Use /unlock <passphrase> first.")
         self._reset_timer()
@@ -110,19 +115,24 @@ class SecureDB:
         return self.db.table(name)
 
     def all(self, table_name):
-        return self.table(table_name).all()
+        self.ensure_unlocked()
+        return self.db.table(table_name).all()
 
     def insert(self, table_name, doc):
-        return self.table(table_name).insert(doc)
+        self.ensure_unlocked()
+        return self.db.table(table_name).insert(doc)
 
     def search(self, table_name, query):
-        return self.table(table_name).search(query)
+        self.ensure_unlocked()
+        return self.db.table(table_name).search(query)
 
     def update(self, table_name, fields, doc_ids):
-        self.table(table_name).update(fields, doc_ids=doc_ids)
+        self.ensure_unlocked()
+        self.db.table(table_name).update(fields, doc_ids=doc_ids)
 
     def remove(self, table_name, doc_ids):
-        self.table(table_name).remove(doc_ids=doc_ids)
+        self.ensure_unlocked()
+        self.db.table(table_name).remove(doc_ids=doc_ids)
 
-# Global instance, opened (or locked) at import
+# Global instance
 secure_db = SecureDB(config.DB_PATH)
