@@ -1,6 +1,10 @@
 # config.py
 
-BOT_TOKEN        = "8Dx6u-HK-4U"
-ADMIN_TELEGRAM_ID = 7826230            # your Telegram user ID
-DB_PATH          = "data/db.json"
-DB_PASSPHRASE    = "YourSecurePassphrase"
+# Your Telegram bot token
+BOT_TOKEN         = "<YOUR_BOT_TOKEN_HERE>"
+
+# Your own Telegram user ID (for admin-only access)
+ADMIN_TELEGRAM_ID = 123456789
+
+# Path to the encrypted TinyDB file
+DB_PATH           = "data/db.json" 
