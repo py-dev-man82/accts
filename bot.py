@@ -19,7 +19,7 @@ from handlers.partners   import register_partner_handlers, show_partner_menu
 from handlers.sales      import register_sales_handlers
 from handlers.payments   import register_payment_handlers, show_payment_menu
 from handlers.payouts    import register_payout_handlers, show_payout_menu
-# from handlers.stockin    import register_stockin_handlers, show_stockin_menu
+from handlers.stockin    import register_stockin_handlers, show_stockin_menu
 # from handlers.reports    import register_report_handlers, show_report_menu
 # from handlers.export_excel import register_export_excel_handlers
 # from handlers.export_pdf   import register_export_pdf_handlers
@@ -32,6 +32,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
          InlineKeyboardButton("Sales",     callback_data="sales_menu")],
         [InlineKeyboardButton("Payments",  callback_data="payment_menu"),
          InlineKeyboardButton("Payouts",   callback_data="payout_menu")],
+        [InlineKeyboardButton("Stock-In",  callback_data="stockin_menu")],
     ])
     if update.callback_query:
         await update.callback_query.answer()
@@ -54,14 +55,14 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(start, pattern="^main_menu$"))
 
-    # Section handlers (only up through Payouts enabled)
+    # Section handlers
     register_customer_handlers(app)
     register_store_handlers(app)
     register_partner_handlers(app)
     register_sales_handlers(app)
     register_payment_handlers(app)
     register_payout_handlers(app)
-    # register_stockin_handlers(app)
+    register_stockin_handlers(app)
     # register_report_handlers(app)
     # register_export_excel_handlers(app)
     # register_export_pdf_handlers(app)
