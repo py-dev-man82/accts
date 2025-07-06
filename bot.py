@@ -26,7 +26,7 @@ from handlers.partners  import register_partner_handlers,  show_partner_menu
 from handlers.sales     import register_sales_handlers,   show_sales_menu
 
 # Uncomment additional handlers as they become active
-# from handlers.payments     import register_payment_handlers,   show_payment_menu
+from handlers.payments     import register_payment_handlers,   show_payment_menu
 # from handlers.payouts      import register_payout_handlers,    show_payout_menu
 # from handlers.stockin      import register_stockin_handlers,  show_stockin_menu
 # from handlers.reports      import register_reports_handlers,  show_report_menu
@@ -113,7 +113,7 @@ def main():
 
     # Uncomment when ready:
     # app.add_handler(CallbackQueryHandler(show_payment_menu, pattern="^payment_menu$"))
-    # register_payment_handlers(app)
+    register_payment_handlers(app)
     # app.add_handler(CallbackQueryHandler(show_payout_menu, pattern="^payout_menu$"))
     # register_payout_handlers(app)
     # app.add_handler(CallbackQueryHandler(show_stockin_menu, pattern="^stockin_menu$"))
