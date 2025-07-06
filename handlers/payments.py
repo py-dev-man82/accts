@@ -201,6 +201,25 @@ async def confirm_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ======================================================================
+#                              VIEW FLOW
+# ======================================================================
+async def view_payments(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+    rows = secure_db.all('customer_payments')
+    if not rows:
+        text = "No payments found."
+    else:
+        lines = []
+        for r in rows:
+            cust = secure_db.table('customers').get(doc_id=r['customer_id'])
+            name = cust['name'] if cust else "Unknown"
+            lines.append(f"[{r.doc_id}] {name}: {r['local_amt']:.2f} → {r['usd_amt']:.2f} USD on {r.get('date','')} | Note: {r.get('note','')}")
+        text = "Payments:\n" + "\n".join(lines)
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="payment_menu")]])
+    await update.callback_query.edit_message_text(text, reply_markup=kb)
+
+
+# ======================================================================
 #                              EDIT FLOW
 # ======================================================================
 @require_unlock
@@ -286,7 +305,7 @@ def register_payment_handlers(app):
             P_CONFIRM:      [CallbackQueryHandler(confirm_payment, pattern="^pay_conf_")],
         },
         fallbacks=[CommandHandler("cancel", show_payment_menu)],
-        per_message=False
+        per_message=True
     )
     app.add_handler(add_conv)
 
@@ -312,7 +331,7 @@ def register_payment_handlers(app):
             P_EDIT_CONFIRM:     [CallbackQueryHandler(confirm_edit_payment, pattern="^pay_edit_conf_")],
         },
         fallbacks=[CommandHandler("cancel", show_payment_menu)],
-        per_message=False
+        per_message=True
     )
     app.add_handler(edit_conv)
 
@@ -328,6 +347,6 @@ def register_payment_handlers(app):
             P_DELETE_CONFIRM:     [CallbackQueryHandler(confirm_delete_payment, pattern="^pay_del_")],
         },
         fallbacks=[CommandHandler("cancel", show_payment_menu)],
-        per_message=False
+        per_message=True
     )
     app.add_handler(del_conv)
