@@ -180,13 +180,14 @@ async def confirm_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
     d = context.user_data
+    fee_amt = d['local_amt'] * d['fee_perc'] / 100  # ✅ Compute fee_amt here
     rec = {
         'customer_id': d['customer_id'],
         'local_amt':   d['local_amt'],
         'fee_perc':    d['fee_perc'],
-        'fee_amt':     d['local_amt'] * d['fee_perc'] / 100,
+        'fee_amt':     fee_amt,
         'usd_amt':     d['usd_amt'],
-        'fx_rate':     (d['local_amt'] - d['fee_amt']) / d['usd_amt'] if d['usd_amt'] else 0,
+        'fx_rate':     (d['local_amt'] - fee_amt) / d['usd_amt'] if d['usd_amt'] else 0,
         'note':        d['note'],
         'date':        d['date'],
         'timestamp':   datetime.utcnow().isoformat()
@@ -219,7 +220,7 @@ async def view_payments(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ======================================================================
-#                     START EDIT FLOW (Missing Function)
+#                     START EDIT FLOW
 # ======================================================================
 @require_unlock
 async def start_edit_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -253,6 +254,7 @@ async def list_user_payments_for_edit(update: Update, context: ContextTypes.DEFA
     kb = InlineKeyboardMarkup([buttons[i:i+2] for i in range(0, len(buttons), 2)])
     await update.callback_query.edit_message_text("Select payment:", reply_markup=kb)
     return P_EDIT_SELECT
+
 
 # ======================================================================
 #                              EDIT FLOW (continued)
@@ -370,14 +372,15 @@ async def confirm_edit_payment(update: Update, context: ContextTypes.DEFAULT_TYP
         return ConversationHandler.END
 
     d = context.user_data
+    fee_amt = d['local_amt'] * d['fee_perc'] / 100  # ✅ Compute fee_amt here
     rec_id = context.user_data['edit_payment']['doc_id']
     updated = {
         'customer_id': d['customer_id'],
         'local_amt':   d['local_amt'],
         'fee_perc':    d['fee_perc'],
-        'fee_amt':     d['local_amt'] * d['fee_perc'] / 100,
+        'fee_amt':     fee_amt,
         'usd_amt':     d['usd_amt'],
-        'fx_rate':     (d['local_amt'] - d['fee_amt']) / d['usd_amt'] if d['usd_amt'] else 0,
+        'fx_rate':     (d['local_amt'] - fee_amt) / d['usd_amt'] if d['usd_amt'] else 0,
         'note':        d['note'],
         'date':        d['date'],
     }
