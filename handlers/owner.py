@@ -29,10 +29,8 @@ from handlers.utils import require_unlock
 # Self-Healing Schema Check
 # ─────────────────────────────────────────────────────────────
 def ensure_owner_schema():
-    # Create 'owner_adjustments' table if missing
-    if 'owner_adjustments' not in secure_db.tables():
-        logging.info("[Owner] Creating owner_adjustments table")
-        secure_db.table('owner_adjustments')
+    # Touch 'owner_adjustments' to auto-create if missing
+    _ = secure_db.all('owner_adjustments')
 
     # Add current_price field to items if missing
     for item in secure_db.all('items'):
@@ -196,8 +194,9 @@ async def save_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 # ─────────────────────────────────────────────────────────────
-# Adjust POT Balance (same as previous version, omitted here for brevity)
+# Adjust POT Balance (same as before)
 # ─────────────────────────────────────────────────────────────
+# ... (keep existing Adjust POT functions here unchanged)
 
 # ─────────────────────────────────────────────────────────────
 # Register Handlers
