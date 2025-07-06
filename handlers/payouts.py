@@ -37,32 +37,27 @@ from secure_db import secure_db
     P_DELETE_CONFIRM,
 ) = range(18)
 
-
 # --- Payouts Submenu ---
 async def show_payout_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logging.info("Showing payout submenu")
     await update.callback_query.answer()
     kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("➕ Add Payout",    callback_data="add_payout")],
+        [InlineKeyboardButton("➕ Add Payout", callback_data="add_payout")],
         [InlineKeyboardButton("👀 View Payouts", callback_data="view_payout")],
-        [InlineKeyboardButton("✏️ Edit Payout",  callback_data="edit_payout")],
-        [InlineKeyboardButton("🗑️ Remove Payout",callback_data="delete_payout")],
-        [InlineKeyboardButton("🔙 Main Menu",    callback_data="main_menu")],
+        [InlineKeyboardButton("✏️ Edit Payout", callback_data="edit_payout")],
+        [InlineKeyboardButton("🗑️ Remove Payout", callback_data="delete_payout")],
+        [InlineKeyboardButton("🔙 Main Menu", callback_data="main_menu")],
     ])
     await update.callback_query.edit_message_text(
         "Payouts: choose an action", reply_markup=kb
     )
-
 
 # --- Add Payout Flow ---
 @require_unlock
 async def add_payout(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     partners = secure_db.all('partners')
-    buttons = [
-        InlineKeyboardButton(p['name'], callback_data=f"pout_{p.doc_id}")
-        for p in partners
-    ]
+    buttons = [InlineKeyboardButton(p['name'], callback_data=f"pout_{p.doc_id}") for p in partners]
     kb = InlineKeyboardMarkup([buttons[i:i+2] for i in range(0, len(buttons), 2)])
     await update.callback_query.edit_message_text(
         "Select a partner for payout:", reply_markup=kb
@@ -123,7 +118,7 @@ async def get_payout_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         data['note'] = update.message.text.strip()
     today = datetime.now().strftime('%d%m%Y')
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton("📅 Skip date", callback_data="date_skip")]])
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton('📅 Skip date', callback_data='date_skip')]])
     prompt = f"Enter payout date DDMMYYYY or press Skip for today ({today}):"
     if update.callback_query:
         await update.callback_query.edit_message_text(prompt, reply_markup=kb)
@@ -160,7 +155,7 @@ async def get_payout_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("✅ Confirm", callback_data="pout_conf_yes"),
-         InlineKeyboardButton("❌ Cancel",  callback_data="pout_conf_no")]
+         InlineKeyboardButton("❌ Cancel", callback_data="pout_conf_no")]
     ])
     await update.callback_query.edit_message_text(summary, reply_markup=kb)
     return P_CONFIRM
@@ -171,8 +166,7 @@ async def confirm_payout(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.callback_query.data == 'pout_conf_yes':
         rec = context.user_data.pop('payout')
         rec.update({
-            'fx_rate': (rec['local_amt'] - rec['fee_amt']) / rec['usd_amt']
-                       if rec['usd_amt'] else 0.0,
+            'fx_rate': (rec['local_amt'] - rec['fee_amt']) / rec['usd_amt'] if rec['usd_amt'] else 0.0,
             'timestamp': datetime.utcnow().isoformat(),
         })
         secure_db.insert('partner_payouts', rec)
@@ -199,8 +193,8 @@ async def view_payouts(update: Update, context: ContextTypes.DEFAULT_TYPE):
             p = secure_db.table('partners').get(doc_id=r['partner_id'])
             name = p['name'] if p else 'Unknown'
             lines.append(
-                f"[{r.doc_id}] {name}: {r['local_amt']:.2f} -> {r['usd_amt']:.2f} USD "
-                f"(fee {r.get('fee_perc',0):.2f}%={r.get('fee_amt',0):.2f}) on {r.get('date','')}"
+                f"[{r.doc_id}] {name}: {r['local_amt']:.2f} -> {r['usd_amt']:.2f} USD"
+                f" (fee {r.get('fee_perc',0):.2f}%={r.get('fee_amt',0):.2f}) on {r.get('date','')}"
             )
         text = "Payouts:\n" + "\n".join(lines)
     await update.callback_query.edit_message_text(
@@ -216,10 +210,7 @@ async def view_payouts(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def edit_payout(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     partners = secure_db.all('partners')
-    buttons = [
-        InlineKeyboardButton(p['name'], callback_data=f"pout_edit_{p.doc_id}")
-        for p in partners
-    ]
+    buttons = [InlineKeyboardButton(p['name'], callback_data=f"pout_edit_{p.doc_id}") for p in partners]
     kb = InlineKeyboardMarkup([buttons[i:i+2] for i in range(0, len(buttons), 2)])
     await update.callback_query.edit_message_text(
         "Select partner to edit:", reply_markup=kb
@@ -230,26 +221,19 @@ async def get_edit_partner(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     pid = int(update.callback_query.data.split('_')[-1])
     context.user_data['edit'] = {'partner_id': pid}
-    rows = [
-        r for r in secure_db.all('partner_payouts')
-        if r['partner_id'] == pid
-    ]
-    buttons = [
-        InlineKeyboardButton(f"[{r.doc_id}] {r['local_amt']:.2f}",
-                             callback_data=f"pout_edit_sel_{r.doc_id}")
-        for r in rows
-    ]
+    rows = [r for r in secure_db.all('partner_payouts') if r['partner_id'] == pid]
+    buttons = [InlineKeyboardButton(f"[{r.doc_id}] {r['local_amt']:.2f}", callback_data=f"pout_edit_sel_{r.doc_id}") for r in rows]
     kb = InlineKeyboardMarkup([buttons[i:i+2] for i in range(0, len(buttons), 2)])
-    await update.callback_query.edit_message_text(
-        "Select payout record:", reply_markup=kb
-    )
+    await update.callback_query.edit_message_text("Select payout record:", reply_markup=kb)
     return P_EDIT_SELECT
 
 async def get_edit_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     did = int(update.callback_query.data.split('_')[-1])
     rec = secure_db.table('partner_payouts').get(doc_id=did)
-    context.user_data['edit'] = rec.copy()
+    e = rec.copy()
+    e['doc_id'] = did
+    context.user_data['edit'] = e
     await update.callback_query.edit_message_text("Enter new local amount:")
     return P_EDIT_LOCAL
 
@@ -271,7 +255,7 @@ async def get_edit_fee(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not (0 <= pct < 100):
             raise ValueError
     except ValueError:
-        await update.message.reply_text("Enter a fee % between 0 and 100.")
+        await update.message.reply_text("Enter a fee percentage between 0 and 100.")
         return P_EDIT_FEE
     e = context.user_data['edit']
     e['fee_perc'] = pct
@@ -287,9 +271,7 @@ async def get_edit_usd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return P_EDIT_USD
     context.user_data['edit']['usd_amt'] = usd
     kb = InlineKeyboardMarkup([[InlineKeyboardButton("➖ Skip note", callback_data="note_skip")]])
-    await update.message.reply_text(
-        "Enter an optional note or press Skip:", reply_markup=kb
-    )
+    await update.message.reply_text("Enter an optional note or press Skip:", reply_markup=kb)
     return P_EDIT_NOTE
 
 async def get_edit_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -302,10 +284,7 @@ async def get_edit_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
     today = datetime.now().strftime('%d%m%Y')
     kb = InlineKeyboardMarkup([[InlineKeyboardButton("📅 Skip date", callback_data="date_skip")]])
     prompt = f"Enter new payout date DDMMYYYY or press Skip for today ({today}):"
-    if update.callback_query:
-        await update.callback_query.edit_message_text(prompt, reply_markup=kb)
-    else:
-        await update.message.reply_text(prompt, reply_markup=kb)
+    await update.callback_query.edit_message_text(prompt, reply_markup=kb)
     return P_EDIT_DATE
 
 async def get_edit_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -335,10 +314,7 @@ async def get_edit_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Note: {e.get('note','')}\n"
         f"Date: {e['date']}"
     )
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ Save", callback_data="pout_save_yes"),
-         InlineKeyboardButton("❌ Cancel", callback_data="pout_save_no")]
-    ])
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("✅ Save", callback_data="pout_save_yes"), InlineKeyboardButton("❌ Cancel", callback_data="pout_save_no")]])
     await update.callback_query.edit_message_text(summary, reply_markup=kb)
     return P_EDIT_CONFIRM
 
@@ -347,22 +323,17 @@ async def confirm_edit_payout(update: Update, context: ContextTypes.DEFAULT_TYPE
     await update.callback_query.answer()
     e = context.user_data.get('edit')
     if not e:
-        # missing context: go back
         await show_payout_menu(update, context)
         return ConversationHandler.END
-
     if update.callback_query.data == 'pout_save_yes':
-        e['fx_rate']  = (e['local_amt'] - e['fee_amt']) / e['usd_amt'] if e['usd_amt'] else 0.0
+        e['fx_rate'] = (e['local_amt'] - e['fee_amt'])/e['usd_amt'] if e['usd_amt'] else 0.0
         secure_db.update('partner_payouts', e, [e['doc_id']])
         await update.callback_query.edit_message_text(
             f"✅ Payout {e['doc_id']} updated.",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔙 Back", callback_data="payout_menu")]
-            ])
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="payout_menu")]])
         )
     else:
         await show_payout_menu(update, context)
-
     context.user_data.pop('edit', None)
     return ConversationHandler.END
 
@@ -372,27 +343,16 @@ async def confirm_edit_payout(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def delete_payout(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     rows = secure_db.all('partner_payouts')
-    buttons = [
-        InlineKeyboardButton(f"[{r.doc_id}] {r['local_amt']:.2f}",
-                             callback_data=f"pout_del_{r.doc_id}")
-        for r in rows
-    ]
+    buttons = [InlineKeyboardButton(f"[{r.doc_id}] {r['local_amt']:.2f}", callback_data=f"pout_del_{r.doc_id}") for r in rows]
     kb = InlineKeyboardMarkup([buttons[i:i+2] for i in range(0, len(buttons), 2)])
-    await update.callback_query.edit_message_text(
-        "Select payout to delete:", reply_markup=kb
-    )
+    await update.callback_query.edit_message_text("Select payout to delete:", reply_markup=kb)
     return P_DELETE_PARTNER
 
 async def get_delete_partner(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     did = int(update.callback_query.data.split('_')[-1])
-    kb = InlineKeyboardMarkup([[
-        InlineKeyboardButton("✅ Yes", callback_data=f"pout_del_yes_{did}"),
-        InlineKeyboardButton("❌ No",  callback_data="payout_menu")
-    ]])
-    await update.callback_query.edit_message_text(
-        f"Confirm delete payout #{did}?", reply_markup=kb
-    )
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("✅ Yes", callback_data=f"pout_del_yes_{did}"), InlineKeyboardButton("❌ No", callback_data="payout_menu")]])
+    await update.callback_query.edit_message_text(f"Confirm delete payout #{did}?", reply_markup=kb)
     return P_DELETE_SELECT
 
 async def confirm_delete_payout(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -403,13 +363,14 @@ async def confirm_delete_payout(update: Update, context: ContextTypes.DEFAULT_TY
         secure_db.remove('partner_payouts', [did])
         await update.callback_query.edit_message_text(
             f"✅ Payout {did} deleted.",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔙 Back", callback_data="payout_menu")]
-            ])
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="payout_menu")]])
         )
     else:
         await show_payout_menu(update, context)
     return ConversationHandler.END
+
+
+# --- Register Handlers ---
 
 
 # --- Register Handlers ---
