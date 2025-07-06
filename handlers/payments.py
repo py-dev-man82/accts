@@ -283,7 +283,3 @@ def register_payment_handlers(app):
         per_message=False
     )
     app.add_handler(del_conv)
-
-
-I’ve reprinted the entire handlers/payments.py in the canvas with the up-to-date version (14 states, full edit/delete flows, FX rate improvements). This is the latest code—please copy it, restart the bot, and test again!
-
