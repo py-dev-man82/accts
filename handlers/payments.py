@@ -123,11 +123,21 @@ async def get_payment_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
     inv_rate = usd_amt / net_local if net_local else 0
     date_str = context.user_data.get('date', datetime.utcnow().date().isoformat())
     summary = (
-        f"Date: {date_str}
+    f"Date: {context.user_data.get('date', datetime.utcnow().date().isoformat())}
 "
-        f"Received: {local_amt:.2f}
+    f"Received: {context.user_data['local_amt']:.2f}
 "
-        f"Fee: {fee_perc:.2f}% ({fee_amt:.2f})
+    f"Fee: {context.user_data['fee_perc']:.2f}% ({(context.user_data['local_amt'] * context.user_data['fee_perc'] / 100):.2f})
+"
+    f"USD Received: {context.user_data['usd_amt']:.2f}
+
+"
+    f"FX Rate: {(context.user_data['local_amt'] * (1 - context.user_data['fee_perc']/100) / context.user_data['usd_amt']):.4f}
+"
+    f"Inverse: {(context.user_data['usd_amt'] / (context.user_data['local_amt'] * (1 - context.user_data['fee_perc']/100))):.4f}
+"
+    f"Note: {context.user_data.get('note','')}"
+)
 "
         f"USD Received: {usd_amt:.2f}
 
