@@ -1,217 +1,136 @@
-# handlers/payments.py
+# bot.py
 
 import logging
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+import config
+from secure_db import secure_db
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.error import BadRequest
 from telegram.ext import (
-    ConversationHandler,
-    CallbackQueryHandler,
-    MessageHandler,
+    ApplicationBuilder,
     CommandHandler,
-    filters,
+    CallbackQueryHandler,
     ContextTypes,
 )
-from datetime import datetime
-from tinydb import Query
 
-from handlers.utils import require_unlock
-from secure_db import secure_db
+# Configure root logger
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
 
-# State constants for the payment flow
-(
-    P_CUST_SELECT,
-    P_LOCAL_AMT,
-    P_FEE_PERC,
-    P_USD_RECEIVED,
-    P_NOTE,        # optional note
-    P_CONFIRM,
-    P_EDIT_SELECT,
-    P_EDIT_FIELD,
-    P_EDIT_VALUE,
-    P_EDIT_CONFIRM,
-    P_DELETE_SELECT,
-    P_DELETE_CONFIRM,
-) = range(12)
+# Import handler setup functions and submenu displays
+from handlers.customers import register_customer_handlers, show_customer_menu
+from handlers.stores    import register_store_handlers,   show_store_menu
+from handlers.partners  import register_partner_handlers, show_partner_menu
+from handlers.sales     import register_sales_handlers,   show_sales_menu
+from handlers.payments  import register_payment_handlers, show_payment_menu
+# Un-comment when ready:
+# from handlers.payouts     import register_payout_handlers,  show_payout_menu
+# from handlers.stockin     import register_stockin_handlers, show_stockin_menu
+# from handlers.reports     import register_reports_handlers, show_report_menu
+# from handlers.export_pdf  import register_export_pdf
+# from handlers.export_excel import register_export_excel
 
-# --- Submenu for Payments Management ---
-async def show_payment_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logging.info("Showing payment submenu")
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Sends the main menu."""
+    logger.info("User %s issued /start", update.effective_user.id)
+    kb = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("👤 Customers", callback_data="customer_menu"),
+            InlineKeyboardButton("🏪 Stores",    callback_data="store_menu"),
+            InlineKeyboardButton("🤝 Partners",  callback_data="partner_menu"),
+        ],
+        [
+            InlineKeyboardButton("💰 Sales",    callback_data="sales_menu"),
+            InlineKeyboardButton("💵 Payments", callback_data="payment_menu"),
+            # InlineKeyboardButton("💸 Payouts",  callback_data="payout_menu"),
+        ]
+    ])
+    await update.message.reply_text("Welcome! Choose an option:", reply_markup=kb)
+
+
+async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Returns to the main menu."""
     if update.callback_query:
         await update.callback_query.answer()
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("➕ Add Payment",     callback_data="add_payment")],
-            [InlineKeyboardButton("👀 View Payments",  callback_data="view_payments")],
-            [InlineKeyboardButton("✏️ Edit Payment",   callback_data="edit_payment")],
-            [InlineKeyboardButton("🗑️ Remove Payment",callback_data="remove_payment")],
-            [InlineKeyboardButton("🔙 Back to Main Menu", callback_data="main_menu")],
-        ])
-        await update.callback_query.edit_message_text(
-            "Payment Management: choose an action",
-            reply_markup=kb
-        )
-
-# --- Add Payment Flow ---
-@require_unlock
-async def add_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logging.info("Start add_payment")
-    await update.callback_query.answer()
-    # list customers
-    rows = secure_db.all('customers')
-    if not rows:
-        await update.callback_query.edit_message_text(
-            "No customers available.",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔙 Back", callback_data="payment_menu")]
+        try:
+            kb = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("👤 Customers", callback_data="customer_menu"),
+                    InlineKeyboardButton("🏪 Stores",    callback_data="store_menu"),
+                    InlineKeyboardButton("🤝 Partners",  callback_data="partner_menu"),
+                ],
+                [
+                    InlineKeyboardButton("💰 Sales",    callback_data="sales_menu"),
+                    InlineKeyboardButton("💵 Payments", callback_data="payment_menu"),
+                    # InlineKeyboardButton("💸 Payouts",  callback_data="payout_menu"),
+                ]
             ])
-        )
-        return ConversationHandler.END
-    buttons = [InlineKeyboardButton(f"{r['name']} ({r['currency']})", callback_data=f"pay_cust_{r.doc_id}") for r in rows]
-    kb = InlineKeyboardMarkup([buttons[i:i+2] for i in range(0, len(buttons), 2)])
-    await update.callback_query.edit_message_text("Select customer:", reply_markup=kb)
-    return P_CUST_SELECT
-
-async def get_customer_for_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logging.info("get_customer_for_payment: %s", update.callback_query.data)
-    await update.callback_query.answer()
-    cid = int(update.callback_query.data.rsplit("_",1)[1])
-    rec = secure_db.table('customers').get(doc_id=cid)
-    if not rec:
-        return await show_payment_menu(update, context)
-    context.user_data['pay_cust'] = rec
-    await update.callback_query.edit_message_text("Enter amount received in local currency:")
-    return P_LOCAL_AMT
-
-async def get_local_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.strip()
-    logging.info("Received local amount: %s", text)
-    try:
-        local_amt = float(text)
-    except ValueError:
-        await update.message.reply_text("Invalid number. Enter amount received in local currency:")
-        return P_LOCAL_AMT
-    context.user_data['local_amt'] = local_amt
-    await update.message.reply_text("Enter handling fee % (e.g. 5 for 5%):")
-    return P_FEE_PERC
-
-async def get_fee_percentage(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.strip()
-    logging.info("Received fee percentage: %s", text)
-    try:
-        fee_perc = float(text)
-    except ValueError:
-        await update.message.reply_text("Invalid percentage. Enter handling fee %:")
-        return P_FEE_PERC
-    context.user_data['fee_perc'] = fee_perc
-    await update.message.reply_text("Enter USD amount actually received:")
-    return P_USD_RECEIVED
-
-async def get_usd_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.strip()
-    logging.info("Received USD amount: %s", text)
-    try:
-        usd_received = float(text)
-    except ValueError:
-        await update.message.reply_text("Invalid number. Enter USD amount actually received:")
-        return P_USD_RECEIVED
-    context.user_data['usd_received'] = usd_received
-    # compute fee and fx rate
-    local_amt = context.user_data['local_amt']
-    fee_amt = local_amt * context.user_data['fee_perc'] / 100
-    net_local = local_amt - fee_amt
-    fx_rate = net_local / usd_received if usd_received else 0
-    context.user_data['fee_amt'] = fee_amt
-    context.user_data['fx_rate'] = fx_rate
-    # prompt for optional note
-    await update.message.reply_text(
-        "Enter an optional note for this payment (or send /skip to leave blank):"
-    )
-    return P_NOTE
-
-async def get_payment_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    note = update.message.text.strip()
-    logging.info("Received note: %s", note)
-    if note.lower() == '/skip':
-        note = ''
-    context.user_data['note'] = note
-    # build confirm summary
-    rec = context.user_data['pay_cust']
-    lines = [
-        f"Customer: {rec['name']} ({rec['currency']})",  
-        f"Local Received: {context.user_data['local_amt']} {rec['currency']}",
-        f"Fee: {context.user_data['fee_perc']}% ({context.user_data['fee_amt']:.2f})",
-        f"USD Received: {context.user_data['usd_received']}",
-        f"FX Rate: {context.user_data['fx_rate']:.4f}",
-        f"Note: {context.user_data['note']}"
-    ]
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ Yes", callback_data="pay_conf_yes"),
-         InlineKeyboardButton("❌ No",  callback_data="pay_conf_no")]
-    ])
-    await update.message.reply_text("\n".join(lines), reply_markup=kb)
-    return P_CONFIRM
-
-@require_unlock
-async def confirm_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logging.info("confirm_payment: %s", update.callback_query.data)
-    await update.callback_query.answer()
-    if update.callback_query.data == 'pay_conf_yes':
-        rec = context.user_data['pay_cust']
-        secure_db.insert('customer_payments', {
-            'customer_id': rec.doc_id,
-            'local_received': context.user_data['local_amt'],
-            'fee_perc': context.user_data['fee_perc'],
-            'fee_amt': context.user_data['fee_amt'],
-            'usd_received': context.user_data['usd_received'],
-            'fx_rate': context.user_data['fx_rate'],
-            'note': context.user_data.get('note',''),
-            'timestamp': datetime.utcnow().isoformat()
-        })
-        await update.callback_query.edit_message_text(
-            "✅ Payment recorded.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="payment_menu")]])
-        )
-    else:
-        await show_payment_menu(update, context)
-    return ConversationHandler.END
-
-# --- View Payments Flow ---
-async def view_payments(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logging.info("view_payments")
-    await update.callback_query.answer()
-    rows = secure_db.all('customer_payments')
-    if not rows:
-        text = "No payments recorded."
-    else:
-        lines = []
-        for r in rows:
-            cust = secure_db.table('customers').get(doc_id=r['customer_id'])
-            lines.append(
-                f"[{r.doc_id}] {cust['name']}: {r['local_received']} {cust['currency']} → {r['usd_received']} USD"
+            await update.callback_query.edit_message_text(
+                "Welcome! Choose an option:", reply_markup=kb
             )
-        text = "Payments:\n" + "\n".join(lines)
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="payment_menu")]])
-    await update.callback_query.edit_message_text(text, reply_markup=kb)
+        except BadRequest:
+            # Ignore “message not modified”
+            pass
 
-# --- (Edit/Delete flows omitted for brevity) ---
 
-# --- Register Handlers ---
-def register_payment_handlers(app):
-    app.add_handler(CallbackQueryHandler(show_payment_menu, pattern="^payment_menu$"))
-    add_conv = ConversationHandler(
-        entry_points=[
-            CommandHandler("add_payment", add_payment),
-            CallbackQueryHandler(add_payment, pattern="^add_payment$")
-        ],
-        states={
-            P_CUST_SELECT: [CallbackQueryHandler(get_customer_for_payment, pattern="^pay_cust_")],
-            P_LOCAL_AMT:   [MessageHandler(filters.TEXT & ~filters.COMMAND, get_local_amount)],
-            P_FEE_PERC:    [MessageHandler(filters.TEXT & ~filters.COMMAND, get_fee_percentage)],
-            P_USD_RECEIVED:[MessageHandler(filters.TEXT & ~filters.COMMAND, get_usd_received)],
-            P_NOTE:        [MessageHandler(filters.TEXT & ~filters.COMMAND, get_payment_note), CommandHandler('skip', get_payment_note)],
-            P_CONFIRM:     [CallbackQueryHandler(confirm_payment, pattern="^pay_conf_")],
-        },
-        fallbacks=[CommandHandler("cancel", confirm_payment)],
-        per_message=False
-    )
-    app.add_handler(add_conv)
-    app.add_handler(CallbackQueryHandler(view_payments, pattern="^view_payments$"))
-    # Future: register edit_conv, del_conv
+async def unlock_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.info("User %s requested unlock", update.effective_user.id)
+    if not context.args:
+        await update.message.reply_text("Usage: /unlock <passphrase>")
+        return
+    try:
+        secure_db.unlock(context.args[0])
+        await update.message.reply_text("🔓 Database unlocked.")
+    except Exception as e:
+        await update.message.reply_text(f"Unlock failed: {e}")
+        logger.error("Unlock error: %s", e)
+
+
+async def lock_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.info("User %s requested lock", update.effective_user.id)
+    secure_db.lock()
+    await update.message.reply_text("🔒 Database locked.")
+
+
+def main():
+    app = ApplicationBuilder().token(config.BOT_TOKEN).build()
+
+    # Core commands
+    app.add_handler(CommandHandler("start",  start))
+    app.add_handler(CommandHandler("unlock", unlock_command))
+    app.add_handler(CommandHandler("lock",   lock_command))
+    app.add_handler(CallbackQueryHandler(show_main_menu, pattern="^main_menu$"))
+
+    # Submenus and flows
+    app.add_handler(CallbackQueryHandler(show_customer_menu, pattern="^customer_menu$"))
+    register_customer_handlers(app)
+
+    app.add_handler(CallbackQueryHandler(show_store_menu,    pattern="^store_menu$"))
+    register_store_handlers(app)
+
+    app.add_handler(CallbackQueryHandler(show_partner_menu,  pattern="^partner_menu$"))
+    register_partner_handlers(app)
+
+    app.add_handler(CallbackQueryHandler(show_sales_menu,    pattern="^sales_menu$"))
+    register_sales_handlers(app)
+
+    app.add_handler(CallbackQueryHandler(show_payment_menu,   pattern="^payment_menu$"))
+    register_payment_handlers(app)
+
+    # Uncomment when ready:
+    # app.add_handler(CallbackQueryHandler(show_payout_menu,    pattern="^payout_menu$"))
+    # register_payout_handlers(app)
+    # app.add_handler(CallbackQueryHandler(show_stockin_menu,   pattern="^stockin_menu$"))
+    # register_stockin_handlers(app)
+    # app.add_handler(CallbackQueryHandler(show_report_menu,    pattern="^report_menu$"))
+    # register_reports_handlers(app)
+    # register_export_pdf(app)
+    # register_export_excel(app)
+
+    app.run_polling()
+
+if __name__ == "__main__":
+    main()
