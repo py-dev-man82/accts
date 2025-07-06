@@ -1,4 +1,4 @@
-# handlers/customers.py
+# handlers/partners.py
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
@@ -15,226 +15,268 @@ from tinydb import Query
 from handlers.utils import require_unlock
 from secure_db import secure_db
 
-# State constants for the customer flow
+# State constants for the partner flow
 (
-    C_NAME,
-    C_CUR,
-    C_CONFIRM,
-    E_SELECT,    # edit select customer
-    E_NAME,      # edit new name
-    E_CUR,       # edit new currency
-    E_CONFIRM,   # edit confirm
-    R_SELECT,    # remove select customer
-    R_CONFIRM    # remove confirm
-) = range(9)
+    P_NAME,
+    P_CUR,
+    P_CONFIRM,
+    P_VIEW,
+    P_EDIT_SELECT,
+    P_EDIT_NAME,
+    P_EDIT_CUR,
+    P_EDIT_CONFIRM,
+    P_DELETE_SELECT,
+    P_DELETE_CONFIRM
+) = range(10)
 
-async def show_customer_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Display the customer management submenu.
-    """
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("➕ Add Customer",    callback_data="add_customer")],
-        [InlineKeyboardButton("👀 View Customers", callback_data="view_customer")],
-        [InlineKeyboardButton("✏️ Edit Customer",  callback_data="edit_customer")],
-        [InlineKeyboardButton("🗑️ Remove Customer", callback_data="remove_customer")],
-        [InlineKeyboardButton("🔙 Back to Main Menu", callback_data="main_menu")]
-    ])
+# --- Submenu for Partner Management ---
+async def show_partner_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.callback_query:
         await update.callback_query.answer()
         await update.callback_query.edit_message_text(
-            "Customer Management: choose an action", reply_markup=kb
+            "Partner Management: choose an action",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("➕ Add Partner",     callback_data="add_partner")],
+                [InlineKeyboardButton("👀 View Partners",   callback_data="view_partner")],
+                [InlineKeyboardButton("✏️ Edit Partner",   callback_data="edit_partner")],
+                [InlineKeyboardButton("🗑️ Remove Partner", callback_data="remove_partner")],
+                [InlineKeyboardButton("🔙 Back to Main Menu", callback_data="main_menu")]
+            ])
         )
-    else:
-        await update.message.reply_text(
-            "Customer Management: choose an action", reply_markup=kb
-        )
-    return ConversationHandler.END
+    return
 
-# --- Add Customer Flow ---
+# --- Add Partner Flow ---
 @require_unlock
-async def add_customer(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def add_partner(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.callback_query:
         await update.callback_query.answer()
-        await update.callback_query.edit_message_text("Enter new customer name:")
+        await update.callback_query.edit_message_text("Enter new partner name:")
     else:
-        await update.message.reply_text("Enter new customer name:")
-    return C_NAME
+        await update.message.reply_text("Enter new partner name:")
+    return P_NAME
 
-async def get_customer_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def get_partner_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     name = update.message.text.strip()
-    context.user_data['customer_name'] = name
-    await update.message.reply_text(
-        f"Name: {name}\nEnter currency code (e.g. USD, EUR):"
-    )
-    return C_CUR
+    context.user_data['partner_name'] = name
+    await update.message.reply_text("Enter currency for this partner:")
+    return P_CUR
 
-async def get_customer_currency(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    currency = update.message.text.strip().upper()
-    context.user_data['customer_currency'] = currency
+async def get_partner_currency(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    cur = update.message.text.strip()
+    context.user_data['partner_currency'] = cur
     kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ Yes", callback_data="cust_yes"),
-         InlineKeyboardButton("❌ No",  callback_data="cust_no")]
+        [InlineKeyboardButton("✅ Yes", callback_data="partner_yes"),
+         InlineKeyboardButton("❌ No",  callback_data="partner_no")]
     ])
-    await update.message.reply_text(
-        f"Name: {context.user_data['customer_name']}\n"
-        f"Currency: {currency}\nSave?", reply_markup=kb
+    await update.callback_query.edit_message_text(
+        f"Name: {context.user_data['partner_name']}\n"
+        f"Currency: {cur}\nSave?", reply_markup=kb
     )
-    return C_CONFIRM
+    return P_CONFIRM
 
 @require_unlock
-async def confirm_customer(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def confirm_partner(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
-    if update.callback_query.data == 'cust_yes':
-        secure_db.insert('customers', {
-            'name': context.user_data['customer_name'],
-            'currency': context.user_data['customer_currency'],
+    if update.callback_query.data == 'partner_yes':
+        secure_db.insert('partners', {
+            'name': context.user_data['partner_name'],
+            'currency': context.user_data['partner_currency'],
             'created_at': datetime.utcnow().isoformat()
         })
         await update.callback_query.edit_message_text(
-            f"✅ Customer '{context.user_data['customer_name']}' added."
+            f"✅ Partner '{context.user_data['partner_name']}' added."
         )
     else:
         await update.callback_query.edit_message_text("❌ Add cancelled.")
-    # Return to submenu
-    return await show_customer_menu(update, context)
-
-# --- View Customers Flow ---
-@require_unlock
-async def view_customers(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    records = secure_db.all('customers')
-    if not records:
-        text = "No customers found."
-    else:
-        lines = [f"• [{r.doc_id}] {r['name']} ({r['currency']})" for r in records]
-        text = "Customers:\n" + "\n".join(lines)
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="customer_menu")]])
-    if update.callback_query:
-        await update.callback_query.answer()
-        await update.callback_query.edit_message_text(text, reply_markup=kb)
-    else:
-        await update.message.reply_text(text, reply_markup=kb)
     return ConversationHandler.END
 
-# --- Edit Customer Flow ---
-async def edit_customer(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # list customers to choose
-    records = secure_db.all('customers')
+# --- View Partner Flow ---
+@require_unlock
+async def view_partner(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+    records = secure_db.all('partners')
     if not records:
-        await update.message.reply_text("No customers to edit.")
-        return await show_customer_menu(update, context)
-    buttons = [[InlineKeyboardButton(f"{r['name']}", callback_data=f"edit_{r.doc_id}")] for r in records]
-    buttons.append([InlineKeyboardButton("🔙 Back", callback_data="customer_menu")])
-    kb = InlineKeyboardMarkup(buttons)
-    if update.callback_query:
-        await update.callback_query.answer()
-        await update.callback_query.edit_message_text("Select customer to edit:", reply_markup=kb)
-    else:
-        await update.message.reply_text("Select customer to edit:", reply_markup=kb)
-    return E_SELECT
+        await update.callback_query.edit_message_text("No partners found.")
+        return ConversationHandler.END
+    text = "📋 Partners List:\n"
+    for rec in records:
+        text += f"• {rec.doc_id}: {rec['name']} ({rec['currency']})\n"
+    await update.callback_query.edit_message_text(text)
+    return ConversationHandler.END
+
+# --- Edit Partner Flow ---
+@require_unlock
+async def edit_partner_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+    records = secure_db.all('partners')
+    if not records:
+        await update.callback_query.edit_message_text("No partners to edit.")
+        return ConversationHandler.END
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton(f"{r.doc_id}: {r['name']}", callback_data=f"edit_partner_{r.doc_id}")] for r in records
+    ])
+    await update.callback_query.edit_message_text("Select partner to edit:", reply_markup=kb)
+    return P_EDIT_SELECT
 
 async def get_edit_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
-    cid = int(update.callback_query.data.split("_")[1])
-    context.user_data['edit_cid'] = cid
-    cust = Query()
-    rec = secure_db.search('customers', cust.doc_id == cid)[0]
-    await update.callback_query.edit_message_text(f"Editing {rec['name']} ({rec['currency']}). Enter new name:")
-    return E_NAME
-
-async def set_edit_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    name = update.message.text.strip()
-    context.user_data['edit_name'] = name
-    await update.message.reply_text(f"New name: {name}\nEnter new currency code:")
-    return E_CUR
-
-async def set_edit_currency(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    currency = update.message.text.strip().upper()
-    context.user_data['edit_currency'] = currency
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton("✅ Save", callback_data="edit_yes"), InlineKeyboardButton("❌ Cancel", callback_data="edit_no")]])
-    await update.message.reply_text(
-        f"Update to: {context.user_data['edit_name']} ({currency})?", reply_markup=kb
+    data = update.callback_query.data
+    try:
+        pid = int(data.rsplit("_", 1)[1])
+    except:
+        await update.callback_query.edit_message_text("Invalid selection.")
+        return ConversationHandler.END
+    q = Query()
+    res = secure_db.search('partners', q.doc_id == pid)
+    if not res:
+        await update.callback_query.edit_message_text("Partner not found.")
+        return ConversationHandler.END
+    rec = res[0]
+    context.user_data['edit_partner'] = rec
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Change Name", callback_data="pedit_name")],
+        [InlineKeyboardButton("✅ Change Currency", callback_data="pedit_cur")],
+        [InlineKeyboardButton("🔙 Cancel", callback_data="partner_conf_no")]
+    ])
+    await update.callback_query.edit_message_text(
+        f"Editing: {rec['name']} ({rec['currency']})\nChoose field:", reply_markup=kb
     )
-    return E_CONFIRM
+    return P_EDIT_NAME
+
+async def get_edit_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+    await update.callback_query.edit_message_text("Enter new name:")
+    return P_EDIT_CUR
+
+async def get_edit_currency(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip()
+    context.user_data['new_partner_currency'] = text
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Yes", callback_data="partner_update_yes"),
+         InlineKeyboardButton("❌ No",  callback_data="partner_update_no")]
+    ])
+    await update.message.reply_text(
+        f"Change to currency: {text}?", reply_markup=kb
+    )
+    return P_EDIT_CONFIRM
 
 @require_unlock
-async def confirm_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def confirm_edit_partner(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
-    cid = context.user_data['edit_cid']
-    if update.callback_query.data == 'edit_yes':
-        secure_db.update('customers', {
-            'name': context.user_data['edit_name'],
-            'currency': context.user_data['edit_currency']
-        }, [cid])
-        await update.callback_query.edit_message_text("✅ Customer updated.")
+    if update.callback_query.data == 'partner_update_yes':
+        rec = context.user_data['edit_partner']
+        secure_db.update('partners', {
+            'name': context.user_data.get('new_partner_name', rec['name']),
+            'currency': context.user_data.get('new_partner_currency', rec['currency'])
+        }, [rec.doc_id])
+        await update.callback_query.edit_message_text("✅ Partner updated.")
     else:
         await update.callback_query.edit_message_text("❌ Edit cancelled.")
-    return await show_customer_menu(update, context)
+    return ConversationHandler.END
 
-# --- Remove Customer Flow ---
-async def remove_customer(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    records = secure_db.all('customers')
-    if not records:
-        await update.message.reply_text("No customers to remove.")
-        return await show_customer_menu(update, context)
-    buttons = [[InlineKeyboardButton(f"{r['name']}", callback_data=f"remove_{r.doc_id}")] for r in records]
-    buttons.append([InlineKeyboardButton("🔙 Back", callback_data="customer_menu")])
-    kb = InlineKeyboardMarkup(buttons)
-    if update.callback_query:
-        await update.callback_query.answer()
-        await update.callback_query.edit_message_text("Select customer to remove:", reply_markup=kb)
-    else:
-        await update.message.reply_text("Select customer to remove:", reply_markup=kb)
-    return R_SELECT
-
-async def get_remove_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# --- Delete Partner Flow ---
+@require_unlock
+async def remove_partner(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
-    cid = int(update.callback_query.data.split("_")[1])
-    context.user_data['remove_cid'] = cid
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton("✅ Yes", callback_data="remove_yes"), InlineKeyboardButton("❌ No", callback_data="remove_no")]])
+    records = secure_db.all('partners')
+    if not records:
+        await update.callback_query.edit_message_text("No partners to remove.")
+        return ConversationHandler.END
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton(f"{r.doc_id}: {r['name']}", callback_data=f"delete_partner_{r.doc_id}")] for r in records
+    ])
+    await update.callback_query.edit_message_text("Select partner to remove:", reply_markup=kb)
+    return P_DELETE_SELECT
+
+async def get_delete_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+    try:
+        pid = int(update.callback_query.data.rsplit("_", 1)[1])
+    except:
+        await update.callback_query.edit_message_text("Invalid selection.")
+        return ConversationHandler.END
+    context.user_data['delete_partner_id'] = pid
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Yes", callback_data="partner_del_yes"),
+         InlineKeyboardButton("❌ No",  callback_data="partner_del_no")]
+    ])
     await update.callback_query.edit_message_text(
-        f"Confirm removal of customer ID {cid}?", reply_markup=kb
+        f"Are you sure you want to delete partner ID {pid}?", reply_markup=kb
     )
-    return R_CONFIRM
+    return P_DELETE_CONFIRM
 
 @require_unlock
-async def confirm_remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def confirm_delete_partner(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
-    cid = context.user_data['remove_cid']
-    if update.callback_query.data == 'remove_yes':
-        secure_db.remove('customers', [cid])
-        await update.callback_query.edit_message_text("✅ Customer removed.")
+    if update.callback_query.data == 'partner_del_yes':
+        pid = context.user_data['delete_partner_id']
+        secure_db.remove('partners', [pid])
+        await update.callback_query.edit_message_text("✅ Partner removed.")
     else:
-        await update.callback_query.edit_message_text("❌ Removal cancelled.")
-    return await show_customer_menu(update, context)
+        await update.callback_query.edit_message_text("❌ Delete cancelled.")
+    return ConversationHandler.END
 
-# --- Registration ---
-def register_customer_handlers(app):
+
+def register_partner_handlers(app):
     # Show submenu
-    app.add_handler(CallbackQueryHandler(show_customer_menu, pattern="^customer_menu$"))
-    # Add, View, Edit, Remove flows
-    conv = ConversationHandler(
+    app.add_handler(CallbackQueryHandler(show_partner_menu, pattern="^partner_menu$"))
+
+    # Add flow
+    add_conv = ConversationHandler(
         entry_points=[
-            CommandHandler("add_customer",     add_customer),
-            CommandHandler("view_customer",    view_customers),
-            CommandHandler("edit_customer",    edit_customer),
-            CommandHandler("remove_customer",  remove_customer),
-            CallbackQueryHandler(add_customer,    pattern="^add_customer$"),
-            CallbackQueryHandler(view_customers, pattern="^view_customer$"),
-            CallbackQueryHandler(edit_customer,  pattern="^edit_customer$"),
-            CallbackQueryHandler(remove_customer,pattern="^remove_customer$"),
+            CommandHandler("add_partner", add_partner),
+            CallbackQueryHandler(add_partner, pattern="^add_partner$")
         ],
         states={
-            C_NAME:    [MessageHandler(filters.TEXT & ~filters.COMMAND, get_customer_name)],
-            C_CUR:     [MessageHandler(filters.TEXT & ~filters.COMMAND, get_customer_currency)],
-            C_CONFIRM: [CallbackQueryHandler(confirm_customer, pattern="^cust_")],
-            E_SELECT:  [CallbackQueryHandler(get_edit_selection, pattern="^edit_\d+")],
-            E_NAME:    [MessageHandler(filters.TEXT & ~filters.COMMAND, set_edit_name)],
-            E_CUR:     [MessageHandler(filters.TEXT & ~filters.COMMAND, set_edit_currency)],
-            E_CONFIRM: [CallbackQueryHandler(confirm_edit, pattern="^edit_")],
-            R_SELECT:  [CallbackQueryHandler(get_remove_selection, pattern="^remove_\d+")],
-            R_CONFIRM: [CallbackQueryHandler(confirm_remove, pattern="^remove_")]
+            P_NAME:    [MessageHandler(filters.TEXT & ~filters.COMMAND, get_partner_name)],
+            P_CUR:     [MessageHandler(filters.TEXT & ~filters.COMMAND, get_partner_currency)],
+            P_CONFIRM:[CallbackQueryHandler(confirm_partner, pattern="^partner_(yes|no)$")]
         },
-        fallbacks=[CallbackQueryHandler(show_customer_menu, pattern="^main_menu$")],
+        fallbacks=[CommandHandler("cancel", confirm_partner)],
         per_message=False
     )
-    app.add_handler(conv)
+    app.add_handler(add_conv)
+
+    # View flow
+    view_conv = ConversationHandler(
+        entry_points=[
+            CommandHandler("view_partner", view_partner),
+            CallbackQueryHandler(view_partner, pattern="^view_partner$")
+        ],
+        states={},
+        fallbacks=[],
+        per_message=False
+    )
+    app.add_handler(view_conv)
+
+    # Edit flow
+    edit_conv = ConversationHandler(
+        entry_points=[
+            CommandHandler("edit_partner", edit_partner_start),
+            CallbackQueryHandler(edit_partner_start, pattern="^edit_partner$")
+        ],
+        states={
+            P_EDIT_SELECT: [CallbackQueryHandler(get_edit_selection, pattern="^edit_partner_\d+$")],
+            P_EDIT_NAME:   [CallbackQueryHandler(get_edit_name, pattern="^pedit_name$")],
+            P_EDIT_CUR:    [MessageHandler(filters.TEXT & ~filters.COMMAND, get_edit_currency)],
+            P_EDIT_CONFIRM:[CallbackQueryHandler(confirm_edit_partner, pattern="^partner_update_(yes|no)$")]
+        },
+        fallbacks=[CommandHandler("cancel", confirm_edit_partner)],
+        per_message=False
+    )
+    app.add_handler(edit_conv)
+
+    # Delete flow
+    del_conv = ConversationHandler(
+        entry_points=[
+            CommandHandler("remove_partner", remove_partner),
+            CallbackQueryHandler(remove_partner, pattern="^remove_partner$")
+        ],
+        states={
+            P_DELETE_SELECT: [CallbackQueryHandler(get_delete_selection, pattern="^delete_partner_\d+$")],
+            P_DELETE_CONFIRM:[CallbackQueryHandler(confirm_delete_partner, pattern="^partner_del_(yes|no)$")]
+        },
+        fallbacks=[CommandHandler("cancel", confirm_delete_partner)],
+        per_message=False
+    )
+    app.add_handler(del_conv)
