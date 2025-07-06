@@ -132,6 +132,20 @@ async def get_payment_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
     f"USD Received: {context.user_data['usd_amt']:.2f}
 
 "
+    f"FX Rate: {context.user_data.get('fx_rate', (context.user_data['local_amt'] - context.user_data['local_amt']*context.user_data['fee_perc']/100)/context.user_data['usd_amt']):.4f}
+"
+    f"Inverse: {context.user_data.get('inv_rate', context.user_data['usd_amt']/(context.user_data['local_amt'] - context.user_data['local_amt']*context.user_data['fee_perc']/100)):.4f}
+"
+    f"Note: {context.user_data.get('note','')}"
+).date().isoformat())}
+"
+    f"Received: {context.user_data['local_amt']:.2f}
+"
+    f"Fee: {context.user_data['fee_perc']:.2f}% ({(context.user_data['local_amt'] * context.user_data['fee_perc'] / 100):.2f})
+"
+    f"USD Received: {context.user_data['usd_amt']:.2f}
+
+"
     f"FX Rate: {(context.user_data['local_amt'] * (1 - context.user_data['fee_perc']/100)) / context.user_data['usd_amt']:.6f}
 "
     f"Inverse Rate: {context.user_data['usd_amt'] / (context.user_data['local_amt'] * (1 - context.user_data['fee_perc']/100)):.6f}
