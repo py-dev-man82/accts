@@ -1,5 +1,3 @@
-# handlers/stockin.py  – Part 1
-
 import logging
 from datetime import datetime
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -17,34 +15,28 @@ from handlers.utils import require_unlock
 from secure_db     import secure_db
 
 
-# ────────────────────────────────────────────────────────────
-#  Conversation-state constants
-# ────────────────────────────────────────────────────────────
+# ────────────────────── conversation-state constants ─────────────────────
 (
-    SI_PARTNER_SELECT,     # choose partner (Add)
-    SI_ITEM_SELECT,        # enter item text
-    SI_QTY,
-    SI_COST,
-    SI_NOTE,
-    SI_DATE,
-    SI_CONFIRM,            # final confirm (Add)
+    SI_PARTNER_SELECT, SI_STORE_SELECT, SI_ITEM_SELECT, SI_QTY, SI_COST,
+    SI_NOTE, SI_DATE, SI_CONFIRM,
+    SI_EDIT_PARTNER, SI_EDIT_SELECT, SI_EDIT_QTY, SI_EDIT_COST,
+    SI_EDIT_DATE, SI_EDIT_CONFIRM,
+    SI_DELETE_PARTNER, SI_DELETE_SELECT, SI_DELETE_CONFIRM,
+) = range(17)
 
-    SI_EDIT_PARTNER,       # pick partner first (Edit)
-    SI_EDIT_SELECT,        # pick a stock-in record
-    SI_EDIT_QTY,
-    SI_EDIT_COST,
-    SI_EDIT_DATE,
-    SI_EDIT_CONFIRM,
+# ───────────────────────── helper: store inventory ───────────────────────
+def adjust_store_inventory(store_id: int, item_id, delta_qty: int) -> None:
+    """Add *delta_qty* (may be negative) to the store’s inventory balance."""
+    tbl = secure_db.table("store_inventory")
+    row = tbl.get((Query().store_id == store_id) & (Query().item_id == item_id))
+    if row:
+        new_qty = max(row["quantity"] + delta_qty, 0)
+        secure_db.update("store_inventory", {"quantity": new_qty}, [row.doc_id])
+    elif delta_qty > 0:
+        secure_db.insert("store_inventory",
+            {"store_id": store_id, "item_id": item_id, "quantity": delta_qty})
 
-    SI_DELETE_PARTNER,     # pick partner first (Delete)
-    SI_DELETE_SELECT,      # pick record
-    SI_DELETE_CONFIRM,     # confirm Yes/No
-) = range(16)
-
-
-# ────────────────────────────────────────────────────────────
-#  Sub-menu
-# ────────────────────────────────────────────────────────────
+# ───────────────────────────── stock-in submenu ──────────────────────────
 async def show_stockin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     kb = InlineKeyboardMarkup([
@@ -57,9 +49,9 @@ async def show_stockin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.edit_message_text("Stock-In: choose an action", reply_markup=kb)
 
 
-# ======================================================================
-#                             ADD  FLOW
-# ======================================================================
+# =====================================================================
+#                               ADD  FLOW
+# =====================================================================
 @require_unlock
 async def add_stockin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
@@ -80,6 +72,24 @@ async def add_stockin(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def get_stockin_partner(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     context.user_data["partner_id"] = int(update.callback_query.data.split("_")[-1])
+
+    stores = secure_db.all("stores")
+    if not stores:
+        await update.callback_query.edit_message_text(
+            "No stores configured.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="stockin_menu")]])
+        )
+        return ConversationHandler.END
+
+    buttons = [InlineKeyboardButton(s["name"], callback_data=f"si_store_{s.doc_id}") for s in stores]
+    kb = InlineKeyboardMarkup([buttons[i:i+2] for i in range(0, len(buttons), 2)])
+    await update.callback_query.edit_message_text("Allocate to which store?", reply_markup=kb)
+    return SI_STORE_SELECT
+
+
+async def get_stockin_store(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+    context.user_data["store_id"] = int(update.callback_query.data.split("_")[-1])
     await update.callback_query.edit_message_text("Enter item ID or name:")
     return SI_ITEM_SELECT
 
@@ -88,7 +98,7 @@ async def get_stockin_item(update: Update, context: ContextTypes.DEFAULT_TYPE):
     item_text = update.message.text.strip()
     Item = Query()
     if not secure_db.table("items").get((Item.item_id == item_text) | (Item.name == item_text)):
-        secure_db.insert("items", {"item_id": item_text, "name": item_text})   # auto-create
+        secure_db.insert("items", {"item_id": item_text, "name": item_text})
     context.user_data["item_id"] = item_text
     await update.message.reply_text("Enter quantity (integer):")
     return SI_QTY
@@ -96,8 +106,7 @@ async def get_stockin_item(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def get_stockin_qty(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        qty = int(update.message.text.strip())
-        assert qty > 0
+        qty = int(update.message.text.strip()); assert qty > 0
     except Exception:
         await update.message.reply_text("Enter a positive integer.")
         return SI_QTY
@@ -155,17 +164,16 @@ async def get_stockin_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def confirm_stockin_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
     d = context.user_data
     summary = (
-        f"Partner: {d['partner_id']}\n"
-        f"Item:    {d['item_id']}\n"
-        f"Qty:     {d['qty']}\n"
-        f"Cost:    {d['cost']:.2f}\n"
-        f"Note:    {d.get('note') or '—'}\n"
-        f"Date:    {d['date']}"
+        f"Partner ID: {d['partner_id']}\n"
+        f"Store ID:   {d['store_id']}\n"
+        f"Item:       {d['item_id']}\n"
+        f"Qty:        {d['qty']}\n"
+        f"Cost:       {d['cost']:.2f}\n"
+        f"Note:       {d.get('note') or '—'}\n"
+        f"Date:       {d['date']}"
     )
-    kb = InlineKeyboardMarkup([[
-        InlineKeyboardButton("✅ Confirm", callback_data="si_conf_yes"),
-        InlineKeyboardButton("❌ Cancel",  callback_data="si_conf_no"),
-    ]])
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("✅ Confirm", callback_data="si_conf_yes"),
+                                InlineKeyboardButton("❌ Cancel",  callback_data="si_conf_no")]])
     if update.callback_query:
         await update.callback_query.edit_message_text(summary, reply_markup=kb)
     else:
@@ -181,8 +189,9 @@ async def confirm_stockin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
     d = context.user_data
-    secure_db.insert("partner_inventory", {
+    rec_id = secure_db.insert("partner_inventory", {
         "partner_id": d["partner_id"],
+        "store_id":   d["store_id"],
         "item_id":    d["item_id"],
         "quantity":   d["qty"],
         "cost":       d["cost"],
@@ -190,31 +199,24 @@ async def confirm_stockin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "date":       d["date"],
         "timestamp":  datetime.utcnow().isoformat(),
     })
+    adjust_store_inventory(d["store_id"], d["item_id"], d["qty"])
+
     await update.callback_query.edit_message_text(
-        "✅ Stock-In recorded.",
+        f"✅ Stock-In recorded (ID {rec_id}).",
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="stockin_menu")]])
     )
     return ConversationHandler.END
 
-# handlers/stockin.py  – Part 2
-from datetime import datetime
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (
-    ConversationHandler,
-    CallbackQueryHandler,
-    CommandHandler,
-    MessageHandler,
-    filters,
-)
-from tinydb import Query
 
-from handlers.utils import require_unlock
-from secure_db     import secure_db
-
-
-# ======================================================================
+# =====================================================================
 #                               VIEW  FLOW
-# ======================================================================
+# =====================================================================
+
+# ... (continue with VIEW, EDIT, DELETE, register_stockin_handlers)
+
+# =====================================================================
+#                               VIEW  FLOW
+# =====================================================================
 @require_unlock
 async def view_stockins(update, context):
     await update.callback_query.answer()
@@ -224,20 +226,23 @@ async def view_stockins(update, context):
     else:
         lines = []
         for r in rows:
-            p = secure_db.table("partners").get(doc_id=r["partner_id"])
-            pname = p["name"] if p else "Unknown"
-            item_rec = secure_db.table("items").get((Query().item_id == r["item_id"]))
-            iname = item_rec["name"] if item_rec else str(r["item_id"])
-            lines.append(f"[{r.doc_id}] {pname}: {iname} x{r['quantity']} @ {r['cost']:.2f} "
-                         f"on {r.get('date','')} | Note: {r.get('note','')}")
+            partner = secure_db.table("partners").get(doc_id=r["partner_id"]) or {}
+            item    = secure_db.table("items").get(Query().item_id == r["item_id"]) or {}
+            pname   = partner.get("name", "Unknown")
+            iname   = item.get("name", str(r["item_id"]))
+            lines.append(
+                f"[{r.doc_id}] {pname}: {iname} x{r['quantity']} "
+                f"@ {r['cost']:.2f} on {r.get('date','')} | Note: {r.get('note','')}"
+            )
         text = "Stock-Ins:\n" + "\n".join(lines)
+
     kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="stockin_menu")]])
     await update.callback_query.edit_message_text(text, reply_markup=kb)
 
 
-# ======================================================================
+# =====================================================================
 #                               EDIT  FLOW
-# ======================================================================
+# =====================================================================
 @require_unlock
 async def edit_stockin(update, context):
     await update.callback_query.answer()
@@ -248,16 +253,16 @@ async def edit_stockin(update, context):
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="stockin_menu")]])
         )
         return ConversationHandler.END
+
     buttons = [InlineKeyboardButton(p["name"], callback_data=f"edit_si_part_{p.doc_id}") for p in partners]
-    kb = InlineKeyboardMarkup([buttons[i:i+2] for i in range(0, len(buttons), 2)])
+    kb      = InlineKeyboardMarkup([buttons[i:i+2] for i in range(0, len(buttons), 2)])
     await update.callback_query.edit_message_text("Select partner:", reply_markup=kb)
     return SI_EDIT_PARTNER
 
 
 async def get_edit_partner(update, context):
     await update.callback_query.answer()
-    pid = int(update.callback_query.data.split("_")[-1])
-    context.user_data["edit_partner_id"] = pid
+    pid  = int(update.callback_query.data.rsplit("_", 1)[1])
     rows = [r for r in secure_db.all("partner_inventory") if r["partner_id"] == pid]
     if not rows:
         await update.callback_query.edit_message_text(
@@ -265,16 +270,17 @@ async def get_edit_partner(update, context):
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="stockin_menu")]])
         )
         return ConversationHandler.END
+
     buttons = [InlineKeyboardButton(f"[{r.doc_id}] {r['quantity']} @ {r['cost']}",
                                     callback_data=f"edit_stockin_{r.doc_id}") for r in rows]
     kb = InlineKeyboardMarkup([buttons[i:i+2] for i in range(0, len(buttons), 2)])
-    await update.callback_query.edit_message_text("Select stock-in:", reply_markup=kb)
+    await update.callback_query.edit_message_text("Select stock-in record:", reply_markup=kb)
     return SI_EDIT_SELECT
 
 
 async def get_edit_selection(update, context):
     await update.callback_query.answer()
-    sid = int(update.callback_query.data.split("_")[-1])
+    sid = int(update.callback_query.data.rsplit("_", 1)[1])
     rec = secure_db.table("partner_inventory").get(doc_id=sid)
     context.user_data.update({
         "edit_id":  sid,
@@ -289,8 +295,7 @@ async def get_edit_selection(update, context):
 
 async def get_edit_qty(update, context):
     try:
-        qty = int(update.message.text.strip())
-        assert qty > 0
+        qty = int(update.message.text.strip()); assert qty > 0
     except Exception:
         await update.message.reply_text("Enter a positive integer.")
         return SI_EDIT_QTY
@@ -367,9 +372,9 @@ async def confirm_edit_stockin(update, context):
     return ConversationHandler.END
 
 
-# ======================================================================
+# =====================================================================
 #                               DELETE  FLOW
-# ======================================================================
+# =====================================================================
 @require_unlock
 async def remove_stockin(update, context):
     await update.callback_query.answer()
@@ -389,7 +394,7 @@ async def remove_stockin(update, context):
 
 async def get_delete_partner(update, context):
     await update.callback_query.answer()
-    pid = int(update.callback_query.data.split("_")[-1])
+    pid  = int(update.callback_query.data.rsplit("_", 1)[1])
     rows = [r for r in secure_db.all("partner_inventory") if r["partner_id"] == pid]
     if not rows:
         await update.callback_query.edit_message_text(
@@ -407,7 +412,7 @@ async def get_delete_partner(update, context):
 
 async def confirm_delete_prompt(update, context):
     await update.callback_query.answer()
-    sid = int(update.callback_query.data.split("_")[-1])
+    sid = int(update.callback_query.data.rsplit("_", 1)[1])
     context.user_data["delete_id"] = sid
     kb = InlineKeyboardMarkup([[
         InlineKeyboardButton("✅ Yes", callback_data="del_conf_yes"),
@@ -434,20 +439,19 @@ async def confirm_delete_stockin(update, context):
     return ConversationHandler.END
 
 
-# ======================================================================
+# =====================================================================
 #                          REGISTER HANDLERS
-# ======================================================================
+# =====================================================================
 def register_stockin_handlers(app):
     app.add_handler(CallbackQueryHandler(show_stockin_menu, pattern="^stockin_menu$"))
 
-    # --- Add
+    # ---------- ADD ----------
     app.add_handler(ConversationHandler(
-        entry_points=[
-            CommandHandler("add_stockin", add_stockin),
-            CallbackQueryHandler(add_stockin, pattern="^add_stockin$")
-        ],
+        entry_points=[CommandHandler("add_stockin", add_stockin),
+                      CallbackQueryHandler(add_stockin, pattern="^add_stockin$")],
         states={
             SI_PARTNER_SELECT: [CallbackQueryHandler(get_stockin_partner, pattern="^si_part_\\d+$")],
+            SI_STORE_SELECT:   [CallbackQueryHandler(get_stockin_store,  pattern="^si_store_\\d+$")],
             SI_ITEM_SELECT:    [MessageHandler(filters.TEXT & ~filters.COMMAND, get_stockin_item)],
             SI_QTY:            [MessageHandler(filters.TEXT & ~filters.COMMAND, get_stockin_qty)],
             SI_COST:           [MessageHandler(filters.TEXT & ~filters.COMMAND, get_stockin_cost)],
@@ -461,15 +465,13 @@ def register_stockin_handlers(app):
         per_message=False
     ))
 
-    # --- View
+    # ---------- VIEW ----------
     app.add_handler(CallbackQueryHandler(view_stockins, pattern="^view_stockin$"))
 
-    # --- Edit
+    # ---------- EDIT ----------
     app.add_handler(ConversationHandler(
-        entry_points=[
-            CommandHandler("edit_stockin", edit_stockin),
-            CallbackQueryHandler(edit_stockin, pattern="^edit_stockin$")
-        ],
+        entry_points=[CommandHandler("edit_stockin", edit_stockin),
+                      CallbackQueryHandler(edit_stockin, pattern="^edit_stockin$")],
         states={
             SI_EDIT_PARTNER: [CallbackQueryHandler(get_edit_partner, pattern="^edit_si_part_\\d+$")],
             SI_EDIT_SELECT:  [CallbackQueryHandler(get_edit_selection, pattern="^edit_stockin_\\d+$")],
@@ -483,12 +485,10 @@ def register_stockin_handlers(app):
         per_message=False
     ))
 
-    # --- Delete
+    # ---------- DELETE ----------
     app.add_handler(ConversationHandler(
-        entry_points=[
-            CommandHandler("remove_stockin", remove_stockin),
-            CallbackQueryHandler(remove_stockin, pattern="^remove_stockin$")
-        ],
+        entry_points=[CommandHandler("remove_stockin", remove_stockin),
+                      CallbackQueryHandler(remove_stockin, pattern="^remove_stockin$")],
         states={
             SI_DELETE_PARTNER: [CallbackQueryHandler(get_delete_partner, pattern="^del_si_part_\\d+$")],
             SI_DELETE_SELECT:  [CallbackQueryHandler(confirm_delete_prompt, pattern="^del_stockin_\\d+$")],
