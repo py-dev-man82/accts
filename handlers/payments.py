@@ -132,27 +132,17 @@ async def get_payment_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
     f"USD Received: {context.user_data['usd_amt']:.2f}
 
 "
-    f"FX Rate: {(context.user_data['local_amt'] * (1 - context.user_data['fee_perc']/100) / context.user_data['usd_amt']):.4f}
+    f"FX Rate: {(context.user_data['local_amt'] * (1 - context.user_data['fee_perc']/100)) / context.user_data['usd_amt']:.6f}
 "
-    f"Inverse: {(context.user_data['usd_amt'] / (context.user_data['local_amt'] * (1 - context.user_data['fee_perc']/100))):.4f}
+    f"Inverse Rate: {context.user_data['usd_amt'] / (context.user_data['local_amt'] * (1 - context.user_data['fee_perc']/100)):.6f}
 "
     f"Note: {context.user_data.get('note','')}"
 )
-"
-        f"USD Received: {usd_amt:.2f}
-
-"
-        f"FX Rate: {fx_rate:.4f}
-"
-        f"Inverse: {inv_rate:.4f}
-"
-        f"Note: {note}"
-    )
     kb = InlineKeyboardMarkup([[
         InlineKeyboardButton("✅ Yes", callback_data="pay_conf_yes"),
         InlineKeyboardButton("❌ No",  callback_data="pay_conf_no")
     ]])
-    await target.reply_text(summary, reply_markup=kb)
+    await (update.message or update.callback_query.message).reply_text(summary, reply_markup=kb)
     return P_CONFIRM
 
 @require_unlock
