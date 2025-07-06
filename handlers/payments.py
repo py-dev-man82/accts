@@ -266,4 +266,3 @@ def register_payment_handlers(app):
         per_message=False
     )
     app.add_handler(del_conv)
- 
