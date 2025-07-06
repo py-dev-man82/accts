@@ -101,35 +101,48 @@ async def get_payment_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return P_NOTE
 
 async def get_payment_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.callback_query and update.callback_query.data == 'note_skip':
-        note = ''
+    # Handle optional note entry, supports skip via button or text
+    if update.callback_query:
         await update.callback_query.answer()
+        text = update.callback_query.data
+        # If skip button pressed, treat as '/skip'
+        note = ''
+        target = update.callback_query.message
     else:
-        note = update.message.text.strip()
+        text = update.message.text.strip()
+        note = '' if text.lower() == '/skip' else text
+        target = update.message
     context.user_data['note'] = note
-    # build summary
-    la = context.user_data['local_amt']
-    fp = context.user_data['fee_perc']
-    fa = la * fp / 100
-    net = la - fa
-    ua = context.user_data['usd_amt']
-    fx = net / ua
-    inv = ua / net
-    date = context.user_data['date']
+    # Calculate fees and rates
+    local_amt = context.user_data['local_amt']
+    fee_perc = context.user_data['fee_perc']
+    fee_amt = local_amt * fee_perc / 100
+    net_local = local_amt - fee_amt
+    usd_amt = context.user_data['usd_amt']
+    fx_rate = net_local / usd_amt if usd_amt else 0
+    inv_rate = usd_amt / net_local if net_local else 0
+    date_str = context.user_data.get('date', datetime.utcnow().date().isoformat())
     summary = (
-        f"Date: {date}\n"
-        f"Received: {la:.2f}\n"
-        f"Fee: {fp:.2f}% ({fa:.2f})\n"
-        f"USD Recv: {ua:.2f}\n"
-        f"FX Rate: {fx:.4f}\n"
-        f"Inverse: {inv:.4f}\n"
+        f"Date: {date_str}
+"
+        f"Received: {local_amt:.2f}
+"
+        f"Fee: {fee_perc:.2f}% ({fee_amt:.2f})
+"
+        f"USD Received: {usd_amt:.2f}
+
+"
+        f"FX Rate: {fx_rate:.4f}
+"
+        f"Inverse: {inv_rate:.4f}
+"
         f"Note: {note}"
     )
     kb = InlineKeyboardMarkup([[
         InlineKeyboardButton("✅ Yes", callback_data="pay_conf_yes"),
         InlineKeyboardButton("❌ No",  callback_data="pay_conf_no")
     ]])
-    await (update.message or update.callback_query).reply_text(summary, reply_markup=kb)
+    await target.reply_text(summary, reply_markup=kb)
     return P_CONFIRM
 
 @require_unlock
