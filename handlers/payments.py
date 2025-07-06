@@ -24,7 +24,7 @@ from secure_db import secure_db
     P_FEE_PERC,
     P_USD_RECEIVED,
     P_NOTE,
-    P_DATE,            # 🆕 Added Date
+    P_DATE,            # 🆕 Added for custom date
     P_CONFIRM,
     P_EDIT_CUST_SELECT,
     P_EDIT_SELECT,
@@ -32,11 +32,11 @@ from secure_db import secure_db
     P_EDIT_FEE,
     P_EDIT_USD,
     P_EDIT_NOTE,
-    P_EDIT_DATE,       # 🆕 Added Date for Edit
+    P_EDIT_DATE,       # 🆕 Added for custom date edit
     P_EDIT_CONFIRM,
     P_DELETE_CUST_SELECT,
     P_DELETE_SELECT,
-) = range(16)
+) = range(17)  # ✅ Corrected count (17 items)
 
 
 # ────────────────────────────────────────────────────────────
