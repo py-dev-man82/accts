@@ -180,7 +180,7 @@ async def confirm_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
     d = context.user_data
-    fee_amt = d['local_amt'] * d['fee_perc'] / 100  # ✅ Compute fee_amt here
+    fee_amt = d['local_amt'] * d['fee_perc'] / 100
     rec = {
         'customer_id': d['customer_id'],
         'local_amt':   d['local_amt'],
@@ -201,26 +201,7 @@ async def confirm_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ======================================================================
-#                              VIEW FLOW
-# ======================================================================
-async def view_payments(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.answer()
-    rows = secure_db.all('customer_payments')
-    if not rows:
-        text = "No payments found."
-    else:
-        lines = []
-        for r in rows:
-            cust = secure_db.table('customers').get(doc_id=r['customer_id'])
-            name = cust['name'] if cust else "Unknown"
-            lines.append(f"[{r.doc_id}] {name}: {r['local_amt']:.2f} → {r['usd_amt']:.2f} USD on {r.get('date','')} | Note: {r.get('note','')}")
-        text = "Payments:\n" + "\n".join(lines)
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="payment_menu")]])
-    await update.callback_query.edit_message_text(text, reply_markup=kb)
-
-
-# ======================================================================
-#                     START EDIT FLOW
+#                     START EDIT FLOW (with edit_id fix)
 # ======================================================================
 @require_unlock
 async def start_edit_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -256,9 +237,6 @@ async def list_user_payments_for_edit(update: Update, context: ContextTypes.DEFA
     return P_EDIT_SELECT
 
 
-# ======================================================================
-#                              EDIT FLOW (continued)
-# ======================================================================
 @require_unlock
 async def get_payment_edit_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
@@ -266,6 +244,7 @@ async def get_payment_edit_selection(update: Update, context: ContextTypes.DEFAU
     rec = secure_db.table('customer_payments').get(doc_id=pid)
     context.user_data.update({
         'edit_payment': rec,
+        'edit_id':      pid,  # ✅ Store doc_id separately
         'local_amt':    rec['local_amt'],
         'fee_perc':     rec['fee_perc'],
         'usd_amt':      rec['usd_amt'],
@@ -275,7 +254,10 @@ async def get_payment_edit_selection(update: Update, context: ContextTypes.DEFAU
     await update.callback_query.edit_message_text("Enter new local amount:")
     return P_EDIT_LOCAL
 
-
+# ======================================================================
+#                              EDIT FLOW (continued)
+# ======================================================================
+@require_unlock
 async def get_edit_local(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         amt = float(update.message.text)
@@ -372,8 +354,8 @@ async def confirm_edit_payment(update: Update, context: ContextTypes.DEFAULT_TYP
         return ConversationHandler.END
 
     d = context.user_data
-    fee_amt = d['local_amt'] * d['fee_perc'] / 100  # ✅ Compute fee_amt here
-    rec_id = context.user_data['edit_payment']['doc_id']
+    fee_amt = d['local_amt'] * d['fee_perc'] / 100
+    rec_id = d['edit_id']  # ✅ Use stored edit_id
     updated = {
         'customer_id': d['customer_id'],
         'local_amt':   d['local_amt'],
