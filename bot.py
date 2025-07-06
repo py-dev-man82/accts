@@ -112,7 +112,7 @@ def main():
     register_sales_handlers(app)
 
     # Uncomment when ready:
-     app.add_handler(CallbackQueryHandler(show_payment_menu, pattern="^payment_menu$"))
+    app.add_handler(CallbackQueryHandler(show_payment_menu, pattern="^payment_menu$"))
     register_payment_handlers(app)
     # app.add_handler(CallbackQueryHandler(show_payout_menu, pattern="^payout_menu$"))
     # register_payout_handlers(app)
