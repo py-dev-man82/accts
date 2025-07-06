@@ -24,7 +24,7 @@ from secure_db import secure_db
     P_FEE_PERC,
     P_USD_RECEIVED,
     P_NOTE,
-    P_DATE,            # 🆕 Added for custom date
+    P_DATE,            # Added for custom date
     P_CONFIRM,
     P_EDIT_CUST_SELECT,
     P_EDIT_SELECT,
@@ -32,11 +32,12 @@ from secure_db import secure_db
     P_EDIT_FEE,
     P_EDIT_USD,
     P_EDIT_NOTE,
-    P_EDIT_DATE,       # 🆕 Added for custom date edit
+    P_EDIT_DATE,       # Added for custom date in edit
     P_EDIT_CONFIRM,
     P_DELETE_CUST_SELECT,
     P_DELETE_SELECT,
-) = range(17)  # ✅ Corrected count (17 items)
+    P_DELETE_CONFIRM,  # Added for delete confirmation
+) = range(18)
 
 
 # ────────────────────────────────────────────────────────────
@@ -175,35 +176,27 @@ async def confirm_payment_prompt(update: Update, context: ContextTypes.DEFAULT_T
 @require_unlock
 async def confirm_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
-    editing = 'edit_payment' in context.user_data
-    if update.callback_query.data == 'pay_conf_yes':
-        d = context.user_data
-        rec = {
-            'customer_id': d.get('customer_id') if not editing else context.user_data['edit_payment']['customer_id'],
-            'local_amt':   d['local_amt'],
-            'fee_perc':    d['fee_perc'],
-            'fee_amt':     d['local_amt'] * d['fee_perc'] / 100,
-            'usd_amt':     d['usd_amt'],
-            'fx_rate':     (d['local_amt'] - d['local_amt'] * d['fee_perc'] / 100) / d['usd_amt'] if d['usd_amt'] else 0,
-            'note':        d['note'],
-            'date':        d['date'],
-            'timestamp':   datetime.utcnow().isoformat()
-        }
-        if editing:
-            old = context.user_data['edit_payment']
-            secure_db.update('customer_payments', rec, [old.doc_id])
-            del context.user_data['edit_payment']
-            msg = f"✅ Payment #{old.doc_id} updated."
-        else:
-            secure_db.insert('customer_payments', rec)
-            msg = "✅ Payment recorded."
-
-        await update.callback_query.edit_message_text(
-            msg,
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="payment_menu")]])
-        )
-    else:
+    if update.callback_query.data != 'pay_conf_yes':
         await show_payment_menu(update, context)
+        return ConversationHandler.END
+
+    d = context.user_data
+    rec = {
+        'customer_id': d['customer_id'],
+        'local_amt':   d['local_amt'],
+        'fee_perc':    d['fee_perc'],
+        'fee_amt':     d['local_amt'] * d['fee_perc'] / 100,
+        'usd_amt':     d['usd_amt'],
+        'fx_rate':     (d['local_amt'] - d['fee_amt']) / d['usd_amt'] if d['usd_amt'] else 0,
+        'note':        d['note'],
+        'date':        d['date'],
+        'timestamp':   datetime.utcnow().isoformat()
+    }
+    secure_db.insert('customer_payments', rec)
+    await update.callback_query.edit_message_text(
+        "✅ Payment recorded.",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="payment_menu")]])
+    )
     return ConversationHandler.END
 
 
@@ -211,172 +204,61 @@ async def confirm_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
 #                              EDIT FLOW
 # ======================================================================
 @require_unlock
-async def start_edit_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def confirm_edit_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
-    rows = secure_db.all('customers')
-    buttons = [InlineKeyboardButton(u['name'], callback_data=f"edit_user_{u.doc_id}") for u in rows]
-    kb = InlineKeyboardMarkup([buttons[i:i+2] for i in range(0, len(buttons), 2)])
-    await update.callback_query.edit_message_text("Choose customer:", reply_markup=kb)
-    return P_EDIT_CUST_SELECT
-
-
-async def list_user_payments_for_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.answer()
-    cid = int(update.callback_query.data.split("_")[-1])
-    context.user_data['customer_id'] = cid
-    rows = [r for r in secure_db.all('customer_payments') if r['customer_id'] == cid]
-    if not rows:
-        await update.callback_query.edit_message_text(
-            "No payments for this customer.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="payment_menu")]])
-        )
+    if update.callback_query.data != 'pay_edit_conf_yes':
+        await show_payment_menu(update, context)
         return ConversationHandler.END
-    buttons = [InlineKeyboardButton(f"[{r.doc_id}] {r['local_amt']:.2f}->{r['usd_amt']:.2f}", callback_data=f"edit_payment_{r.doc_id}") for r in rows]
-    kb = InlineKeyboardMarkup([buttons[i:i+2] for i in range(0, len(buttons), 2)])
-    await update.callback_query.edit_message_text("Select payment:", reply_markup=kb)
-    return P_EDIT_SELECT
 
-
-async def get_payment_edit_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.answer()
-    pid = int(update.callback_query.data.split("_")[-1])
-    rec = secure_db.table('customer_payments').get(doc_id=pid)
-    context.user_data.update({
-        'edit_payment': rec,
-        'local_amt':    rec['local_amt'],
-        'fee_perc':     rec['fee_perc'],
-        'usd_amt':      rec['usd_amt'],
-        'note':         rec.get('note', ''),
-        'date':         rec.get('date', datetime.now().strftime('%d%m%Y'))
-    })
-    await update.callback_query.edit_message_text("Enter new local amount:")
-    return P_EDIT_LOCAL
-
-
-async def get_edit_local(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        amt = float(update.message.text)
-        assert amt > 0
-    except:
-        await update.message.reply_text("Positive number please.")
-        return P_EDIT_LOCAL
-    context.user_data['local_amt'] = amt
-    await update.message.reply_text("Enter new handling fee %:")
-    return P_EDIT_FEE
-
-
-async def get_edit_fee(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        fee = float(update.message.text)
-        assert 0 <= fee < 100
-    except:
-        await update.message.reply_text("Enter a fee percentage between 0 and 99.")
-        return P_EDIT_FEE
-    context.user_data['fee_perc'] = fee
-    await update.message.reply_text("Enter new USD received:")
-    return P_EDIT_USD
-
-
-async def get_edit_usd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        usd = float(update.message.text)
-    except:
-        await update.message.reply_text("Number please.")
-        return P_EDIT_USD
-    context.user_data['usd_amt'] = usd
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton("➖ Skip note", callback_data="note_skip")]])
-    await update.message.reply_text("Enter an optional note or press Skip:", reply_markup=kb)
-    return P_EDIT_NOTE
-
-
-async def get_edit_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.callback_query:
-        await update.callback_query.answer()
-        note = ""
-    else:
-        note = update.message.text.strip()
-    context.user_data['note'] = note
-    today = datetime.now().strftime('%d%m%Y')
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton("📅 Skip date", callback_data="edate_skip")]])
-    prompt = f"Enter payment date DDMMYYYY or press Skip for today ({today}):"
-    if update.callback_query:
-        await update.callback_query.edit_message_text(prompt, reply_markup=kb)
-    else:
-        await update.message.reply_text(prompt, reply_markup=kb)
-    return P_EDIT_DATE
-
-
-async def get_edit_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.callback_query:
-        await update.callback_query.answer()
-        date_str = datetime.now().strftime('%d%m%Y')
-    else:
-        date_str = update.message.text.strip()
-        try:
-            datetime.strptime(date_str, '%d%m%Y')
-        except ValueError:
-            await update.message.reply_text("Format DDMMYYYY please.")
-            return P_EDIT_DATE
-    context.user_data['date'] = date_str
-    return await confirm_payment_prompt(update, context)
+    d = context.user_data
+    rec_id = context.user_data['edit_payment']['doc_id']
+    updated = {
+        'customer_id': d['customer_id'],
+        'local_amt':   d['local_amt'],
+        'fee_perc':    d['fee_perc'],
+        'fee_amt':     d['local_amt'] * d['fee_perc'] / 100,
+        'usd_amt':     d['usd_amt'],
+        'fx_rate':     (d['local_amt'] - d['fee_amt']) / d['usd_amt'] if d['usd_amt'] else 0,
+        'note':        d['note'],
+        'date':        d['date'],
+    }
+    secure_db.update('customer_payments', updated, [rec_id])
+    await update.callback_query.edit_message_text(
+        f"✅ Payment {rec_id} updated.",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="payment_menu")]])
+    )
+    return ConversationHandler.END
 
 
 # ======================================================================
-#                              VIEW FLOW
+#                              REMOVE FLOW
 # ======================================================================
-async def view_payments(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def confirm_delete_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
-    rows = secure_db.all('customer_payments')
-    if not rows:
-        text = "No payments found."
-    else:
-        lines = []
-        for r in rows:
-            cust = secure_db.table('customers').get(doc_id=r['customer_id'])
-            name = cust['name'] if cust else "Unknown"
-            lines.append(f"[{r.doc_id}] {name}: {r['local_amt']:.2f} → {r['usd_amt']:.2f} USD on {r.get('date','')} | Note: {r.get('note','')}")
-        text = "Payments:\n" + "\n".join(lines)
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="payment_menu")]])
-    await update.callback_query.edit_message_text(text, reply_markup=kb)
-
-
-# ======================================================================
-#                              DELETE FLOW
-# ======================================================================
-@require_unlock
-async def start_delete_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.answer()
-    rows = secure_db.all('customers')
-    buttons = [InlineKeyboardButton(u['name'], callback_data=f"del_user_{u.doc_id}") for u in rows]
-    kb = InlineKeyboardMarkup([buttons[i:i+2] for i in range(0,len(buttons),2)])
-    await update.callback_query.edit_message_text("Choose customer:", reply_markup=kb)
-    return P_DELETE_CUST_SELECT
-
-
-async def list_user_payments_for_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.answer()
-    cid = int(update.callback_query.data.split("_")[-1])
-    rows = [r for r in secure_db.all('customer_payments') if r['customer_id'] == cid]
-    if not rows:
-        await update.callback_query.edit_message_text(
-            "No payments for this customer.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="payment_menu")]])
-        )
-        return ConversationHandler.END
-    buttons = [InlineKeyboardButton(f"[{r.doc_id}] {r['local_amt']:.2f}->{r['usd_amt']:.2f}", callback_data=f"delete_payment_{r.doc_id}") for r in rows]
-    kb = InlineKeyboardMarkup([buttons[i:i+2] for i in range(0, len(buttons), 2)])
-    await update.callback_query.edit_message_text("Select to delete:", reply_markup=kb)
-    return P_DELETE_SELECT
+    did = int(update.callback_query.data.split("_")[-1])
+    context.user_data['delete_id'] = did
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Yes", callback_data="pay_del_yes"),
+         InlineKeyboardButton("❌ No",  callback_data="pay_del_no")]
+    ])
+    await update.callback_query.edit_message_text(
+        f"Are you sure you want to delete Payment #{did}?",
+        reply_markup=kb
+    )
+    return P_DELETE_CONFIRM
 
 
 async def confirm_delete_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
-    did = int(update.callback_query.data.split("_")[-1])
-    secure_db.remove('customer_payments', [did])
-    await update.callback_query.edit_message_text(
-        f"✅ Payment {did} deleted.",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="payment_menu")]])
-    )
+    if update.callback_query.data == "pay_del_yes":
+        did = context.user_data['delete_id']
+        secure_db.remove('customer_payments', [did])
+        await update.callback_query.edit_message_text(
+            f"✅ Payment {did} deleted.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="payment_menu")]])
+        )
+    else:
+        await show_payment_menu(update, context)
     return ConversationHandler.END
 
 
@@ -397,14 +279,10 @@ def register_payment_handlers(app):
             P_LOCAL_AMT:    [MessageHandler(filters.TEXT & ~filters.COMMAND, get_local_amount)],
             P_FEE_PERC:     [MessageHandler(filters.TEXT & ~filters.COMMAND, get_fee_percent)],
             P_USD_RECEIVED: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_usd_received)],
-            P_NOTE:         [
-                CallbackQueryHandler(get_payment_note, pattern="^note_skip$"),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, get_payment_note)
-            ],
-            P_DATE:         [
-                CallbackQueryHandler(get_payment_date, pattern="^date_skip$"),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, get_payment_date)
-            ],
+            P_NOTE:         [CallbackQueryHandler(get_payment_note, pattern="^note_skip$"),
+                             MessageHandler(filters.TEXT & ~filters.COMMAND, get_payment_note)],
+            P_DATE:         [CallbackQueryHandler(get_payment_date, pattern="^date_skip$"),
+                             MessageHandler(filters.TEXT & ~filters.COMMAND, get_payment_date)],
             P_CONFIRM:      [CallbackQueryHandler(confirm_payment, pattern="^pay_conf_")],
         },
         fallbacks=[CommandHandler("cancel", show_payment_menu)],
@@ -427,15 +305,11 @@ def register_payment_handlers(app):
             P_EDIT_LOCAL:       [MessageHandler(filters.TEXT & ~filters.COMMAND, get_edit_local)],
             P_EDIT_FEE:         [MessageHandler(filters.TEXT & ~filters.COMMAND, get_edit_fee)],
             P_EDIT_USD:         [MessageHandler(filters.TEXT & ~filters.COMMAND, get_edit_usd)],
-            P_EDIT_NOTE:        [
-                CallbackQueryHandler(get_edit_note, pattern="^note_skip$"),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, get_edit_note)
-            ],
-            P_EDIT_DATE:        [
-                CallbackQueryHandler(get_edit_date, pattern="^edate_skip$"),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, get_edit_date)
-            ],
-            P_EDIT_CONFIRM:     [CallbackQueryHandler(confirm_payment, pattern="^pay_conf_")],
+            P_EDIT_NOTE:        [CallbackQueryHandler(get_edit_note, pattern="^note_skip$"),
+                                 MessageHandler(filters.TEXT & ~filters.COMMAND, get_edit_note)],
+            P_EDIT_DATE:        [CallbackQueryHandler(get_edit_date, pattern="^edate_skip$"),
+                                 MessageHandler(filters.TEXT & ~filters.COMMAND, get_edit_date)],
+            P_EDIT_CONFIRM:     [CallbackQueryHandler(confirm_edit_payment, pattern="^pay_edit_conf_")],
         },
         fallbacks=[CommandHandler("cancel", show_payment_menu)],
         per_message=False
@@ -450,7 +324,8 @@ def register_payment_handlers(app):
         ],
         states={
             P_DELETE_CUST_SELECT: [CallbackQueryHandler(list_user_payments_for_delete, pattern="^del_user_")],
-            P_DELETE_SELECT:      [CallbackQueryHandler(confirm_delete_payment, pattern="^delete_payment_")],
+            P_DELETE_SELECT:      [CallbackQueryHandler(confirm_delete_prompt, pattern="^delete_payment_")],
+            P_DELETE_CONFIRM:     [CallbackQueryHandler(confirm_delete_payment, pattern="^pay_del_")],
         },
         fallbacks=[CommandHandler("cancel", show_payment_menu)],
         per_message=False
