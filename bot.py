@@ -41,9 +41,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton("🏪 Stores",    callback_data="store_menu"),
         ],
         # Uncomment for additional modules:
-        # [InlineKeyboardButton("🤝 Partners", callback_data="partner_menu")],
+        [InlineKeyboardButton("🤝 Partners", callback_data="partner_menu")],
         # [InlineKeyboardButton("💰 Sales",    callback_data="sales_menu")],
-        [InlineKeyboardButton("🔐 Unlock DB", callback_data="unlock_menu")],
+       # [InlineKeyboardButton("🔐 Unlock DB", callback_data="unlock_menu")],
     ])
     await update.message.reply_text("Welcome! Choose an option:", reply_markup=kb)
 
