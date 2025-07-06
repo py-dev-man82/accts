@@ -201,6 +201,20 @@ async def confirm_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ======================================================================
+#                              EDIT FLOW
+# ======================================================================
+@require_unlock
+async def start_edit_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logging.info("Start edit_payment: pick customer")
+    await update.callback_query.answer()
+    rows = secure_db.all('customers')
+    buttons = [InlineKeyboardButton(f"{r['name']} ({r['currency']})", callback_data=f"edit_user_{r.doc_id}") for r in rows]
+    kb = InlineKeyboardMarkup([buttons[i:i+2] for i in range(0, len(buttons), 2)])
+    await update.callback_query.edit_message_text("Choose customer:", reply_markup=kb)
+    return P_EDIT_CUST_SELECT
+
+
+# ======================================================================
 #                              VIEW FLOW
 # ======================================================================
 async def view_payments(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -220,7 +234,7 @@ async def view_payments(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ======================================================================
-#                              EDIT FLOW
+#                              EDIT CONFIRMATION
 # ======================================================================
 @require_unlock
 async def confirm_edit_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -252,6 +266,33 @@ async def confirm_edit_payment(update: Update, context: ContextTypes.DEFAULT_TYP
 # ======================================================================
 #                              REMOVE FLOW
 # ======================================================================
+@require_unlock
+async def start_delete_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logging.info("Start delete_payment: pick customer")
+    await update.callback_query.answer()
+    rows = secure_db.all('customers')
+    buttons = [InlineKeyboardButton(f"{r['name']} ({r['currency']})", callback_data=f"del_user_{r.doc_id}") for r in rows]
+    kb = InlineKeyboardMarkup([buttons[i:i+2] for i in range(0, len(buttons), 2)])
+    await update.callback_query.edit_message_text("Choose customer:", reply_markup=kb)
+    return P_DELETE_CUST_SELECT
+
+
+async def list_user_payments_for_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+    cid = int(update.callback_query.data.split("_")[-1])
+    rows = [r for r in secure_db.all('customer_payments') if r['customer_id'] == cid]
+    if not rows:
+        await update.callback_query.edit_message_text(
+            "No payments for this customer.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="payment_menu")]])
+        )
+        return ConversationHandler.END
+    buttons = [InlineKeyboardButton(f"[{r.doc_id}] {r['local_amt']:.2f}->{r['usd_amt']:.2f}", callback_data=f"delete_payment_{r.doc_id}") for r in rows]
+    kb = InlineKeyboardMarkup([buttons[i:i+2] for i in range(0, len(buttons), 2)])
+    await update.callback_query.edit_message_text("Select to delete:", reply_markup=kb)
+    return P_DELETE_SELECT
+
+
 async def confirm_delete_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     did = int(update.callback_query.data.split("_")[-1])
@@ -305,7 +346,7 @@ def register_payment_handlers(app):
             P_CONFIRM:      [CallbackQueryHandler(confirm_payment, pattern="^pay_conf_")],
         },
         fallbacks=[CommandHandler("cancel", show_payment_menu)],
-        per_message=True
+        per_message=False
     )
     app.add_handler(add_conv)
 
@@ -331,7 +372,7 @@ def register_payment_handlers(app):
             P_EDIT_CONFIRM:     [CallbackQueryHandler(confirm_edit_payment, pattern="^pay_edit_conf_")],
         },
         fallbacks=[CommandHandler("cancel", show_payment_menu)],
-        per_message=True
+        per_message=False
     )
     app.add_handler(edit_conv)
 
@@ -347,6 +388,6 @@ def register_payment_handlers(app):
             P_DELETE_CONFIRM:     [CallbackQueryHandler(confirm_delete_payment, pattern="^pay_del_")],
         },
         fallbacks=[CommandHandler("cancel", show_payment_menu)],
-        per_message=True
+        per_message=False
     )
     app.add_handler(del_conv)
