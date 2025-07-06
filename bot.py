@@ -12,38 +12,40 @@ from telegram.ext import (
     ContextTypes,
 )
 
+# Configure root logger
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
+
+# Import customer submenu and handler registration
 from handlers.customers import register_customer_handlers, show_customer_menu
 
-# --- Main Menu Keyboard Builder ---
-def build_main_menu():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("👤 Customers", callback_data="customer_menu")],
-        # Other main menu buttons can be added here
-    ])
-
-# --- Core Command Handlers ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    kb = build_main_menu()
+    logger.info("Received /start from user %s", update.effective_user.id)
+    kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton("👤 Customers", callback_data="customer_menu"),
+    ]])
     await update.message.reply_text("Welcome! Choose an option:", reply_markup=kb)
 
 async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # CallbackQuery for main menu
+    logger.info("Returning to main menu")
     if update.callback_query:
         await update.callback_query.answer()
-        kb = build_main_menu()
         try:
+            kb = InlineKeyboardMarkup([[
+                InlineKeyboardButton("👤 Customers", callback_data="customer_menu"),
+            ]])
             await update.callback_query.edit_message_text(
                 "Welcome! Choose an option:", reply_markup=kb
             )
         except BadRequest as e:
-            # Ignore 'Message is not modified' errors
-            if "Message is not modified" not in str(e):
-                raise
-    else:
-        kb = build_main_menu()
-        await update.message.reply_text("Welcome! Choose an option:", reply_markup=kb)
+            # Telegram: “Message is not modified” can be safely ignored
+            logger.debug("BadRequest in show_main_menu: %s", e)
 
 async def unlock_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.info("Received /unlock")
     if not context.args:
         await update.message.reply_text("Usage: /unlock <passphrase>")
         return
@@ -52,29 +54,27 @@ async def unlock_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("🔓 Database unlocked.")
     except Exception as e:
         await update.message.reply_text(f"Unlock failed: {e}")
+        logger.error("Unlock error: %s", e)
 
 async def lock_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.info("Received /lock")
     secure_db.lock()
     await update.message.reply_text("🔒 Database locked.")
 
-# --- Main Application Entry Point ---
 def main():
-    logging.basicConfig(level=logging.INFO)
     app = ApplicationBuilder().token(config.BOT_TOKEN).build()
 
     # Core commands
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(show_main_menu, pattern="^main_menu$"))
     app.add_handler(CommandHandler("unlock", unlock_command))
     app.add_handler(CommandHandler("lock", lock_command))
 
-    # Customers flow
+    # Main-menu callback
+    app.add_handler(CallbackQueryHandler(show_main_menu, pattern="^main_menu$"))
+
+    # Customer flows only
     app.add_handler(CallbackQueryHandler(show_customer_menu, pattern="^customer_menu$"))
     register_customer_handlers(app)
-
-    # (Other flows are commented out for isolated testing)
-    # app.add_handler(CallbackQueryHandler(show_store_menu, pattern="^store_menu$"))
-    # register_store_handlers(app)
 
     app.run_polling()
 
