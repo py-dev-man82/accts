@@ -20,15 +20,15 @@ from secure_db import secure_db
     P_PARTNER_SELECT,
     P_LOCAL_AMT,
     P_FEE_PERC,
-    P_USD_PAID,
     P_NOTE,
+    P_DATE,
     P_CONFIRM,
     P_EDIT_PARTNER,
     P_EDIT_SELECT,
     P_EDIT_LOCAL,
     P_EDIT_FEE,
-    P_EDIT_USD,
     P_EDIT_NOTE,
+    P_EDIT_DATE,
     P_EDIT_CONFIRM,
     P_DELETE_PARTNER,
     P_DELETE_SELECT,
@@ -55,7 +55,6 @@ async def show_payout_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # --- Add Payout Flow ---
 @require_unlock
 async def add_payout(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logging.info("Start add_payout")
     await update.callback_query.answer()
     partners = secure_db.all('partners')
     if not partners:
@@ -67,14 +66,14 @@ async def add_payout(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     buttons = [InlineKeyboardButton(p['name'], callback_data=f"pout_{p.doc_id}") for p in partners]
     kb = InlineKeyboardMarkup([buttons[i:i+2] for i in range(0, len(buttons), 2)])
-    await update.callback_query.edit_message_text("Select a partner:", reply_markup=kb)
+    await update.callback_query.edit_message_text("Select a partner for payout:", reply_markup=kb)
     return P_PARTNER_SELECT
 
 
 async def get_payout_partner(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     pid = int(update.callback_query.data.split("_")[-1])
-    context.user_data['partner_id'] = pid
+    context.user_data['payout'] = {'partner_id': pid}
     await update.callback_query.edit_message_text("Enter local amount to pay:")
     return P_LOCAL_AMT
 
@@ -88,7 +87,7 @@ async def get_payout_local(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Please enter a valid positive number.")
         return P_LOCAL_AMT
 
-    context.user_data['local_amt'] = amt
+    context.user_data['payout']['local_amt'] = amt
     await update.message.reply_text("Enter handling fee % (e.g. 2.5), or 0 if none:")
     return P_FEE_PERC
 
@@ -102,62 +101,62 @@ async def get_payout_fee(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Enter a fee percentage between 0 and 100.")
         return P_FEE_PERC
 
-    data = context.user_data
-    data['fee_perc'] = fee_pct
-    data['fee_amt'] = data['local_amt'] * fee_pct / 100.0
+    po = context.user_data['payout']
+    po['fee_perc'] = fee_pct
+    po['fee_amt'] = po['local_amt'] * fee_pct / 100.0
+
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("➖ Skip note", callback_data="note_skip")]])
     await update.message.reply_text(
-        f"Fee: {fee_pct:.2f}% → {data['fee_amt']:.2f}. Now enter USD paid:"
-    )
-    return P_USD_PAID
-
-
-async def get_payout_usd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        usd = float(update.message.text)
-    except ValueError:
-        await update.message.reply_text("Please enter a valid number.")
-        return P_USD_PAID
-
-    context.user_data['usd_amt'] = usd
-    # Prompt for note exactly like payments handler
-    kb = InlineKeyboardMarkup([[
-        InlineKeyboardButton("➖ Skip note", callback_data="note_skip"),
-    ]])
-    await update.message.reply_text(
-        "Optional: enter note or press Skip:",
+        f"Fee: {fee_pct:.2f}% → {po['fee_amt']:.2f}\n\n"
+        "Enter an optional note or press Skip:",
         reply_markup=kb
     )
     return P_NOTE
 
 
 async def get_payout_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # mirrors payments: skip-button or user text
+    # mirror payments handler: skip-button or text
     if update.callback_query:
         await update.callback_query.answer()
         note = ""
     else:
         note = update.message.text.strip()
-    context.user_data['note'] = note
-    return await confirm_payout_prompt(update, context)
+    po = context.user_data['payout']
+    po['note'] = note
+
+    today_str = datetime.now().strftime("%d%m%Y")
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("📅 Skip to today", callback_data="date_skip")]])
+    await update.callback_query.edit_message_text(
+        f"Enter payout date DDMMYYYY, or press Skip for today ({today_str}):",
+        reply_markup=kb
+    )
+    return P_DATE
 
 
-async def confirm_payout_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    data = context.user_data
-    local, fee_pct, fee_amt = data['local_amt'], data.get('fee_perc', 0), data.get('fee_amt', 0)
-    usd = data['usd_amt']
-    net = local - fee_amt
-    fx = net / usd if usd else 0
+async def get_payout_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    po = context.user_data['payout']
+    if update.callback_query:
+        await update.callback_query.answer()
+        date_str = datetime.now().strftime("%d%m%Y")
+    else:
+        date_str = update.message.text.strip()
+        try:
+            datetime.strptime(date_str, "%d%m%Y")
+        except ValueError:
+            await update.message.reply_text("Invalid format. Please enter DDMMYYYY.")
+            return P_DATE
+    po['date'] = date_str
 
     summary = (
-        f"Local: {local:.2f}\n"
-        f"Fee: {fee_pct:.2f}% ({fee_amt:.2f})\n"
-        f"USD Paid: {usd:.2f}\n"
-        f"FX Rate: {fx:.4f}\n"
-        f"Note: {data.get('note','')}"
+        f"Partner ID: {po['partner_id']}\n"
+        f"Local: {po['local_amt']:.2f}\n"
+        f"Fee: {po['fee_perc']:.2f}% ({po['fee_amt']:.2f})\n"
+        f"Note: {po.get('note','')}\n"
+        f"Date: {po['date']}"
     )
     kb = InlineKeyboardMarkup([[
-        InlineKeyboardButton("✅ Yes", callback_data="pout_conf_yes"),
-        InlineKeyboardButton("❌ No",  callback_data="pout_conf_no"),
+        InlineKeyboardButton("✅ Confirm", callback_data="pout_conf_yes"),
+        InlineKeyboardButton("❌ Cancel",  callback_data="pout_conf_no"),
     ]])
     await update.callback_query.edit_message_text(summary, reply_markup=kb)
     return P_CONFIRM
@@ -166,21 +165,20 @@ async def confirm_payout_prompt(update: Update, context: ContextTypes.DEFAULT_TY
 @require_unlock
 async def confirm_payout(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
+    po = context.user_data.pop('payout', {})
     if update.callback_query.data == 'pout_conf_yes':
-        d = context.user_data
         rec = {
-            'partner_id': d['partner_id'],
-            'local_amt':  d['local_amt'],
-            'fee_perc':   d['fee_perc'],
-            'fee_amt':    d['fee_amt'],
-            'usd_amt':    d['usd_amt'],
-            'fx_rate':    (d['local_amt'] - d['fee_amt']) / d['usd_amt'] if d['usd_amt'] else 0,
-            'note':       d.get('note',''),
+            'partner_id': po['partner_id'],
+            'local_amt':  po['local_amt'],
+            'fee_perc':   po['fee_perc'],
+            'fee_amt':    po['fee_amt'],
+            'note':       po.get('note',''),
+            'date':       po['date'],
             'timestamp':  datetime.utcnow().isoformat(),
         }
         secure_db.insert('partner_payouts', rec)
         await update.callback_query.edit_message_text(
-            f"✅ Payout of {d['local_amt']:.2f} recorded.",
+            f"✅ Payout of {po['local_amt']:.2f} recorded on {po['date']}.",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="payout_menu")]])
         )
     else:
@@ -200,11 +198,8 @@ async def view_payouts(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for r in rows:
             p = secure_db.table('partners').get(doc_id=r['partner_id'])
             name = p['name'] if p else 'Unknown'
-            fee_pct = r.get('fee_perc', 0)
-            fee_amt = r.get('fee_amt', 0)
             lines.append(
-                f"[{r.doc_id}] {name}: {r['local_amt']:.2f} "
-                f"(fee {fee_pct:.2f}%={fee_amt:.2f}) ⇒ {r['usd_amt']:.2f} USD"
+                f"[{r.doc_id}] {name} | {r['local_amt']:.2f} | {r.get('date','—')} | fee {r.get('fee_perc',0):.2f}%"
             )
         text = "Payouts:\n" + "\n".join(lines)
     kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="payout_menu")]])
@@ -226,7 +221,7 @@ async def edit_payout(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def get_edit_partner(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     pid = int(update.callback_query.data.split("_")[-1])
-    context.user_data['partner_id'] = pid
+    context.user_data['edit'] = {'partner_id': pid}
     rows = [r for r in secure_db.all('partner_payouts') if r['partner_id'] == pid]
     if not rows:
         return await show_payout_menu(update, context)
@@ -243,14 +238,14 @@ async def get_edit_selection(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await update.callback_query.answer()
     did = int(update.callback_query.data.split("_")[-1])
     rec = secure_db.table('partner_payouts').get(doc_id=did)
-    d = context.user_data
-    d.update({
-        'edit_id':   did,
+    e = context.user_data['edit']
+    e.update({
+        'id':       did,
         'local_amt': rec['local_amt'],
         'fee_perc':  rec.get('fee_perc', 0),
         'fee_amt':   rec.get('fee_amt', 0),
-        'usd_amt':   rec['usd_amt'],
         'note':      rec.get('note',''),
+        'date':      rec.get('date', datetime.now().strftime("%d%m%Y")),
     })
     await update.callback_query.edit_message_text("Enter new local amount:")
     return P_EDIT_LOCAL
@@ -264,7 +259,7 @@ async def get_edit_local(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except ValueError:
         await update.message.reply_text("Please enter a valid positive number.")
         return P_EDIT_LOCAL
-    context.user_data['local_amt'] = amt
+    context.user_data['edit']['local_amt'] = amt
     await update.message.reply_text("Enter new handling fee % (e.g. 2.5), or 0 if none:")
     return P_EDIT_FEE
 
@@ -277,27 +272,15 @@ async def get_edit_fee(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except ValueError:
         await update.message.reply_text("Enter a fee percentage between 0 and 100.")
         return P_EDIT_FEE
-
-    d = context.user_data
-    d['fee_perc'] = fee_pct
-    d['fee_amt'] = d['local_amt'] * fee_pct / 100.0
+    e = context.user_data['edit']
+    e['fee_perc'] = fee_pct
+    e['fee_amt'] = e['local_amt'] * fee_pct / 100.0
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("➖ Skip note", callback_data="note_skip")]])
     await update.message.reply_text(
-        f"Fee: {fee_pct:.2f}% → {d['fee_amt']:.2f}. Now enter new USD paid:"
+        f"Fee: {fee_pct:.2f}% → {e['fee_amt']:.2f}\n\n"
+        "Enter an optional note or press Skip:",
+        reply_markup=kb
     )
-    return P_EDIT_USD
-
-
-async def get_edit_usd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        usd = float(update.message.text)
-    except ValueError:
-        await update.message.reply_text("Please enter a valid number.")
-        return P_EDIT_USD
-    context.user_data['usd_amt'] = usd
-    kb = InlineKeyboardMarkup([[
-        InlineKeyboardButton("➖ Skip note", callback_data="note_skip")
-    ]])
-    await update.message.reply_text("Optional: enter note or press Skip:", reply_markup=kb)
     return P_EDIT_NOTE
 
 
@@ -307,22 +290,37 @@ async def get_edit_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
         note = ""
     else:
         note = update.message.text.strip()
-    context.user_data['note'] = note
-    return await confirm_edit_prompt(update, context)
+    e = context.user_data['edit']
+    e['note'] = note
+
+    today_str = datetime.now().strftime("%d%m%Y")
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("📅 Skip to today", callback_data="date_skip")]])
+    await update.callback_query.edit_message_text(
+        f"Enter new payout date DDMMYYYY, or press Skip for today ({today_str}):",
+        reply_markup=kb
+    )
+    return P_EDIT_DATE
 
 
-async def confirm_edit_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    d = context.user_data
-    local, fee_pct, fee_amt = d['local_amt'], d.get('fee_perc', 0), d.get('fee_amt', 0)
-    usd = d['usd_amt']
-    net = local - fee_amt
-    fx = net / usd if usd else 0
+async def get_edit_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    e = context.user_data['edit']
+    if update.callback_query:
+        await update.callback_query.answer()
+        date_str = datetime.now().strftime("%d%m%Y")
+    else:
+        date_str = update.message.text.strip()
+        try:
+            datetime.strptime(date_str, "%d%m%Y")
+        except ValueError:
+            await update.message.reply_text("Invalid format. Please enter DDMMYYYY.")
+            return P_EDIT_DATE
+    e['date'] = date_str
+
     summary = (
-        f"Local: {local:.2f}\n"
-        f"Fee: {fee_pct:.2f}% ({fee_amt:.2f})\n"
-        f"USD Paid: {usd:.2f}\n"
-        f"FX Rate: {fx:.4f}\n"
-        f"Note: {d.get('note','')}"
+        f"Local: {e['local_amt']:.2f}\n"
+        f"Fee: {e['fee_perc']:.2f}% ({e['fee_amt']:.2f})\n"
+        f"Note: {e.get('note','')}\n"
+        f"Date: {e['date']}"
     )
     kb = InlineKeyboardMarkup([[
         InlineKeyboardButton("✅ Save", callback_data="pout_save_yes"),
@@ -335,21 +333,20 @@ async def confirm_edit_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE
 @require_unlock
 async def confirm_edit_payout(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
-    d = context.user_data
+    e = context.user_data.pop('edit')
     if update.callback_query.data == 'pout_save_yes':
         updated = {
-            'partner_id': d['partner_id'],
-            'local_amt':  d['local_amt'],
-            'fee_perc':   d['fee_perc'],
-            'fee_amt':    d['fee_amt'],
-            'usd_amt':    d['usd_amt'],
-            'fx_rate':    (d['local_amt'] - d['fee_amt']) / d['usd_amt'] if d['usd_amt'] else 0,
-            'note':       d.get('note',''),
-            'timestamp':  secure_db.table('partner_payouts').get(doc_id=d['edit_id'])['timestamp'],
+            'partner_id': e['partner_id'],
+            'local_amt':  e['local_amt'],
+            'fee_perc':   e['fee_perc'],
+            'fee_amt':    e['fee_amt'],
+            'note':       e.get('note',''),
+            'date':       e['date'],
+            'timestamp':  secure_db.table('partner_payouts').get(doc_id=e['id'])['timestamp'],
         }
-        secure_db.update('partner_payouts', updated, [d['edit_id']])
+        secure_db.update('partner_payouts', updated, [e['id']])
         await update.callback_query.edit_message_text(
-            f"✅ Payout {d['edit_id']} updated.",
+            f"✅ Payout {e['id']} updated.",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="payout_menu")]])
         )
     else:
@@ -408,10 +405,13 @@ def register_payout_handlers(app):
             P_PARTNER_SELECT: [CallbackQueryHandler(get_payout_partner, pattern="^pout_\\d+$")],
             P_LOCAL_AMT:      [MessageHandler(filters.TEXT & ~filters.COMMAND, get_payout_local)],
             P_FEE_PERC:       [MessageHandler(filters.TEXT & ~filters.COMMAND, get_payout_fee)],
-            P_USD_PAID:       [MessageHandler(filters.TEXT & ~filters.COMMAND, get_payout_usd)],
             P_NOTE:           [
                 CallbackQueryHandler(get_payout_note, pattern="^note_skip$"),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, get_payout_note)
+            ],
+            P_DATE:           [
+                CallbackQueryHandler(get_payout_date, pattern="^date_skip$"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, get_payout_date)
             ],
             P_CONFIRM:        [CallbackQueryHandler(confirm_payout, pattern="^pout_conf_")]
         },
@@ -432,12 +432,15 @@ def register_payout_handlers(app):
             P_EDIT_SELECT:  [CallbackQueryHandler(get_edit_selection, pattern="^pout_edit_sel_\\d+$")],
             P_EDIT_LOCAL:   [MessageHandler(filters.TEXT & ~filters.COMMAND, get_edit_local)],
             P_EDIT_FEE:     [MessageHandler(filters.TEXT & ~filters.COMMAND, get_edit_fee)],
-            P_EDIT_USD:     [MessageHandler(filters.TEXT & ~filters.COMMAND, get_edit_usd)],
             P_EDIT_NOTE:    [
                 CallbackQueryHandler(get_edit_note, pattern="^note_skip$"),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, get_edit_note)
             ],
-            P_EDIT_CONFIRM:[CallbackQueryHandler(confirm_edit_payout, pattern="^pout_save_")]
+            P_EDIT_DATE:    [
+                CallbackQueryHandler(get_edit_date, pattern="^date_skip$"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, get_edit_date)
+            ],
+            P_EDIT_CONFIRM: [CallbackQueryHandler(confirm_edit_payout, pattern="^pout_save_")]
         },
         fallbacks=[CommandHandler("cancel", show_payout_menu)],
         per_message=False
