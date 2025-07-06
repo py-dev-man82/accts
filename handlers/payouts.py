@@ -35,7 +35,7 @@ from secure_db import secure_db
     P_DELETE_PARTNER,
     P_DELETE_SELECT,
     P_DELETE_CONFIRM,
-) = range(17)
+) = range(18)
 
 
 # --- Submenu for Payouts ---
