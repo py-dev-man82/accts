@@ -201,58 +201,25 @@ async def confirm_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ======================================================================
-#                     START EDIT FLOW (with edit_id fix)
+#                              VIEW FLOW
 # ======================================================================
-@require_unlock
-async def start_edit_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logging.info("Start edit_payment: pick customer")
+async def view_payments(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
-    rows = secure_db.all('customers')
-    buttons = [InlineKeyboardButton(f"{r['name']} ({r['currency']})", callback_data=f"edit_user_{r.doc_id}") for r in rows]
-    kb = InlineKeyboardMarkup([buttons[i:i+2] for i in range(0, len(buttons), 2)])
-    await update.callback_query.edit_message_text("Choose customer:", reply_markup=kb)
-    return P_EDIT_CUST_SELECT
-
-
-@require_unlock
-async def list_user_payments_for_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.answer()
-    cid = int(update.callback_query.data.split("_")[-1])
-    context.user_data['customer_id'] = cid
-    rows = [r for r in secure_db.all('customer_payments') if r['customer_id'] == cid]
+    rows = secure_db.all('customer_payments')
     if not rows:
-        await update.callback_query.edit_message_text(
-            "No payments for this customer.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="payment_menu")]])
-        )
-        return ConversationHandler.END
-    buttons = [
-        InlineKeyboardButton(
-            f"[{r.doc_id}] {r['local_amt']:.2f}->{r['usd_amt']:.2f}",
-            callback_data=f"edit_payment_{r.doc_id}"
-        ) for r in rows
-    ]
-    kb = InlineKeyboardMarkup([buttons[i:i+2] for i in range(0, len(buttons), 2)])
-    await update.callback_query.edit_message_text("Select payment:", reply_markup=kb)
-    return P_EDIT_SELECT
-
-
-@require_unlock
-async def get_payment_edit_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.answer()
-    pid = int(update.callback_query.data.split("_")[-1])
-    rec = secure_db.table('customer_payments').get(doc_id=pid)
-    context.user_data.update({
-        'edit_payment': rec,
-        'edit_id':      pid,  # ✅ Store doc_id separately
-        'local_amt':    rec['local_amt'],
-        'fee_perc':     rec['fee_perc'],
-        'usd_amt':      rec['usd_amt'],
-        'note':         rec.get('note', ''),
-        'date':         rec.get('date', datetime.now().strftime('%d%m%Y'))
-    })
-    await update.callback_query.edit_message_text("Enter new local amount:")
-    return P_EDIT_LOCAL
+        text = "No payments found."
+    else:
+        lines = []
+        for r in rows:
+            cust = secure_db.table('customers').get(doc_id=r['customer_id'])
+            name = cust['name'] if cust else "Unknown"
+            lines.append(
+                f"[{r.doc_id}] {name}: {r['local_amt']:.2f} → {r['usd_amt']:.2f} USD "
+                f"on {r.get('date', '')} | Note: {r.get('note', '')}"
+            )
+        text = "Payments:\n" + "\n".join(lines)
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="payment_menu")]])
+    await update.callback_query.edit_message_text(text, reply_markup=kb)
 
 # ======================================================================
 #                              EDIT FLOW (continued)
