@@ -105,9 +105,11 @@ async def get_payout_fee(update: Update, context: ContextTypes.DEFAULT_TYPE):
     po['fee_perc'] = fee_pct
     po['fee_amt'] = po['local_amt'] * fee_pct / 100.0
 
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton("➖ Skip note", callback_data="note_skip")]])
+    # Mirror payments: prompt note with Skip
+    kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton("➖ Skip note", callback_data="note_skip")
+    ]])
     await update.message.reply_text(
-        f"Fee: {fee_pct:.2f}% → {po['fee_amt']:.2f}\n\n"
         "Enter an optional note or press Skip:",
         reply_markup=kb
     )
@@ -115,7 +117,7 @@ async def get_payout_fee(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def get_payout_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # mirror payments handler: skip-button or text
+    # skip-button vs text
     if update.callback_query:
         await update.callback_query.answer()
         note = ""
@@ -124,10 +126,13 @@ async def get_payout_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
     po = context.user_data['payout']
     po['note'] = note
 
+    # Now prompt for date
     today_str = datetime.now().strftime("%d%m%Y")
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton("📅 Skip to today", callback_data="date_skip")]])
+    kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton("📅 Skip to today", callback_data="date_skip")
+    ]])
     await update.callback_query.edit_message_text(
-        f"Enter payout date DDMMYYYY, or press Skip for today ({today_str}):",
+        f"Enter payout date in DDMMYYYY format, or press Skip for today ({today_str}):",
         reply_markup=kb
     )
     return P_DATE
@@ -147,8 +152,9 @@ async def get_payout_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return P_DATE
     po['date'] = date_str
 
+    # Confirmation summary
     summary = (
-        f"Partner ID: {po['partner_id']}\n"
+        f"Partner: {po['partner_id']}\n"
         f"Local: {po['local_amt']:.2f}\n"
         f"Fee: {po['fee_perc']:.2f}% ({po['fee_amt']:.2f})\n"
         f"Note: {po.get('note','')}\n"
@@ -186,30 +192,9 @@ async def confirm_payout(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
-# --- View Payouts Flow ---
-async def view_payouts(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logging.info("View payouts")
-    await update.callback_query.answer()
-    rows = secure_db.all('partner_payouts')
-    if not rows:
-        text = "No payouts found."
-    else:
-        lines = []
-        for r in rows:
-            p = secure_db.table('partners').get(doc_id=r['partner_id'])
-            name = p['name'] if p else 'Unknown'
-            lines.append(
-                f"[{r.doc_id}] {name} | {r['local_amt']:.2f} | {r.get('date','—')} | fee {r.get('fee_perc',0):.2f}%"
-            )
-        text = "Payouts:\n" + "\n".join(lines)
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="payout_menu")]])
-    await update.callback_query.edit_message_text(text, reply_markup=kb)
-
-
-# --- Edit Payout Flow ---
+# --- Edit Payout Flow (mirrors Add) ---
 @require_unlock
 async def edit_payout(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logging.info("Start edit_payout")
     await update.callback_query.answer()
     partners = secure_db.all('partners')
     buttons = [InlineKeyboardButton(p['name'], callback_data=f"pout_edit_{p.doc_id}") for p in partners]
@@ -222,7 +207,7 @@ async def get_edit_partner(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     pid = int(update.callback_query.data.split("_")[-1])
     context.user_data['edit'] = {'partner_id': pid}
-    rows = [r for r in secure_db.all('partner_payouts') if r['partner_id'] == pid]
+    rows = [r for r in secure_db.all('partner_payouts') if r['partner_id']==pid]
     if not rows:
         return await show_payout_menu(update, context)
     buttons = [
@@ -260,7 +245,7 @@ async def get_edit_local(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Please enter a valid positive number.")
         return P_EDIT_LOCAL
     context.user_data['edit']['local_amt'] = amt
-    await update.message.reply_text("Enter new handling fee % (e.g. 2.5), or 0 if none:")
+    await update.message.reply_text("Enter handling fee % (e.g. 2.5), or 0 if none:")
     return P_EDIT_FEE
 
 
@@ -272,12 +257,15 @@ async def get_edit_fee(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except ValueError:
         await update.message.reply_text("Enter a fee percentage between 0 and 100.")
         return P_EDIT_FEE
+
     e = context.user_data['edit']
     e['fee_perc'] = fee_pct
     e['fee_amt'] = e['local_amt'] * fee_pct / 100.0
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton("➖ Skip note", callback_data="note_skip")]])
+
+    kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton("➖ Skip note", callback_data="note_skip"),
+    ]])
     await update.message.reply_text(
-        f"Fee: {fee_pct:.2f}% → {e['fee_amt']:.2f}\n\n"
         "Enter an optional note or press Skip:",
         reply_markup=kb
     )
@@ -294,7 +282,9 @@ async def get_edit_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
     e['note'] = note
 
     today_str = datetime.now().strftime("%d%m%Y")
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton("📅 Skip to today", callback_data="date_skip")]])
+    kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton("📅 Skip to today", callback_data="date_skip"),
+    ]])
     await update.callback_query.edit_message_text(
         f"Enter new payout date DDMMYYYY, or press Skip for today ({today_str}):",
         reply_markup=kb
@@ -369,7 +359,7 @@ async def delete_payout(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def get_delete_partner(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     pid = int(update.callback_query.data.split("_")[-1])
-    rows = [r for r in secure_db.all('partner_payouts') if r['partner_id'] == pid]
+    rows = [r for r in secure_db.all('partner_payouts') if r['partner_id']==pid]
     if not rows:
         return await show_payout_menu(update, context)
     buttons = [
