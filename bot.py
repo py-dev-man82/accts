@@ -17,7 +17,7 @@ from telegram.ext import (
 from handlers.customers    import register_customer_handlers, show_customer_menu
 from handlers.stores       import register_store_handlers, show_store_menu
 from handlers.partners     import register_partner_handlers, show_partner_menu
-# from handlers.sales        import register_sales_handlers, show_sales_menu
+from handlers.sales        import register_sales_handlers, show_sales_menu
 # from handlers.payments     import register_payment_handlers, show_payment_menu
 # from handlers.payouts      import register_payout_handlers, show_payout_menu
 # from handlers.stockin      import register_stockin_handlers, show_stockin_menu
@@ -102,7 +102,7 @@ def main():
     # app.add_handler(CallbackQueryHandler(show_partner_menu, pattern="^partner_menu$"))
     register_partner_handlers(app)
     # app.add_handler(CallbackQueryHandler(show_sales_menu, pattern="^sales_menu$"))
-    # register_sales_handlers(app)
+    register_sales_handlers(app)
     # app.add_handler(CallbackQueryHandler(show_payment_menu, pattern="^payment_menu$"))
     # register_payment_handlers(app)
     # app.add_handler(CallbackQueryHandler(show_payout_menu, pattern="^payout_menu$"))
