@@ -579,12 +579,13 @@ def register_sales_handlers(app):
         ],
         states={
             S_EDIT_SELECT: [
-                CallbackQueryHandler(get_edit_customer, pattern="^edit_cust_")  # ✅ Added handler for customer buttons
+                CallbackQueryHandler(get_edit_customer, pattern="^edit_cust_")  # ✅ Handles customer buttons
             ],
             S_EDIT_FIELD: [
-                CallbackQueryHandler(get_edit_selection, pattern="^edit_sale_")
+                CallbackQueryHandler(get_edit_selection, pattern="^edit_sale_")  # ✅ Handles sale selection
             ],
             S_EDIT_NEWVAL: [
+                CallbackQueryHandler(get_edit_field, pattern="^edit_field_"),    # ✅ Handles field selection buttons
                 CallbackQueryHandler(save_edit, pattern="^edit_new_"),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, save_edit)
             ],
@@ -604,7 +605,7 @@ def register_sales_handlers(app):
         ],
         states={
             S_DELETE_SELECT: [
-                CallbackQueryHandler(get_delete_customer, pattern="^del_cust_")  # ✅ Added handler for customer buttons
+                CallbackQueryHandler(get_delete_customer, pattern="^del_cust_")  # ✅ Handles customer buttons
             ],
             S_DELETE_CONFIRM: [
                 CallbackQueryHandler(confirm_delete_sale, pattern="^del_sale_"),
@@ -618,27 +619,3 @@ def register_sales_handlers(app):
 
     # View Sales
     app.add_handler(CallbackQueryHandler(view_sales, pattern="^view_sales$"))
-
-edit_conv = ConversationHandler(
-    entry_points=[
-        CallbackQueryHandler(edit_sale, pattern="^edit_sale$")
-    ],
-    states={
-        S_EDIT_SELECT: [
-            CallbackQueryHandler(get_edit_customer, pattern="^edit_cust_")
-        ],
-        S_EDIT_FIELD: [
-            CallbackQueryHandler(get_edit_selection, pattern="^edit_sale_")
-        ],
-        S_EDIT_NEWVAL: [
-            CallbackQueryHandler(get_edit_field, pattern="^edit_field_"),  # ✅ Added for field selection buttons
-            CallbackQueryHandler(save_edit, pattern="^edit_new_"),
-            MessageHandler(filters.TEXT & ~filters.COMMAND, save_edit)
-        ],
-        S_EDIT_CONFIRM: [
-            CallbackQueryHandler(confirm_edit, pattern="^edit_conf_")
-        ]
-    },
-    fallbacks=[CommandHandler("cancel", show_sales_menu)],
-    per_message=False
-)
