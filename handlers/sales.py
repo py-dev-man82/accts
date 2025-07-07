@@ -567,6 +567,42 @@ async def handle_pagination(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await get_view_customer(update, context)
     return await send_sales_page(update, context)
 
+# ----------------- Add Sale Flow -----------------
+add_conv = ConversationHandler(
+    entry_points=[
+        CommandHandler("add_sale", add_sale),
+        CallbackQueryHandler(add_sale, pattern="^add_sale$")
+    ],
+    states={
+        S_CUST_SELECT: [
+            CallbackQueryHandler(get_sale_customer, pattern="^sale_cust_")
+        ],
+        S_STORE_SELECT: [
+            CallbackQueryHandler(get_sale_store, pattern="^sale_store_")
+        ],
+        S_ITEM_QTY: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, get_sale_item_qty)
+        ],
+        S_PRICE: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, get_sale_price)
+        ],
+        S_FEE: [
+            CallbackQueryHandler(get_sale_fee, pattern="^fee_skip$"),
+            MessageHandler(filters.TEXT & ~filters.COMMAND, get_sale_fee)
+        ],
+        S_NOTE: [
+            CallbackQueryHandler(get_sale_note, pattern="^note_skip$"),
+            MessageHandler(filters.TEXT & ~filters.COMMAND, get_sale_note)
+        ],
+        S_CONFIRM: [
+            CallbackQueryHandler(confirm_sale, pattern="^sale_")
+        ]
+    },
+    fallbacks=[CommandHandler("cancel", show_sales_menu)],
+    per_message=False
+)
+
+
 # ----------------- Register Handlers -------------------
 def register_sales_handlers(app):
     app.add_handler(CallbackQueryHandler(show_sales_menu, pattern="^sales_menu$"))
