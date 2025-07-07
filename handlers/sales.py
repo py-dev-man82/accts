@@ -31,7 +31,7 @@ from secure_db import secure_db
     S_EDIT_CONFIRM,
     S_DELETE_SELECT,
     S_DELETE_CONFIRM,
-) = range(14)
+) = range(13)
 
 # ----------------- Sales Menu -------------------
 async def show_sales_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
