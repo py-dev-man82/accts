@@ -12,9 +12,7 @@ from telegram.ext import (
 from secure_db import secure_db
 from handlers.utils import require_unlock, fmt_money, fmt_date
 
-# ────────────────────────────────────────────────────────────
-# Conversation-state constants
-# ────────────────────────────────────────────────────────────
+# Conversation states
 (
     CUST_SELECT,
     DATE_RANGE_SELECT,
@@ -23,12 +21,9 @@ from handlers.utils import require_unlock, fmt_money, fmt_date
     REPORT_PAGE,
 ) = range(5)
 
-# Pagination size
+# Number of items per page
 _PAGE_SIZE = 8
 
-# ────────────────────────────────────────────────────────────
-# Show customer report menu
-# ────────────────────────────────────────────────────────────
 @require_unlock
 async def show_customer_report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     customers = secure_db.all("customers")
@@ -37,8 +32,8 @@ async def show_customer_report_menu(update: Update, context: ContextTypes.DEFAUL
         await update.callback_query.edit_message_text(
             "⚠️ No customers found.",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔙 Back", callback_data="report_menu")]
-            ]),
+                [InlineKeyboardButton("🔙 Back", callback_data="customer_report_menu")]
+            ])
         )
         return ConversationHandler.END
 
@@ -47,7 +42,7 @@ async def show_customer_report_menu(update: Update, context: ContextTypes.DEFAUL
         for c in customers
     ]
     grid = [buttons[i:i+2] for i in range(0, len(buttons), 2)]
-    grid.append([InlineKeyboardButton("🔙 Back", callback_data="report_menu")])
+    grid.append([InlineKeyboardButton("🔙 Back", callback_data="customer_report_menu")])
 
     await update.callback_query.answer()
     await update.callback_query.edit_message_text(
@@ -56,9 +51,6 @@ async def show_customer_report_menu(update: Update, context: ContextTypes.DEFAUL
     )
     return CUST_SELECT
 
-# ────────────────────────────────────────────────────────────
-# Select date range
-# ────────────────────────────────────────────────────────────
 async def select_date_range(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     cid = int(update.callback_query.data.split("_")[-1])
@@ -76,9 +68,7 @@ async def select_date_range(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def get_custom_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
-    await update.callback_query.edit_message_text(
-        "📅 Enter start date (DDMMYYYY):"
-    )
+    await update.callback_query.edit_message_text("📅 Enter start date (DDMMYYYY):")
     return CUSTOM_DATE_INPUT
 
 async def save_custom_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -86,27 +76,21 @@ async def save_custom_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         start_date = datetime.strptime(text, "%d%m%Y")
     except ValueError:
-        await update.message.reply_text(
-            "❌ Invalid format. Enter date as DDMMYYYY."
-        )
+        await update.message.reply_text("❌ Invalid format. Enter date as DDMMYYYY.")
         return CUSTOM_DATE_INPUT
 
     context.user_data["start_date"] = start_date
     context.user_data["end_date"] = datetime.now()
     return await choose_report_scope(update, context)
 
-# ────────────────────────────────────────────────────────────
-# Choose report scope
-# ────────────────────────────────────────────────────────────
 async def choose_report_scope(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.callback_query:
-        await update.callback_query.answer()
-        data = update.callback_query.data
-        if data == "daterange_weekly":
-            context.user_data["start_date"] = datetime.now() - timedelta(days=7)
-            context.user_data["end_date"] = datetime.now()
-        elif data == "daterange_custom":
-            return await get_custom_date(update, context)
+    await update.callback_query.answer()
+    data = update.callback_query.data
+    if data == "daterange_weekly":
+        context.user_data["start_date"] = datetime.now() - timedelta(days=7)
+        context.user_data["end_date"] = datetime.now()
+    elif data == "daterange_custom":
+        return await get_custom_date(update, context)
 
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("📝 Full Report", callback_data="scope_full")],
@@ -114,22 +98,15 @@ async def choose_report_scope(update: Update, context: ContextTypes.DEFAULT_TYPE
         [InlineKeyboardButton("💵 Payments Only", callback_data="scope_payments")],
         [InlineKeyboardButton("🔙 Back", callback_data="customer_report_menu")],
     ])
-    if update.callback_query:
-        await update.callback_query.edit_message_text("Choose report scope:", reply_markup=kb)
-    else:
-        await update.message.reply_text("Choose report scope:", reply_markup=kb)
+    await update.callback_query.edit_message_text("Choose report scope:", reply_markup=kb)
     return REPORT_SCOPE_SELECT
 
-# ────────────────────────────────────────────────────────────
-# Pagination helper
-# ────────────────────────────────────────────────────────────
+# Helper for pagination
 def _paginate(items, page):
     start = page * _PAGE_SIZE
     return items[start:start + _PAGE_SIZE], len(items)
 
-# ────────────────────────────────────────────────────────────
-# Display and paginate customer report
-# ────────────────────────────────────────────────────────────
+@require_unlock
 async def show_customer_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     scope = update.callback_query.data.split("_")[-1]
@@ -156,19 +133,14 @@ async def show_customer_report(update: Update, context: ContextTypes.DEFAULT_TYP
     total_payments_usd = sum(p["usd_amt"] for p in all_payments)
     balance = total_sales - total_payments_local
 
-    if scope in ["full", "sales"]:
-        sales_page, sales_count = _paginate(all_sales, page)
-    else:
-        sales_page, sales_count = [], 0
+    sales_page, sales_count = _paginate(all_sales, page) if scope in ["full", "sales"] else ([], 0)
+    payments_page, payments_count = _paginate(all_payments, page) if scope in ["full", "payments"] else ([], 0)
 
-    if scope in ["full", "payments"]:
-        payments_page, payments_count = _paginate(all_payments, page)
-    else:
-        payments_page, payments_count = [], 0
-
-    lines = [f"📄 *Customer Report: {customer['name']}*",  
-             f"Period: {fmt_date(start_date.strftime('%d%m%Y'))} → {fmt_date(end_date.strftime('%d%m%Y'))}",
-             f"Currency: {customer['currency']}\n"]
+    lines = [
+        f"📄 *Customer Report: {customer['name']}*",
+        f"Period: {fmt_date(start_date.strftime('%d%m%Y'))} → {fmt_date(end_date.strftime('%d%m%Y'))}",
+        f"Currency: {customer['currency']}\n"
+    ]
 
     if scope in ["full", "sales"]:
         lines.append("🛒 *Sales*")
@@ -206,19 +178,17 @@ async def show_customer_report(update: Update, context: ContextTypes.DEFAULT_TYP
     nav = []
     if page > 0:
         nav.append(InlineKeyboardButton("⬅️ Prev", callback_data="page_prev"))
-    if (page + 1) * _PAGE_SIZE < (sales_count if scope in ["full","sales"] else payments_count):
+    if (page + 1) * _PAGE_SIZE < (sales_count if scope in ['full','sales'] else payments_count):
         nav.append(InlineKeyboardButton("➡️ Next", callback_data="page_next"))
     nav.append(InlineKeyboardButton("🔙 Back", callback_data="customer_report_menu"))
 
-    kb = InlineKeyboardMarkup([nav])
     await update.callback_query.edit_message_text(
-        "\n".join(lines), reply_markup=kb, parse_mode="Markdown"
+        "\n".join(lines),
+        reply_markup=InlineKeyboardMarkup([nav]),
+        parse_mode="Markdown"
     )
     return REPORT_PAGE
 
-# ────────────────────────────────────────────────────────────
-# Pagination handler
-# ────────────────────────────────────────────────────────────
 @require_unlock
 async def paginate_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
@@ -228,9 +198,7 @@ async def paginate_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["page"] = max(0, context.user_data.get("page", 0) - 1)
     return await show_customer_report(update, context)
 
-# ────────────────────────────────────────────────────────────
-# Register handlers
-# ────────────────────────────────────────────────────────────
+
 def register_customer_report_handlers(app):
     conv = ConversationHandler(
         entry_points=[
