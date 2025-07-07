@@ -707,6 +707,45 @@ async def confirm_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await edit_sale(update, context)
 
     return ConversationHandler.END
+# ----------------- Delete Sale -----------------
+delete_conv = ConversationHandler(
+    entry_points=[
+        CallbackQueryHandler(delete_sale, pattern="^remove_sale$")
+    ],
+    states={
+        S_DELETE_SELECT: [
+            CallbackQueryHandler(get_delete_customer, pattern="^del_cust_")
+        ],
+        S_DELETE_CONFIRM: [
+            CallbackQueryHandler(confirm_delete_sale, pattern="^del_sale_"),
+            CallbackQueryHandler(perform_delete_sale, pattern="^del_conf_")
+        ]
+    },
+    fallbacks=[CommandHandler("cancel", show_sales_menu)],
+    per_message=False
+)
+# ----------------- View Sales -----------------
+view_conv = ConversationHandler(
+    entry_points=[
+        CallbackQueryHandler(view_sales, pattern="^view_sales$")
+    ],
+    states={
+        S_VIEW_CUSTOMER: [
+            CallbackQueryHandler(get_view_customer, pattern="^view_cust_"),
+            CallbackQueryHandler(view_sales, pattern="^view_sales$")  # Back button
+        ],
+        S_VIEW_TIME: [
+            CallbackQueryHandler(get_view_time, pattern="^view_time_"),
+            CallbackQueryHandler(view_sales, pattern="^view_sales$")  # Back button
+        ],
+        S_VIEW_PAGE: [
+            CallbackQueryHandler(handle_pagination, pattern="^view_(prev|next)$"),
+            CallbackQueryHandler(get_view_customer, pattern="^view_time_back$")
+        ]
+    },
+    fallbacks=[CommandHandler("cancel", show_sales_menu)],
+    per_message=False
+)
 
 # ----------------- Register Handlers -------------------
 def register_sales_handlers(app):
