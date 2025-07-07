@@ -535,25 +535,38 @@ async def perform_delete_sale(update: Update, context: ContextTypes.DEFAULT_TYPE
         await show_sales_menu(update, context)
     return ConversationHandler.END
 
-# ----------------- View Sales: Handle Customer Selection -----------------
+# ----------------- View Sales Flow -------------------
+@require_unlock
+async def view_sales(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+    customers = secure_db.all('customers')
+    if not customers:
+        await update.callback_query.edit_message_text(
+            "No customers found.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="sales_menu")]])
+        )
+        return ConversationHandler.END
+
+    # Show customer buttons
+    buttons = [
+        InlineKeyboardButton(f"{c['name']} ({c['currency']})", callback_data=f"view_cust_{c.doc_id}")
+        for c in customers
+    ]
+    kb = InlineKeyboardMarkup([buttons[i:i+2] for i in range(0, len(buttons), 2)])
+    await update.callback_query.edit_message_text("Select customer to view sales:", reply_markup=kb)
+    return S_VIEW_CUSTOMER
+
+
 async def get_view_customer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     data = update.callback_query.data
 
-    # 🟢 Handle Back button (to customer selection)
+    # 🟢 Handle Back button
     if data == "view_time_back":
-        return await view_sales(update, context)  # Go back to customer list
+        return await view_sales(update, context)  # Back to customer selection
 
-    # 🟢 Parse customer ID from callback
-    try:
-        cid = int(data.split('_')[-1])
-    except ValueError:
-        await update.callback_query.edit_message_text(
-            "❌ Invalid selection. Please try again.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="view_sales")]])
-        )
-        return S_VIEW_CUSTOMER
-
+    # 🟢 Parse customer ID
+    cid = int(data.split('_')[-1])
     context.user_data['view_customer_id'] = cid
 
     # Prompt for time filter
@@ -565,7 +578,6 @@ async def get_view_customer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ])
     await update.callback_query.edit_message_text("Select time period:", reply_markup=kb)
     return S_VIEW_TIME
-
 
 
 async def get_view_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -645,24 +657,6 @@ async def handle_pagination(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif action == "view_time_back":
         return await get_view_customer(update, context)
     return await send_sales_page(update, context)
-
-@require_unlock
-async def view_sales(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logging.info("View sales")
-    await update.callback_query.answer()
-    rows = secure_db.all('sales')
-    if not rows:
-        text = "No sales found."
-    else:
-        lines = []
-        for r in rows:
-            total = r['quantity'] * r['unit_price']
-            lines.append(
-                f"• [{r.doc_id}] cust:{r['customer_id']} store:{r['store_id']} "
-                f"item:{r['item_id']} x{r['quantity']} @ {r['unit_price']} = {total}" )
-        text = "Sales:\n" + "\n".join(lines)
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="sales_menu")]])
-    await update.callback_query.edit_message_text(text, reply_markup=kb)
 
 # ----------------- Register Handlers -------------------
 def register_sales_handlers(app):
