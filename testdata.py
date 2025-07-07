@@ -4,6 +4,11 @@ import random
 from datetime import datetime, timedelta
 from secure_db import secure_db
 
+# Fixed account names
+CUSTOMER_NAMES = ["MK", "HT", "WP", "QW", "RB"]
+PARTNER_NAMES = ["GS", "AR", "BP", "XT"]
+STORE_NAMES = ["MT", "AM"]
+
 
 def random_date_within_weeks(weeks):
     """Returns a random date string DDMMYYYY within the last `weeks`"""
@@ -17,118 +22,129 @@ def random_currency():
     return random.choice(['USD', 'EUR', 'GBP', 'JPY'])
 
 
-def generate_customers(n=8):
-    print(f"Adding {n} customers...")
-    for i in range(1, n + 1):
-        secure_db.insert('customers', {
-            'name': f"Customer {i}",
-            'currency': random_currency(),
-            'created_at': datetime.utcnow().isoformat()
+def ensure_customers():
+    """Create customers if they don't exist yet"""
+    print("🔄 Checking customers...")
+    existing = {c['name']: c.doc_id for c in secure_db.all('customers')}
+    for name in CUSTOMER_NAMES:
+        if name not in existing:
+            cid = secure_db.insert('customers', {
+                'name': name,
+                'currency': random_currency(),
+                'created_at': datetime.utcnow().isoformat()
+            })
+            existing[name] = cid
+    return existing
+
+
+def ensure_partners():
+    """Create partners if they don't exist yet"""
+    print("🔄 Checking partners...")
+    existing = {p['name']: p.doc_id for p in secure_db.all('partners')}
+    for name in PARTNER_NAMES:
+        if name not in existing:
+            pid = secure_db.insert('partners', {
+                'name': name,
+                'currency': random_currency(),
+                'created_at': datetime.utcnow().isoformat()
+            })
+            existing[name] = pid
+    return existing
+
+
+def ensure_stores():
+    """Create stores if they don't exist yet"""
+    print("🔄 Checking stores...")
+    existing = {s['name']: s.doc_id for s in secure_db.all('stores')}
+    for name in STORE_NAMES:
+        if name not in existing:
+            sid = secure_db.insert('stores', {
+                'name': name,
+                'currency': random_currency(),
+                'created_at': datetime.utcnow().isoformat()
+            })
+            existing[name] = sid
+    return existing
+
+
+def generate_stockins(entries=25, partners=None, stores=None):
+    """Generate stock-in entries"""
+    print(f"📦 Adding {entries} stock-in entries...")
+    for _ in range(entries):
+        partner_id = random.choice(list(partners.values()))
+        store_id = random.choice(list(stores.values()))
+        item_id = random.choice([1, 2])
+        qty = random.randint(10, 100)
+        cost = round(random.uniform(1.0, 10.0), 2)
+        secure_db.insert('partner_inventory', {
+            'partner_id': partner_id,
+            'store_id': store_id,
+            'item_id': item_id,
+            'quantity': qty,
+            'cost': cost,
+            'note': "Generated stock-in",
+            'date': random_date_within_weeks(6),
+            'timestamp': datetime.utcnow().isoformat()
         })
 
 
-def generate_stores(n=2):
-    print(f"Adding {n} stores...")
-    for i in range(1, n + 1):
-        secure_db.insert('stores', {
-            'name': f"Store {i}",
-            'currency': random_currency(),
-            'created_at': datetime.utcnow().isoformat()
-        })
-
-
-def generate_partners(n=4):
-    print(f"Adding {n} partners...")
-    for i in range(1, n + 1):
-        secure_db.insert('partners', {
-            'name': f"Partner {i}",
-            'currency': random_currency(),
-            'created_at': datetime.utcnow().isoformat()
-        })
-
-
-def generate_sales(entries_per_customer=20):
-    print(f"Adding {entries_per_customer} sales per customer...")
-    customers = secure_db.all('customers')
-    stores = secure_db.all('stores')
-    for customer in customers:
-        for _ in range(entries_per_customer):
-            store = random.choice(stores)
-            item_id = random.choice([1, 2])  # Restrict to items 1 or 2
+def generate_sales_and_payments(customers, stores):
+    """Generate 8 sales + 8 payments for each customer"""
+    print(f"💰 Adding sales & payments for {len(customers)} customers...")
+    for cust_name, cust_id in customers.items():
+        for _ in range(8):
+            store_id = random.choice(list(stores.values()))
+            item_id = random.choice([1, 2])
             qty = random.randint(1, 5)
             price = round(random.uniform(5.0, 50.0), 2)
             sale_type = random.choice(['direct', 'owner'])
             secure_db.insert('sales', {
-                'customer_id': customer.doc_id,
-                'store_id': store.doc_id,
+                'customer_id': cust_id,
+                'store_id': store_id,
                 'item_id': item_id,
                 'quantity': qty,
                 'unit_price': price,
-                'currency': store['currency'],
+                'currency': secure_db.table('stores').get(doc_id=store_id)['currency'],
                 'sale_type': sale_type,
                 'handling_fee': round(price * qty * 0.05, 2),  # 5% fee for owner sales
-                'note': f"Test sale {sale_type}",
+                'note': f"Generated sale ({sale_type})",
                 'date': random_date_within_weeks(6),
                 'timestamp': datetime.utcnow().isoformat()
             })
 
-
-def generate_payments(entries_per_customer=20):
-    print(f"Adding {entries_per_customer} payments per customer...")
-    customers = secure_db.all('customers')
-    for customer in customers:
-        for _ in range(entries_per_customer):
+        for _ in range(8):
             local_amt = round(random.uniform(50.0, 500.0), 2)
             fee = round(local_amt * 0.02, 2)  # 2% fee
             usd_amt = round((local_amt - fee) / random.uniform(0.7, 1.3), 2)
             secure_db.insert('customer_payments', {
-                'customer_id': customer.doc_id,
+                'customer_id': cust_id,
                 'local_amt': local_amt,
                 'fee_perc': 2.0,
                 'fee_amt': fee,
                 'usd_amt': usd_amt,
                 'fx_rate': round((local_amt - fee) / usd_amt, 4),
-                'note': "Test payment",
+                'note': "Generated payment",
                 'date': random_date_within_weeks(6),
                 'timestamp': datetime.utcnow().isoformat()
             })
 
 
-def generate_stockins(entries_per_partner=20):
-    print(f"Adding {entries_per_partner} stock-ins per partner...")
-    partners = secure_db.all('partners')
-    for partner in partners:
-        for _ in range(entries_per_partner):
-            item_id = random.choice([1, 2])  # Restrict to items 1 or 2
-            qty = random.randint(10, 100)
-            cost = round(random.uniform(1.0, 10.0), 2)
-            secure_db.insert('partner_inventory', {
-                'partner_id': partner.doc_id,
-                'item_id': item_id,
-                'quantity': qty,
-                'cost': cost,
-                'note': "Test stock-in",
-                'date': random_date_within_weeks(6),
-                'timestamp': datetime.utcnow().isoformat()
-            })
-
-
-def generate_payouts(entries_per_partner=20):
-    print(f"Adding {entries_per_partner} payouts per partner...")
-    partners = secure_db.all('partners')
-    for partner in partners:
-        for _ in range(entries_per_partner):
+def generate_payouts(partners):
+    """Generate 5 payouts per partner"""
+    print(f"🏦 Adding payouts for {len(partners)} partners...")
+    for partner_name, partner_id in partners.items():
+        for _ in range(5):
             local_amt = round(random.uniform(100.0, 1000.0), 2)
             fee = round(local_amt * 0.03, 2)  # 3% fee
             usd_amt = round((local_amt - fee) / random.uniform(0.7, 1.3), 2)
             secure_db.insert('partner_payouts', {
-                'partner_id': partner.doc_id,
+                'partner_id': partner_id,
                 'local_amt': local_amt,
                 'fee_perc': 3.0,
                 'fee_amt': fee,
                 'usd_amt': usd_amt,
                 'fx_rate': round((local_amt - fee) / usd_amt, 4),
-                'note': "Test payout",
+                'note': "Generated payout",
                 'date': random_date_within_weeks(6),
                 'timestamp': datetime.utcnow().isoformat()
             })
@@ -136,13 +152,13 @@ def generate_payouts(entries_per_partner=20):
 
 def main():
     print("🚀 Generating test data...")
-    generate_customers()
-    generate_stores()
-    generate_partners()
-    generate_sales()
-    generate_payments()
-    generate_stockins()
-    generate_payouts()
+    customers = ensure_customers()
+    partners = ensure_partners()
+    stores = ensure_stores()
+
+    generate_stockins(entries=25, partners=partners, stores=stores)
+    generate_sales_and_payments(customers, stores)
+    generate_payouts(partners)
     print("✅ Test data generation complete!")
 
 
