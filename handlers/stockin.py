@@ -55,16 +55,20 @@ def _filter_by_months(rows, months: int):
 # ───────────────────────────────────────────────────────────────
 #  Sub-menu
 # ───────────────────────────────────────────────────────────────
-async def show_stockin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def edit_stockin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("➕ Add Stock-In",    callback_data="add_stockin")],
-        [InlineKeyboardButton("👀 View Stock-Ins",  callback_data="view_stockin")],
-        [InlineKeyboardButton("✏️ Edit Stock-In",   callback_data="edit_stockin")],
-        [InlineKeyboardButton("🗑️ Remove Stock-In", callback_data="remove_stockin")],
-        [InlineKeyboardButton("🔙 Back",            callback_data="main_menu")],
+        [InlineKeyboardButton("📆 Last 3 M", callback_data="edit_si_filter_3m")],
+        [InlineKeyboardButton("📆 Last 6 M", callback_data="edit_si_filter_6m")],
+        [InlineKeyboardButton("📆 Show All", callback_data="edit_si_filter_all")],
+        [InlineKeyboardButton("🔙 Back",     callback_data="stockin_menu")]
     ])
-    await update.callback_query.edit_message_text("📥 Stock-In: choose an action", reply_markup=kb)
+    await update.callback_query.edit_message_text(
+        "✏️ Edit Stock-In: choose period", reply_markup=kb
+    )
+    # ▶️ **ADD THIS RETURN**
+    return SI_EDIT_SELECT
+
 
 # ======================================================================
 #                              ADD  FLOW
@@ -323,13 +327,18 @@ async def confirm_edit_stockin(update: Update, context: ContextTypes.DEFAULT_TYP
 # ======================================================================
 async def remove_stockin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
-    kb=InlineKeyboardMarkup([
-        [InlineKeyboardButton("📆 Last 3 M",callback_data="del_si_filter_3m")],
-        [InlineKeyboardButton("📆 Last 6 M",callback_data="del_si_filter_6m")],
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📆 Last 3 M", callback_data="del_si_filter_3m")],
+        [InlineKeyboardButton("📆 Last 6 M", callback_data="del_si_filter_6m")],
         [InlineKeyboardButton("📆 Show All", callback_data="del_si_filter_all")],
-        [InlineKeyboardButton("🔙 Back",callback_data="stockin_menu")]
+        [InlineKeyboardButton("🔙 Back",     callback_data="stockin_menu")]
     ])
-    await update.callback_query.edit_message_text("🗑️ Delete Stock-In: choose period",reply_markup=kb)
+    await update.callback_query.edit_message_text(
+        "🗑️ Delete Stock-In: choose period", reply_markup=kb
+    )
+    # ▶️ **ADD THIS RETURN**
+    return SI_DELETE_SELECT
+
 
 async def del_si_filtered(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
