@@ -1,16 +1,19 @@
 # handlers/payments.py
 """
-Payments module – redesigned to mirror the modern sales/stock-in UX **and**
-patched with the same Back-button “re-entry” logic used in payouts.py.
+Payments module – modern UI (sales/stock-in pattern) **plus**
+• Universal Back-button re-entry (like payouts.py)
+• Friendly formatting helpers:
+      fmt_money(…) → “$1,234,567.89”
+      fmt_date(…)  → “15/06/2025”
 
-Key points
-──────────
-• Sub-menu plus four flows: Add, View, Edit, Delete.  
-• `payment_back()` clears convo state, shows the Payments menu, **and** returns
-  `ConversationHandler.END`.  
-• All ConversationHandlers that lead to paginated pages have
-  `allow_reentry=True`, so tapping 🔙 Back then immediately re-selecting a flow
-  starts it cleanly without a “conversation already running” error.
+Prereqs
+───────
+`handlers/utils.py` must already define:
+
+    fmt_money(amount: float, code:str='USD') -> str
+    fmt_date (ddmmyyyy:str)                 -> str
+
+See the previous patch instructions for the exact helper code.
 """
 
 import logging
@@ -26,7 +29,7 @@ from telegram.ext import (
     filters,
 )
 
-from handlers.utils import require_unlock
+from handlers.utils import require_unlock, fmt_money, fmt_date  # ← helpers
 from secure_db import secure_db
 
 logger = logging.getLogger(__name__)
@@ -53,7 +56,7 @@ ROWS_PER_PAGE = 20
 #  Helpers
 # ───────────────────────────────────────────────────────────────
 def _months_filter(rows, months: int):
-    """Filter rows to those within the last *months* full months."""
+    """Return rows dated within the last *months* full calendar months."""
     if months <= 0:
         return rows
     cutoff = datetime.utcnow().replace(day=1, hour=0, minute=0,
@@ -69,11 +72,16 @@ def _months_filter(rows, months: int):
         if datetime.strptime(r.get("date", "01011970"), "%d%m%Y") >= cutoff
     ]
 
+
+def _cust_currency(cid: int) -> str:
+    row = secure_db.table("customers").get(doc_id=cid) or {}
+    return row.get("currency", "USD")
+
 # ───────────────────────────────────────────────────────────────
-#  Sub-menu  +  universal Back handler
+#  Sub-menu & universal Back handler
 # ───────────────────────────────────────────────────────────────
 async def show_payment_menu(update: Update,
-                            context: ContextTypes.DEFAULT_TYPE) -> None:
+                            context: ContextTypes.DEFAULT_TYPE):
     if update.callback_query:
         await update.callback_query.answer()
     kb = InlineKeyboardMarkup([
@@ -91,11 +99,8 @@ async def show_payment_menu(update: Update,
 
 
 async def payment_back(update: Update,
-                       context: ContextTypes.DEFAULT_TYPE) -> int:
-    """
-    Clear any in-flight conversation state, show the Payments menu,
-    and terminate the current ConversationHandler.
-    """
+                       context: ContextTypes.DEFAULT_TYPE):
+    """Abort any conversation, clear temp data, return to Payments menu."""
     context.user_data.clear()
     await show_payment_menu(update, context)
     return ConversationHandler.END
@@ -189,7 +194,7 @@ async def get_add_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [[InlineKeyboardButton("📅 Skip date",
                                callback_data="pay_add_date_skip")]]
     )
-    prompt = f"Enter payment date DDMMYYYY or Skip ({today}):"
+    prompt = f"Enter payment date DDMMYYYY or Skip ({fmt_date(today)}):"
     if update.callback_query:
         await update.callback_query.edit_message_text(prompt, reply_markup=kb)
     else:
@@ -214,16 +219,19 @@ async def get_add_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def confirm_add_prompt(update: Update,
                               context: ContextTypes.DEFAULT_TYPE):
-    d = context.user_data
+    d   = context.user_data
+    cur = _cust_currency(d["customer_id"])
     fee_amt = d["local_amt"] * d["fee_perc"] / 100
     net     = d["local_amt"] - fee_amt
     fx      = (net / d["usd_amt"]) if d["usd_amt"] else 0
-    summary = (f"Local: {d['local_amt']:.2f}\n"
-               f"Fee: {d['fee_perc']:.2f}% ({fee_amt:.2f})\n"
-               f"USD Recv: {d['usd_amt']:.2f}\n"
-               f"FX Rate: {fx:.4f}\n"
-               f"Note: {d.get('note') or '—'}\n"
-               f"Date: {d['date']}")
+    summary = (
+        f"Local: {fmt_money(d['local_amt'], cur)}\n"
+        f"Fee: {d['fee_perc']:.2f}% ({fmt_money(fee_amt, cur)})\n"
+        f"USD Recv: {fmt_money(d['usd_amt'], 'USD')}\n"
+        f"FX Rate: {fx:.4f}\n"
+        f"Note: {d.get('note') or '—'}\n"
+        f"Date: {fmt_date(d['date'])}"
+    )
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("✅ Confirm", callback_data="pay_add_conf_yes"),
          InlineKeyboardButton("❌ Cancel",  callback_data="pay_add_conf_no")]
@@ -316,6 +324,7 @@ async def render_view_page(update: Update,
     cid    = context.user_data["view_cid"]
     period = context.user_data["view_period"]
     page   = context.user_data["view_page"]
+    cur    = _cust_currency(cid)
 
     rows = [r for r in secure_db.all("customer_payments")
             if r["customer_id"] == cid]
@@ -338,8 +347,10 @@ async def render_view_page(update: Update,
             net     = r["local_amt"] - fee_amt
             fx      = (net / r["usd_amt"]) if r["usd_amt"] else 0
             lines.append(
-                f"[{r.doc_id}] {r['local_amt']:.2f} ➜ {r['usd_amt']:.2f} USD "
-                f"on {r['date']} | FX {fx:.4f}"
+                f"[{r.doc_id}] "
+                f"{fmt_money(r['local_amt'], cur)} ➜ "
+                f"{fmt_money(r['usd_amt'], 'USD')} "
+                f"on {fmt_date(r['date'])} | FX {fx:.4f}"
             )
         text = (f"💰 Payments  P{page}/"
                 f"{(total+ROWS_PER_PAGE-1)//ROWS_PER_PAGE}\n\n"
@@ -360,10 +371,8 @@ async def render_view_page(update: Update,
 async def view_paginate(update: Update,
                         context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
-    if update.callback_query.data.endswith("prev"):
-        context.user_data["view_page"] -= 1
-    else:
-        context.user_data["view_page"] += 1
+    context.user_data["view_page"] += \
+        (-1 if update.callback_query.data.endswith("prev") else 1)
     return await render_view_page(update, context)
 
 # ======================================================================
@@ -425,6 +434,7 @@ async def render_edit_page(update: Update,
     cid    = context.user_data["edit_cid"]
     period = context.user_data["edit_period"]
     page   = context.user_data["edit_page"]
+    cur    = _cust_currency(cid)
 
     rows = [r for r in secure_db.all("customer_payments")
             if r["customer_id"] == cid]
@@ -441,7 +451,8 @@ async def render_edit_page(update: Update,
     if not chunk:
         text = "No payments."
     else:
-        lines = [f"[{r.doc_id}] {r['local_amt']:.2f} ➜ {r['usd_amt']:.2f} USD"
+        lines = [f"[{r.doc_id}] {fmt_money(r['local_amt'], cur)} ➜ "
+                 f"{fmt_money(r['usd_amt'],'USD')}"
                  for r in chunk]
         text = (f"✏️ Edit Payments  P{page}/"
                 f"{(total+ROWS_PER_PAGE-1)//ROWS_PER_PAGE}\n\n"
@@ -517,7 +528,7 @@ async def edit_new_usd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [[InlineKeyboardButton("📅 Skip",
                                callback_data="pay_edit_date_skip")]]
     )
-    await update.message.reply_text(f"New date DDMMYYYY or Skip ({today}):",
+    await update.message.reply_text(f"New date DDMMYYYY or Skip ({fmt_date(today)}):",
                                     reply_markup=kb)
     return P_EDIT_DATE
 
@@ -534,11 +545,14 @@ async def edit_new_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Format DDMMYYYY.")
             return P_EDIT_DATE
     context.user_data["new_date"] = date_str
-    d = context.user_data
-    summary = (f"Local: {d['new_local']:.2f}\n"
-               f"Fee: {d['new_fee']:.2f}%\n"
-               f"USD: {d['new_usd']:.2f}\n"
-               f"Date: {date_str}\n\nSave?")
+    d   = context.user_data
+    cur = _cust_currency(context.user_data["edit_cid"])
+    summary = (
+        f"Local: {fmt_money(d['new_local'], cur)}\n"
+        f"Fee: {d['new_fee']:.2f}%\n"
+        f"USD: {fmt_money(d['new_usd'],'USD')}\n"
+        f"Date: {fmt_date(date_str)}\n\nSave?"
+    )
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("✅ Save", callback_data="pay_edit_conf_yes"),
          InlineKeyboardButton("❌ Cancel", callback_data="pay_edit_conf_no")]
@@ -630,6 +644,7 @@ async def render_del_page(update: Update,
     cid    = context.user_data["del_cid"]
     period = context.user_data["del_period"]
     page   = context.user_data["del_page"]
+    cur    = _cust_currency(cid)
 
     rows = [r for r in secure_db.all("customer_payments")
             if r["customer_id"] == cid]
@@ -646,7 +661,8 @@ async def render_del_page(update: Update,
     if not chunk:
         text = "No payments."
     else:
-        lines = [f"[{r.doc_id}] {r['local_amt']:.2f} ➜ {r['usd_amt']:.2f} USD"
+        lines = [f"[{r.doc_id}] {fmt_money(r['local_amt'], cur)} ➜ "
+                 f"{fmt_money(r['usd_amt'],'USD')}"
                  for r in chunk]
         text = (f"🗑️ Delete Payments  P{page}/"
                 f"{(total+ROWS_PER_PAGE-1)//ROWS_PER_PAGE}\n\n"
@@ -707,16 +723,16 @@ async def del_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 # ======================================================================
-#                  REGISTER  ALL  HANDLERS  FOR  MODULE
+#                  REGISTER  ALL HANDLERS  FOR MODULE
 # ======================================================================
 def register_payment_handlers(app: Application):
     """Attach Payments submenu + all conversations to the Telegram app."""
 
-    # ── Sub-menu (always present)
+    # ── Sub-menu
     app.add_handler(CallbackQueryHandler(show_payment_menu,
                                          pattern="^payment_menu$"))
 
-    # ─────────────────────────── Add conversation ───────────────────────────
+    # ────────────────────── Add conversation ───────────────────────
     add_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(add_payment,
                                            pattern="^add_payment$")],
@@ -766,7 +782,7 @@ def register_payment_handlers(app: Application):
     )
     app.add_handler(add_conv)
 
-    # ─────────────────────────── View conversation ───────────────────────────
+    # ────────────────────── View conversation ───────────────────────
     view_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(view_payment_start,
                                            pattern="^view_payment$")],
@@ -792,12 +808,12 @@ def register_payment_handlers(app: Application):
             ],
         },
         fallbacks=[CommandHandler("cancel", payment_back)],
-        allow_reentry=True,        # ← Back-reentry enabled
+        allow_reentry=True,
         per_message=False,
     )
     app.add_handler(view_conv)
 
-    # ─────────────────────────── Edit conversation ───────────────────────────
+    # ────────────────────── Edit conversation ───────────────────────
     edit_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(edit_payment_start,
                                            pattern="^edit_payment$")],
@@ -862,12 +878,12 @@ def register_payment_handlers(app: Application):
             ],
         },
         fallbacks=[CommandHandler("cancel", payment_back)],
-        allow_reentry=True,        # ← Back-reentry enabled
+        allow_reentry=True,
         per_message=False,
     )
     app.add_handler(edit_conv)
 
-    # ─────────────────────────── Delete conversation ──────────────────────────
+    # ────────────────────── Delete conversation ──────────────────────
     del_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(del_payment_start,
                                            pattern="^remove_payment$")],
@@ -902,7 +918,7 @@ def register_payment_handlers(app: Application):
             ],
         },
         fallbacks=[CommandHandler("cancel", payment_back)],
-        allow_reentry=True,        # ← Back-reentry enabled
+        allow_reentry=True,
         per_message=False,
     )
     app.add_handler(del_conv)
