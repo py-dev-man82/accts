@@ -255,178 +255,102 @@ async def edit_sale(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="sales_menu")]])
         )
         return ConversationHandler.END
+
+    # Show customer buttons
     buttons = [
         InlineKeyboardButton(f"{c['name']} ({c['currency']})", callback_data=f"edit_cust_{c.doc_id}")
         for c in customers
     ]
+    buttons.append([InlineKeyboardButton("🔙 Back", callback_data="sales_menu")])
     kb = InlineKeyboardMarkup([buttons[i:i+2] for i in range(0, len(buttons), 2)])
-    await update.callback_query.edit_message_text("Select customer:", reply_markup=kb)
+    await update.callback_query.edit_message_text("Select customer to edit sales:", reply_markup=kb)
     return S_EDIT_SELECT
+
 
 async def get_edit_customer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
-    cid = int(update.callback_query.data.split('_')[-1])
+    data = update.callback_query.data
+
+    if data == "edit_time_back":
+        return await edit_sale(update, context)  # Back to customer selection
+
+    cid = int(data.split('_')[-1])
     context.user_data['edit_customer_id'] = cid
 
-    # Fetch only this customer's sales
-    rows = [r for r in secure_db.all('sales') if r['customer_id'] == cid]
-    if not rows:
+    # Prompt for time filter
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📅 Last 3 Months", callback_data="edit_time_3m")],
+        [InlineKeyboardButton("📅 Last 6 Months", callback_data="edit_time_6m")],
+        [InlineKeyboardButton("📅 All Time", callback_data="edit_time_all")],
+        [InlineKeyboardButton("🔙 Back", callback_data="edit_sale")]
+    ])
+    await update.callback_query.edit_message_text("Select time period:", reply_markup=kb)
+    return S_EDIT_TIME
+
+
+async def get_edit_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+    time_filter = update.callback_query.data.split('_')[-1]
+    context.user_data['edit_time_filter'] = time_filter
+    context.user_data['edit_page'] = 1
+    return await send_edit_page(update, context)
+
+
+async def send_edit_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    cid = context.user_data['edit_customer_id']
+    time_filter = context.user_data['edit_time_filter']
+    page = context.user_data['edit_page']
+    page_size = 20
+
+    all_sales = [r for r in secure_db.all('sales') if r['customer_id'] == cid]
+
+    if time_filter == "3m":
+        cutoff = datetime.utcnow().timestamp() - (90 * 86400)
+        all_sales = [r for r in all_sales if datetime.fromisoformat(r['timestamp']).timestamp() >= cutoff]
+    elif time_filter == "6m":
+        cutoff = datetime.utcnow().timestamp() - (180 * 86400)
+        all_sales = [r for r in all_sales if datetime.fromisoformat(r['timestamp']).timestamp() >= cutoff]
+
+    total_pages = max(1, (len(all_sales) + page_size - 1) // page_size)
+    start = (page - 1) * page_size
+    end = start + page_size
+    sales_chunk = all_sales[start:end]
+
+    if not sales_chunk:
         await update.callback_query.edit_message_text(
-            "No sales found for this customer.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="sales_menu")]])
+            "No sales found for this customer in the selected period.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="edit_sale")]])
         )
         return ConversationHandler.END
 
-    buttons = [
-        InlineKeyboardButton(
-            f"[{r.doc_id}] Store:{r['store_id']} Item:{r['item_id']} x{r['quantity']}",
-            callback_data=f"edit_sale_{r.doc_id}"
-        )
-        for r in rows
+    lines = [
+        f"• [{r.doc_id}] Store:{r['store_id']} Item:{r['item_id']} "
+        f"x{r['quantity']} @ {r['unit_price']} = {r['quantity'] * r['unit_price']:.2f} {r['currency']}"
+        for r in sales_chunk
     ]
-    kb = InlineKeyboardMarkup([buttons[i:i+1] for i in range(0, len(buttons), 1)])
-    await update.callback_query.edit_message_text("Select sale to edit:", reply_markup=kb)
-    return S_EDIT_FIELD
+    text = f"✏️ Edit Sales (Page {page}/{total_pages}):\n" + "\n".join(lines)
 
-async def get_edit_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    buttons = []
+    if page > 1:
+        buttons.append(InlineKeyboardButton("⬅️ Previous", callback_data="edit_prev"))
+    if page < total_pages:
+        buttons.append(InlineKeyboardButton("➡️ Next", callback_data="edit_next"))
+    buttons.append(InlineKeyboardButton("🔙 Back", callback_data="edit_time_back"))
+    kb = InlineKeyboardMarkup([buttons])
+    await update.callback_query.edit_message_text(text, reply_markup=kb)
+    return S_EDIT_PAGE
+
+
+async def handle_edit_pagination(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
-    sid = int(update.callback_query.data.split('_')[-1])
-    sale = secure_db.table('sales').get(doc_id=sid)
-    if not sale:
-        await show_sales_menu(update, context)
-        return ConversationHandler.END
-    context.user_data['edit_sale'] = sale
-    context.user_data['edit_sale_id'] = sid
-
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("Store", callback_data="edit_field_store")],
-        [InlineKeyboardButton("Item & Quantity", callback_data="edit_field_itemqty")],
-        [InlineKeyboardButton("Unit Price", callback_data="edit_field_price")],
-        [InlineKeyboardButton("Handling Fee", callback_data="edit_field_fee")],
-        [InlineKeyboardButton("Note", callback_data="edit_field_note")],
-        [InlineKeyboardButton("❌ Cancel", callback_data="edit_field_cancel")]
-    ])
-    await update.callback_query.edit_message_text("Select field to edit:", reply_markup=kb)
-    return S_EDIT_NEWVAL
-
-async def get_edit_field(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.answer()
-    field = update.callback_query.data.split('_')[-1]
-    context.user_data['edit_field'] = field
-
-    if field == "store":
-        stores = secure_db.all('stores')
-        buttons = [
-            InlineKeyboardButton(f"{s['name']} ({s['currency']})", callback_data=f"edit_new_store_{s.doc_id}")
-            for s in stores
-        ]
-        kb = InlineKeyboardMarkup([buttons[i:i+2] for i in range(0, len(buttons), 2)])
-        await update.callback_query.edit_message_text("Select new store:", reply_markup=kb)
-    elif field == "itemqty":
-        await update.callback_query.edit_message_text("Enter new item_id,quantity (e.g. 5,10):")
-    elif field == "price":
-        await update.callback_query.edit_message_text("Enter new unit price:")
-    elif field == "fee":
-        await update.callback_query.edit_message_text("Enter new handling fee (or 0 for none):")
-    elif field == "note":
-        await update.callback_query.edit_message_text("Enter new note (or type '-' for none):")
-    else:
-        await show_sales_menu(update, context)
-        return ConversationHandler.END
-    return S_EDIT_NEWVAL
-
-async def save_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    sid = context.user_data['edit_sale_id']
-    field = context.user_data['edit_field']
-    sale = context.user_data['edit_sale']
-    old_value = sale.get(field)
-    new_value = None
-
-    # Get new value
-    if field == "store":
-        new_value = int(update.callback_query.data.split('_')[-1])
-    elif field == "itemqty":
-        try:
-            item_id, qty = map(int, update.message.text.strip().split(','))
-            new_value = (item_id, qty)
-        except:
-            await update.message.reply_text("Invalid format. Use item_id,quantity (e.g. 5,10):")
-            return S_EDIT_NEWVAL
-    elif field in ["price", "fee"]:
-        try:
-            new_value = float(update.message.text.strip())
-        except:
-            await update.message.reply_text("Invalid number. Try again:")
-            return S_EDIT_NEWVAL
-    elif field == "note":
-        new_value = "" if update.message.text.strip() == "-" else update.message.text.strip()
-
-    # Show confirmation
-    summary = (
-        f"✅ Confirm Edit\n"
-        f"────────────────────────\n"
-        f"Field: {field.title()}\n"
-        f"Old Value: {old_value}\n"
-        f"New Value: {new_value}\n"
-        f"────────────────────────\n"
-        f"Apply this change?"
-    )
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ Yes", callback_data="edit_conf_yes")],
-        [InlineKeyboardButton("❌ No", callback_data="edit_conf_no")]
-    ])
-    context.user_data['new_value'] = new_value
-    await update.message.reply_text(summary, reply_markup=kb)
-    return S_EDIT_CONFIRM
-
-async def confirm_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.answer()
-    if update.callback_query.data == "edit_conf_yes":
-        sid = context.user_data['edit_sale_id']
-        field = context.user_data['edit_field']
-        sale = context.user_data['edit_sale']
-        new_value = context.user_data['new_value']
-
-        # Apply changes and adjust inventory/fee if needed
-        if field == "store":
-            secure_db.update('sales', {'store_id': new_value}, [sid])
-        elif field == "itemqty":
-            old_qty = sale['quantity']
-            item_id, qty = new_value
-            secure_db.update('sales', {'item_id': item_id, 'quantity': qty}, [sid])
-            # Adjust inventory
-            diff = qty - old_qty
-            Inventory = Query()
-            item_rec = secure_db.table('store_inventory').get(
-                (Inventory.store_id == sale['store_id']) & (Inventory.item_id == item_id)
-            )
-            if item_rec:
-                secure_db.update('store_inventory', {'quantity': item_rec['quantity'] - diff}, [item_rec.doc_id])
-        elif field == "price":
-            secure_db.update('sales', {'unit_price': new_value}, [sid])
-        elif field == "fee":
-            old_fee = sale.get('handling_fee', 0)
-            secure_db.update('sales', {'handling_fee': new_value}, [sid])
-            # Adjust store payment for fee difference
-            fee_diff = new_value - old_fee
-            if fee_diff != 0:
-                secure_db.insert('store_payments', {
-                    'store_id': sale['store_id'],
-                    'amount': fee_diff,
-                    'currency': sale['currency'],
-                    'note': f"Adjustment for handling fee on Sale #{sid}",
-                    'timestamp': datetime.utcnow().isoformat()
-                })
-        elif field == "note":
-            secure_db.update('sales', {'note': new_value}, [sid])
-
-        await update.callback_query.edit_message_text(
-            "✅ Sale updated successfully.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="sales_menu")]])
-        )
-    else:
-        await show_sales_menu(update, context)
-    return ConversationHandler.END
+    action = update.callback_query.data
+    if action == "edit_prev":
+        context.user_data['edit_page'] -= 1
+    elif action == "edit_next":
+        context.user_data['edit_page'] += 1
+    elif action == "edit_time_back":
+        return await get_edit_customer(update, context)
+    return await send_edit_page(update, context)
 
 # ----------------- Delete Sale Flow -------------------
 @require_unlock
@@ -552,6 +476,7 @@ async def view_sales(update: Update, context: ContextTypes.DEFAULT_TYPE):
         InlineKeyboardButton(f"{c['name']} ({c['currency']})", callback_data=f"view_cust_{c.doc_id}")
         for c in customers
     ]
+    buttons.append([InlineKeyboardButton("🔙 Back", callback_data="sales_menu")])
     kb = InlineKeyboardMarkup([buttons[i:i+2] for i in range(0, len(buttons), 2)])
     await update.callback_query.edit_message_text("Select customer to view sales:", reply_markup=kb)
     return S_VIEW_CUSTOMER
@@ -561,11 +486,9 @@ async def get_view_customer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     data = update.callback_query.data
 
-    # 🟢 Handle Back button
     if data == "view_time_back":
         return await view_sales(update, context)  # Back to customer selection
 
-    # 🟢 Parse customer ID
     cid = int(data.split('_')[-1])
     context.user_data['view_customer_id'] = cid
 
@@ -584,8 +507,6 @@ async def get_view_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     time_filter = update.callback_query.data.split('_')[-1]
     context.user_data['view_time_filter'] = time_filter
-
-    # Start pagination at page 1
     context.user_data['view_page'] = 1
     return await send_sales_page(update, context)
 
@@ -594,12 +515,9 @@ async def send_sales_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cid = context.user_data['view_customer_id']
     time_filter = context.user_data['view_time_filter']
     page = context.user_data['view_page']
-    page_size = 20  # Number of sales per page
+    page_size = 20
 
-    # Filter sales for this customer and time period
-    all_sales = [
-        r for r in secure_db.all('sales') if r['customer_id'] == cid
-    ]
+    all_sales = [r for r in secure_db.all('sales') if r['customer_id'] == cid]
 
     if time_filter == "3m":
         cutoff = datetime.utcnow().timestamp() - (90 * 86400)
@@ -608,7 +526,6 @@ async def send_sales_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cutoff = datetime.utcnow().timestamp() - (180 * 86400)
         all_sales = [r for r in all_sales if datetime.fromisoformat(r['timestamp']).timestamp() >= cutoff]
 
-    # Paginate
     total_pages = max(1, (len(all_sales) + page_size - 1) // page_size)
     start = (page - 1) * page_size
     end = start + page_size
@@ -621,20 +538,13 @@ async def send_sales_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return ConversationHandler.END
 
-    # Build sales list text
-    lines = []
-    for r in sales_chunk:
-        total = r['quantity'] * r['unit_price']
-        lines.append(
-            f"• [{r.doc_id}] Store:{r['store_id']} Item:{r['item_id']} "
-            f"x{r['quantity']} @ {r['unit_price']} = {total:.2f} {r['currency']}"
-        )
-    text = (
-        f"📄 Sales (Page {page}/{total_pages}):\n"
-        + "\n".join(lines)
-    )
+    lines = [
+        f"• [{r.doc_id}] Store:{r['store_id']} Item:{r['item_id']} "
+        f"x{r['quantity']} @ {r['unit_price']} = {r['quantity'] * r['unit_price']:.2f} {r['currency']}"
+        for r in sales_chunk
+    ]
+    text = f"📄 Sales (Page {page}/{total_pages}):\n" + "\n".join(lines)
 
-    # Pagination buttons
     buttons = []
     if page > 1:
         buttons.append(InlineKeyboardButton("⬅️ Previous", callback_data="view_prev"))
@@ -642,7 +552,6 @@ async def send_sales_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
         buttons.append(InlineKeyboardButton("➡️ Next", callback_data="view_next"))
     buttons.append(InlineKeyboardButton("🔙 Back", callback_data="view_time_back"))
     kb = InlineKeyboardMarkup([buttons])
-
     await update.callback_query.edit_message_text(text, reply_markup=kb)
     return S_VIEW_PAGE
 
@@ -662,60 +571,36 @@ async def handle_pagination(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def register_sales_handlers(app):
     app.add_handler(CallbackQueryHandler(show_sales_menu, pattern="^sales_menu$"))
 
-    # ----------------- Add Sale -----------------
-    add_conv = ConversationHandler(
-        entry_points=[
-            CommandHandler("add_sale", add_sale),
-            CallbackQueryHandler(add_sale, pattern="^add_sale$")
-        ],
-        states={
-            S_CUST_SELECT: [
-                CallbackQueryHandler(get_sale_customer, pattern="^sale_cust_")
-            ],
-            S_STORE_SELECT: [
-                CallbackQueryHandler(get_sale_store, pattern="^sale_store_")
-            ],
-            S_ITEM_QTY: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, get_sale_item_qty)
-            ],
-            S_PRICE: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, get_sale_price)
-            ],
-            S_FEE: [
-                CallbackQueryHandler(get_sale_fee, pattern="^fee_skip$"),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, get_sale_fee)
-            ],
-            S_NOTE: [
-                CallbackQueryHandler(get_sale_note, pattern="^note_skip$"),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, get_sale_note)
-            ],
-            S_CONFIRM: [
-                CallbackQueryHandler(confirm_sale, pattern="^sale_")
-            ]
-        },
-        fallbacks=[CommandHandler("cancel", show_sales_menu)],
-        per_message=False
-    )
+    # Add Sale
     app.add_handler(add_conv)
 
-    # ----------------- Edit Sale -----------------
+    # Edit Sale
     edit_conv = ConversationHandler(
         entry_points=[
             CallbackQueryHandler(edit_sale, pattern="^edit_sale$")
         ],
         states={
             S_EDIT_SELECT: [
-                CallbackQueryHandler(get_edit_customer, pattern="^edit_cust_")  # 🟢 Customer selection
+                CallbackQueryHandler(get_edit_customer, pattern="^edit_cust_"),
+                CallbackQueryHandler(edit_sale, pattern="^edit_sale$")  # Back button to menu
+            ],
+            S_EDIT_TIME: [
+                CallbackQueryHandler(get_edit_time, pattern="^edit_time_"),
+                CallbackQueryHandler(edit_sale, pattern="^edit_sale$")  # Back button to customer selection
+            ],
+            S_EDIT_PAGE: [
+                CallbackQueryHandler(handle_edit_pagination, pattern="^edit_(prev|next)$"),
+                CallbackQueryHandler(get_edit_customer, pattern="^edit_time_back$")
             ],
             S_EDIT_FIELD: [
-                CallbackQueryHandler(get_edit_selection, pattern="^edit_sale_")  # 🟢 Sale selection
+                CallbackQueryHandler(get_edit_selection, pattern="^edit_sale_")
             ],
             S_EDIT_NEWVAL: [
-                CallbackQueryHandler(get_edit_field, pattern="^edit_field_"),    # 🟢 Field buttons
-                MessageHandler(filters.TEXT & ~filters.COMMAND, save_edit)       # 🟢 New value input
+                CallbackQueryHandler(get_edit_field, pattern="^edit_field_"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, save_edit)
             ],
             S_EDIT_CONFIRM: [
-                CallbackQueryHandler(confirm_edit, pattern="^edit_conf_")        # 🟢 Confirm edit
+                CallbackQueryHandler(confirm_edit, pattern="^edit_conf_")
             ]
         },
         fallbacks=[CommandHandler("cancel", show_sales_menu)],
@@ -723,47 +608,26 @@ def register_sales_handlers(app):
     )
     app.add_handler(edit_conv)
 
-    # ----------------- Delete Sale -----------------
-    delete_conv = ConversationHandler(
-        entry_points=[
-            CallbackQueryHandler(delete_sale, pattern="^remove_sale$")
-        ],
-        states={
-            S_DELETE_SELECT: [
-                CallbackQueryHandler(get_delete_customer, pattern="^del_cust_")  # 🟢 Customer selection
-            ],
-            S_DELETE_CONFIRM: [
-                CallbackQueryHandler(confirm_delete_sale, pattern="^del_sale_"), # 🟢 Sale selection
-                CallbackQueryHandler(perform_delete_sale, pattern="^del_conf_") # 🟢 Confirm delete
-            ]
-        },
-        fallbacks=[CommandHandler("cancel", show_sales_menu)],
-        per_message=False
-    )
+    # Delete Sale
     app.add_handler(delete_conv)
 
-    # ----------------- View Sales -----------------
+    # View Sales
     view_conv = ConversationHandler(
         entry_points=[
             CallbackQueryHandler(view_sales, pattern="^view_sales$")
         ],
         states={
-            # Customer selection
             S_VIEW_CUSTOMER: [
                 CallbackQueryHandler(get_view_customer, pattern="^view_cust_"),
-                CallbackQueryHandler(view_sales, pattern="^view_sales$")  # 🔙 Back to customer selection
+                CallbackQueryHandler(view_sales, pattern="^view_sales$")  # Back button to menu
             ],
-
-            # Time period selection
             S_VIEW_TIME: [
                 CallbackQueryHandler(get_view_time, pattern="^view_time_"),
-                CallbackQueryHandler(view_sales, pattern="^view_sales$")  # 🔙 Back to customer selection
+                CallbackQueryHandler(view_sales, pattern="^view_sales$")  # Back button to customer selection
             ],
-
-            # Pagination (sales listing)
             S_VIEW_PAGE: [
                 CallbackQueryHandler(handle_pagination, pattern="^view_(prev|next)$"),
-                CallbackQueryHandler(get_view_customer, pattern="^view_time_back$")  # 🔙 Back to time selection
+                CallbackQueryHandler(get_view_customer, pattern="^view_time_back$")
             ]
         },
         fallbacks=[CommandHandler("cancel", show_sales_menu)],
