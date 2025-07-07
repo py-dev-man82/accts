@@ -150,8 +150,9 @@ async def show_customer_report(update: Update, context: ContextTypes.DEFAULT_TYP
 
     # Calculate totals
     total_sales = sum(s["quantity"] * s["unit_price"] for s in sales)
-    total_payments = sum(p["local_amt"] for p in payments)
-    balance = total_sales - total_payments
+    total_payments_local = sum(p["local_amt"] for p in payments)
+    total_payments_usd = sum(p["usd_amt"] for p in payments)
+    balance = total_sales - total_payments_local
 
     # Build report
     lines = [f"📄 *Customer Report: {customer['name']}*"]
@@ -167,6 +168,7 @@ async def show_customer_report(update: Update, context: ContextTypes.DEFAULT_TYP
                     f"Item {s['item_id']} x{s['quantity']} @ {fmt_money(s['unit_price'], customer['currency'])} "
                     f"= {fmt_money(s['quantity'] * s['unit_price'], customer['currency'])}"
                 )
+            lines.append(f"📊 *Total Sales:* {fmt_money(total_sales, customer['currency'])}")
         else:
             lines.append("  (No sales)")
 
@@ -174,12 +176,15 @@ async def show_customer_report(update: Update, context: ContextTypes.DEFAULT_TYP
         lines.append("\n💵 *Payments*")
         if payments:
             for p in payments:
+                fee_perc = p.get("fee_perc", 0.0)
                 lines.append(
                     f"• {fmt_date(datetime.fromisoformat(p['timestamp']).strftime('%d%m%Y'))}: "
                     f"{fmt_money(p['local_amt'], customer['currency'])} "
-                    f"(Fee: {fmt_money(p['fee_amt'], customer['currency'])}) → "
+                    f"(Fee: {fee_perc:.1f}% = {fmt_money(p['fee_amt'], customer['currency'])}) → "
                     f"{fmt_money(p['usd_amt'], 'USD')} @ {p['fx_rate']:.4f}"
                 )
+            lines.append(f"📊 *Total Payments:* {fmt_money(total_payments_local, customer['currency'])}")
+            lines.append(f"📊 *Total USD Received:* {fmt_money(total_payments_usd, 'USD')}")
         else:
             lines.append("  (No payments)")
 
@@ -206,7 +211,7 @@ def register_customer_report_handlers(app):
             CUSTOM_DATE_INPUT:  [MessageHandler(filters.TEXT & ~filters.COMMAND, save_custom_date)],
             REPORT_SCOPE_SELECT:[CallbackQueryHandler(show_customer_report, pattern="^scope_")],
         },
-        fallbacks=[],
+        fallbacks=[CallbackQueryHandler(show_customer_report_menu, pattern="^customer_report_menu$")],
         per_message=False,
     )
     app.add_handler(conv)
