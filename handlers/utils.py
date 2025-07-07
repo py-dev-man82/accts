@@ -25,3 +25,35 @@ def require_unlock(func):
 
         return await func(update, context)
     return wrapper
+    # ───────────────────────────────────────────────────────────────
+#  Formatting helpers – money  &  date
+# ───────────────────────────────────────────────────────────────
+from datetime import datetime
+
+# ── Money ──────────────────────────────────────────────────────
+_CURRENCY_SIGNS = {
+    "USD": "$",  "AUD": "A$", "CAD": "C$",
+    "EUR": "€",  "GBP": "£",  "JPY": "¥",
+    # add or override as needed …
+}
+
+def fmt_money(amount: float, code: str | None = "USD") -> str:
+    """
+    1234567.8, 'USD' → '$1,234,567.80'
+    Unknown codes fall back to '<CODE> 1,234,567.80'
+    """
+    sign = _CURRENCY_SIGNS.get((code or "USD").upper(), f"{code or ''} ")
+    return f"{sign}{amount:,.2f}"
+
+# ── Date ───────────────────────────────────────────────────────
+def fmt_date(ddmmyyyy: str | None) -> str:
+    """
+    '15062025' → '15/06/2025'.
+    If parsing fails, return the original string unchanged.
+    """
+    if not ddmmyyyy:
+        return ""
+    try:
+        return datetime.strptime(ddmmyyyy, "%d%m%Y").strftime("%d/%m/%Y")
+    except ValueError:
+        return ddmmyyyy
