@@ -444,11 +444,14 @@ def register_stockin_handlers(app: Application):
         entry_points=[CommandHandler("edit_stockin",edit_stockin),
                       CallbackQueryHandler(edit_stockin,pattern="^edit_stockin$")],
         states={
-            SI_EDIT_SELECT:[
-                MessageHandler(filters.TEXT & ~filters.COMMAND,get_edit_stockin_by_id),
-                CallbackQueryHandler(edit_si_filtered,pattern="^edit_si_filter_"),
-                CallbackQueryHandler(edit_si_prev,pattern="^edit_si_prev$"),
-                CallbackQueryHandler(edit_si_next,pattern="^edit_si_next$")],
+           SI_EDIT_SELECT: [
+    # new line ↓
+    CallbackQueryHandler(edit_si_filtered, pattern="^edit_si_filter_"),
+    MessageHandler(filters.TEXT & ~filters.COMMAND, get_edit_stockin_by_id),
+    CallbackQueryHandler(edit_si_prev, pattern="^edit_si_prev$"),
+    CallbackQueryHandler(edit_si_next, pattern="^edit_si_next$"),
+],
+
             SI_EDIT_QTY:     [MessageHandler(filters.TEXT & ~filters.COMMAND,get_edit_qty)],
             SI_EDIT_COST:    [MessageHandler(filters.TEXT & ~filters.COMMAND,get_edit_cost)],
             SI_EDIT_DATE:    [CallbackQueryHandler(get_edit_date,pattern="^edate_skip$"),
@@ -463,11 +466,14 @@ def register_stockin_handlers(app: Application):
         entry_points=[CommandHandler("remove_stockin",remove_stockin),
                       CallbackQueryHandler(remove_stockin,pattern="^remove_stockin$")],
         states={
-            SI_DELETE_SELECT:[
-                MessageHandler(filters.TEXT & ~filters.COMMAND,get_delete_stockin_by_id),
-                CallbackQueryHandler(del_si_filtered,pattern="^del_si_filter_"),
-                CallbackQueryHandler(del_si_prev,pattern="^del_si_prev$"),
-                CallbackQueryHandler(del_si_next,pattern="^del_si_next$")],
+         SI_DELETE_SELECT: [
+    # new line ↓
+    CallbackQueryHandler(del_si_filtered, pattern="^del_si_filter_"),
+    MessageHandler(filters.TEXT & ~filters.COMMAND, get_delete_stockin_by_id),
+    CallbackQueryHandler(del_si_prev, pattern="^del_si_prev$"),
+    CallbackQueryHandler(del_si_next, pattern="^del_si_next$"),
+],
+
             SI_DELETE_CONFIRM:[CallbackQueryHandler(confirm_delete_stockin,pattern="^del_conf_")]
         },
         fallbacks=[CommandHandler("cancel",show_stockin_menu)],
