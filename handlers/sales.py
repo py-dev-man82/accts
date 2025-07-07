@@ -651,6 +651,28 @@ async def get_edit_field(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await edit_sale(update, context)
 
     return S_EDIT_NEWVAL
+# ----------------- Edit Sale: Save New Value -------------------
+async def save_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    sid = context.user_data['edit_sale_id']
+    field = context.user_data['edit_field']
+    new_value = update.message.text.strip()
+    context.user_data['new_value'] = new_value
+
+    # Build confirmation message
+    summary = (
+        f"✅ Confirm Edit\n"
+        f"────────────────────────────\n"
+        f"Field: {field.title()}\n"
+        f"New Value: {new_value}\n"
+        f"────────────────────────────\n"
+        f"Apply this change?"
+    )
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Yes", callback_data="edit_conf_yes")],
+        [InlineKeyboardButton("❌ No", callback_data="edit_conf_no")]
+    ])
+    await update.message.reply_text(summary, reply_markup=kb)
+    return S_EDIT_CONFIRM
 
 # ----------------- Register Handlers -------------------
 def register_sales_handlers(app):
