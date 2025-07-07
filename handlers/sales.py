@@ -619,7 +619,39 @@ async def get_edit_sale(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return S_EDIT_FIELD
 
 
-# ----------------- Register Handlers -------------------
+# ----------------- Edit Sale: Handle Field Selection -------------------
+async def get_edit_field(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+    field = update.callback_query.data.split('_')[-1]
+    context.user_data['edit_field'] = field
+
+    if field == "store":
+        stores = secure_db.all('stores')
+        buttons = [
+            InlineKeyboardButton(f"{s['name']} ({s['currency']})", callback_data=f"edit_new_store_{s.doc_id}")
+            for s in stores
+        ]
+        kb = InlineKeyboardMarkup([buttons[i:i+2] for i in range(0, len(buttons), 2)])
+        await update.callback_query.edit_message_text("Select new store:", reply_markup=kb)
+
+    elif field == "itemqty":
+        await update.callback_query.edit_message_text("Enter new item_id,quantity (e.g. 5,10):")
+
+    elif field == "price":
+        await update.callback_query.edit_message_text("Enter new unit price:")
+
+    elif field == "fee":
+        await update.callback_query.edit_message_text("Enter new handling fee (or 0 for none):")
+
+    elif field == "note":
+        await update.callback_query.edit_message_text("Enter new note (or type '-' for none):")
+
+    else:
+        await update.callback_query.edit_message_text("Invalid field selected. Returning to menu...")
+        return await edit_sale(update, context)
+
+    return S_EDIT_NEWVAL
+
 # ----------------- Register Handlers -------------------
 def register_sales_handlers(app):
     app.add_handler(CallbackQueryHandler(show_sales_menu, pattern="^sales_menu$"))
