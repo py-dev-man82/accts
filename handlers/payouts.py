@@ -1,14 +1,11 @@
 # handlers/payouts.py
 """Payouts module – Stock-In/Payments-style flows **plus** clean Back/Cancel exit.
 
-Key points
-----------
-* Partner → Period → Paginated pages navigation for View / Edit / Delete.
-* New universal `payout_back()` helper:
-    – Shows the Payout submenu **and** returns ConversationHandler.END  
-      ⇒ unfinished conversations never block the next entry.
-    – Wired to every 🔙 Back button (`^payout_menu$`) and the /cancel command.
-* State-tuple count fixed (23 names → `range(23)`).
+Changes vs. previous revision
+-----------------------------
+* Added `allow_reentry=True` to the View, Edit and Delete ConversationHandlers.
+  → You can press 🏠 Back to the submenu and immediately tap the same (or another)
+    section; it restarts cleanly every time.
 """
 
 import logging
@@ -43,14 +40,13 @@ from secure_db import secure_db
     PO_DEL_PARTNER,  PO_DEL_TIME,  PO_DEL_PAGE, PO_DEL_CONFIRM,
 ) = range(23)
 
-ROWS_PER_PAGE = 20   # keep in sync with stockin.py / payments.py
+ROWS_PER_PAGE = 20
 logger = logging.getLogger(__name__)
 
 # ────────────────────────────────────────────────────────────
 #  Helpers
 # ────────────────────────────────────────────────────────────
 def _months_filter(rows, months: int):
-    """Return rows whose 'date' (DDMMYYYY) is within <months> months from now."""
     if months <= 0:
         return rows
     cutoff = datetime.utcnow().replace(day=1)
@@ -65,7 +61,6 @@ def _months_filter(rows, months: int):
 
 def _calc_fx(local_amt: float, fee_amt: float, usd: float) -> float:
     return (local_amt - fee_amt) / usd if usd else 0.0
-
 
 # ────────────────────────────────────────────────────────────
 #  Sub-menu  +  universal Back handler
@@ -88,8 +83,8 @@ async def show_payout_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def payout_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show Payout menu *and* terminate whichever conversation is still active."""
-    context.user_data.clear()          # wipe transient data
+    """Show Payout menu *and* end the active conversation."""
+    context.user_data.clear()
     await show_payout_menu(update, context)
     return ConversationHandler.END
 
@@ -614,6 +609,7 @@ def register_payout_handlers(app: Application):
             ],
         },
         fallbacks=[CommandHandler("cancel", payout_back)],
+        allow_reentry=True,          # ←—— NEW
         per_message=False,
     )
     app.add_handler(view_conv)
@@ -671,6 +667,7 @@ def register_payout_handlers(app: Application):
             ],
         },
         fallbacks=[CommandHandler("cancel", payout_back)],
+        allow_reentry=True,          # ←—— NEW
         per_message=False,
     )
     app.add_handler(edit_conv)
@@ -701,11 +698,12 @@ def register_payout_handlers(app: Application):
             ],
         },
         fallbacks=[CommandHandler("cancel", payout_back)],
+        allow_reentry=True,          # ←—— NEW
         per_message=False,
     )
     app.add_handler(del_conv)
 
-    # ─────────────────────────── Add conversation ────────────────────────────
+    # Add-flow ConversationHandler (unchanged; re-entry not needed)
     add_conv = ConversationHandler(
         entry_points=[
             CommandHandler("add_payout", add_payout),
