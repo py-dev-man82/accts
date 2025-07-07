@@ -510,137 +510,111 @@ async def del_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
 #                   REGISTER  ALL  HANDLERS  FOR  MODULE
 # ======================================================================
 def register_stockin_handlers(app: Application):
-    # Sub-menu
+    """Attach Stock-In submenu + all conversations to the Telegram app."""
+
+    # ── Sub-menu (always present) ─────────────────────────────────────
     app.add_handler(CallbackQueryHandler(show_stockin_menu, pattern="^stockin_menu$"))
 
-    # ----------------- Add conversation -----------------
-    app.add_handler(ConversationHandler(
-        entry_points=[CommandHandler("add_stockin", add_stockin),
-                      CallbackQueryHandler(add_stockin, pattern="^add_stockin$")],
+    # ─────────────────────────── View conversation ───────────────────────────
+    view_conv = ConversationHandler(
+        entry_points=[
+            CallbackQueryHandler(view_stockin_start, pattern="^view_stockin$")
+        ],
         states={
-            SI_ADD_PARTNER:[CallbackQueryHandler(get_add_partner, pattern="^si_add_part_\\d+$")],
-            SI_ADD_STORE:  [CallbackQueryHandler(get_add_store,  pattern="^si_add_store_\\d+$")],
-            SI_ADD_ITEM:   [MessageHandler(filters.TEXT & ~filters.COMMAND, get_add_item)],
-            SI_ADD_QTY:    [MessageHandler(filters.TEXT & ~filters.COMMAND, get_add_qty)],
-            SI_ADD_COST:   [MessageHandler(filters.TEXT & ~filters.COMMAND, get_add_cost)],
-            SI_ADD_NOTE:   [CallbackQueryHandler(get_add_note,  pattern="^si_add_note_skip$"),
-                            MessageHandler(filters.TEXT & ~filters.COMMAND, get_add_note)],
-            SI_ADD_DATE:   [CallbackQueryHandler(get_add_date,  pattern="^si_add_date_skip$"),
-                            MessageHandler(filters.TEXT & ~filters.COMMAND, get_add_date)],
-            SI_ADD_CONFIRM:[CallbackQueryHandler(confirm_add_stockin, pattern="^si_add_conf_")],
+            # 1) Partner picker  →  Period picker
+            SI_VIEW_PARTNER: [
+                CallbackQueryHandler(view_choose_period, pattern="^si_view_part_\\d+$"),
+            ],
+            # 2) Period picker   →  Page list  OR 🔙 Back → Partner picker
+            SI_VIEW_TIME: [
+                CallbackQueryHandler(view_set_filter,    pattern="^si_view_filt_"),
+                CallbackQueryHandler(view_stockin_start, pattern="^view_stockin$"),   # 🔙 Back
+            ],
+            # 3) Page list       →  Prev/Next OR 🔙 Back → Partner picker
+            SI_VIEW_PAGE: [
+                CallbackQueryHandler(view_paginate,      pattern="^si_view_(prev|next)$"),
+                CallbackQueryHandler(view_stockin_start, pattern="^view_stockin$"),   # 🔙 Back
+            ],
         },
         fallbacks=[CommandHandler("cancel", show_stockin_menu)],
-        per_message=False))
+        per_message=False,
+    )
+    app.add_handler(view_conv)
 
-# ----------------- View conversation -----------------
-view_conv = ConversationHandler(
-    entry_points=[
-        CallbackQueryHandler(view_stockin_start, pattern="^view_stockin$"),
-    ],
-    states={
-        # Partner picker → Period picker
-        SI_VIEW_PARTNER: [
-            CallbackQueryHandler(view_choose_period, pattern="^si_view_part_\\d+$"),
+    # ─────────────────────────── Edit conversation ───────────────────────────
+    edit_conv = ConversationHandler(
+        entry_points=[
+            CallbackQueryHandler(edit_stockin_start, pattern="^edit_stockin$")
         ],
+        states={
+            # 1) Partner picker  →  Period picker
+            SI_EDIT_PARTNER: [
+                CallbackQueryHandler(edit_choose_period, pattern="^si_edit_part_\\d+$"),
+            ],
+            # 2) Period picker   →  Page list  OR 🔙 Back → Partner picker
+            SI_EDIT_TIME: [
+                CallbackQueryHandler(edit_set_filter,    pattern="^si_edit_filt_"),
+                CallbackQueryHandler(edit_stockin_start, pattern="^edit_stockin$"),  # 🔙 Back
+            ],
+            # 3) Page list       →  Prev/Next or DocID   OR 🔙 Back → Partner picker
+            SI_EDIT_PAGE: [
+                CallbackQueryHandler(edit_page_nav,      pattern="^si_edit_(prev|next)$"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, edit_pick_doc),
+                CallbackQueryHandler(edit_stockin_start, pattern="^edit_stockin$"),  # 🔙 Back
+            ],
+            # 4) Value entry (qty / cost / date) — allow cancel via Back
+            SI_EDIT_QTY: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, edit_new_qty),
+                CallbackQueryHandler(edit_stockin_start, pattern="^edit_stockin$"),  # 🔙 Back
+            ],
+            SI_EDIT_COST: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, edit_new_cost),
+                CallbackQueryHandler(edit_stockin_start, pattern="^edit_stockin$"),  # 🔙 Back
+            ],
+            SI_EDIT_DATE: [
+                CallbackQueryHandler(edit_new_date, pattern="^si_edit_date_skip$"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, edit_new_date),
+                CallbackQueryHandler(edit_stockin_start, pattern="^edit_stockin$"),  # 🔙 Back
+            ],
+            # 5) Confirm screen
+            SI_EDIT_CONFIRM: [
+                CallbackQueryHandler(edit_save,          pattern="^si_edit_conf_"),
+                CallbackQueryHandler(edit_stockin_start, pattern="^edit_stockin$"),  # 🔙 Back
+            ],
+        },
+        fallbacks=[CommandHandler("cancel", show_stockin_menu)],
+        per_message=False,
+    )
+    app.add_handler(edit_conv)
 
-        # Period picker → Page list  OR  Back → Partner picker
-        SI_VIEW_TIME: [
-            CallbackQueryHandler(view_set_filter,    pattern="^si_view_filt_"),
-            CallbackQueryHandler(view_stockin_start, pattern="^view_stockin$"),      # 🔙 Back
+    # ────────────────────────── Delete conversation ──────────────────────────
+    del_conv = ConversationHandler(
+        entry_points=[
+            CallbackQueryHandler(del_stockin_start, pattern="^remove_stockin$")
         ],
-
-        # Page list → paginate  OR  Back → Partner picker
-        SI_VIEW_PAGE: [
-            CallbackQueryHandler(view_paginate,      pattern="^si_view_(prev|next)$"),
-            CallbackQueryHandler(view_stockin_start, pattern="^view_stockin$"),      # 🔙 Back
-        ],
-    },
-    fallbacks=[CommandHandler("cancel", show_stockin_menu)],
-    per_message=False,
-)
-app.add_handler(view_conv)
-
-# ----------------- Edit conversation -----------------
-edit_conv = ConversationHandler(
-    entry_points=[
-        CallbackQueryHandler(edit_stockin_start, pattern="^edit_stockin$"),
-    ],
-    states={
-        # Partner picker → Period picker
-        SI_EDIT_PARTNER: [
-            CallbackQueryHandler(edit_choose_period, pattern="^si_edit_part_\\d+$"),
-        ],
-
-        # Period picker → Page list  OR  Back → Partner picker
-        SI_EDIT_TIME: [
-            CallbackQueryHandler(edit_set_filter,    pattern="^si_edit_filt_"),
-            CallbackQueryHandler(edit_stockin_start, pattern="^edit_stockin$"),      # 🔙 Back
-        ],
-
-        # Page list → (prev/next or DocID)  OR  Back → Partner picker
-        SI_EDIT_PAGE: [
-            CallbackQueryHandler(edit_page_nav,      pattern="^si_edit_(prev|next)$"),
-            MessageHandler(filters.TEXT & ~filters.COMMAND, edit_pick_doc),
-            CallbackQueryHandler(edit_stockin_start, pattern="^edit_stockin$"),      # 🔙 Back
-        ],
-
-        # Value-entry states — allow cancel via Back
-        SI_EDIT_QTY: [
-            MessageHandler(filters.TEXT & ~filters.COMMAND, edit_new_qty),
-            CallbackQueryHandler(edit_stockin_start, pattern="^edit_stockin$"),      # 🔙 Back
-        ],
-        SI_EDIT_COST: [
-            MessageHandler(filters.TEXT & ~filters.COMMAND, edit_new_cost),
-            CallbackQueryHandler(edit_stockin_start, pattern="^edit_stockin$"),      # 🔙 Back
-        ],
-        SI_EDIT_DATE: [
-            CallbackQueryHandler(edit_new_date, pattern="^si_edit_date_skip$"),
-            MessageHandler(filters.TEXT & ~filters.COMMAND, edit_new_date),
-            CallbackQueryHandler(edit_stockin_start, pattern="^edit_stockin$"),      # 🔙 Back
-        ],
-
-        # Confirm screen — Back cancels edit
-        SI_EDIT_CONFIRM: [
-            CallbackQueryHandler(edit_save,          pattern="^si_edit_conf_"),
-            CallbackQueryHandler(edit_stockin_start, pattern="^edit_stockin$"),      # 🔙 Back
-        ],
-    },
-    fallbacks=[CommandHandler("cancel", show_stockin_menu)],
-    per_message=False,
-)
-app.add_handler(edit_conv)
-
-# ----------------- Delete conversation -----------------
-del_conv = ConversationHandler(
-    entry_points=[
-        CallbackQueryHandler(del_stockin_start, pattern="^remove_stockin$"),
-    ],
-    states={
-        # Partner picker → Period picker
-        SI_DEL_PARTNER: [
-            CallbackQueryHandler(del_choose_period, pattern="^si_del_part_\\d+$"),
-        ],
-
-        # Period picker → Page list  OR  Back → Partner picker
-        SI_DEL_TIME: [
-            CallbackQueryHandler(del_set_filter,    pattern="^si_del_filt_"),
-            CallbackQueryHandler(del_stockin_start, pattern="^remove_stockin$"),     # 🔙 Back
-        ],
-
-        # Page list → (prev/next or DocID)  OR  Back → Partner picker
-        SI_DEL_PAGE: [
-            CallbackQueryHandler(del_page_nav,      pattern="^si_del_(prev|next)$"),
-            MessageHandler(filters.TEXT & ~filters.COMMAND, del_pick_doc),
-            CallbackQueryHandler(del_stockin_start, pattern="^remove_stockin$"),     # 🔙 Back
-        ],
-
-        # Confirm deletion — Back cancels
-        SI_DEL_CONFIRM: [
-            CallbackQueryHandler(del_confirm,       pattern="^si_del_conf_"),
-            CallbackQueryHandler(del_stockin_start, pattern="^remove_stockin$"),     # 🔙 Back
-        ],
-    },
-    fallbacks=[CommandHandler("cancel", show_stockin_menu)],
-    per_message=False,
-)
-app.add_handler(del_conv)
+        states={
+            # 1) Partner picker  →  Period picker
+            SI_DEL_PARTNER: [
+                CallbackQueryHandler(del_choose_period, pattern="^si_del_part_\\d+$"),
+            ],
+            # 2) Period picker   →  Page list  OR 🔙 Back → Partner picker
+            SI_DEL_TIME: [
+                CallbackQueryHandler(del_set_filter,    pattern="^si_del_filt_"),
+                CallbackQueryHandler(del_stockin_start, pattern="^remove_stockin$"), # 🔙 Back
+            ],
+            # 3) Page list       →  Prev/Next or DocID  OR 🔙 Back → Partner picker
+            SI_DEL_PAGE: [
+                CallbackQueryHandler(del_page_nav,      pattern="^si_del_(prev|next)$"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, del_pick_doc),
+                CallbackQueryHandler(del_stockin_start, pattern="^remove_stockin$"), # 🔙 Back
+            ],
+            # 4) Confirm delete
+            SI_DEL_CONFIRM: [
+                CallbackQueryHandler(del_confirm,       pattern="^si_del_conf_"),
+                CallbackQueryHandler(del_stockin_start, pattern="^remove_stockin$"), # 🔙 Back
+            ],
+        },
+        fallbacks=[CommandHandler("cancel", show_stockin_menu)],
+        per_message=False,
+    )
+    app.add_handler(del_conv)
