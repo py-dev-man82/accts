@@ -535,31 +535,25 @@ async def perform_delete_sale(update: Update, context: ContextTypes.DEFAULT_TYPE
         await show_sales_menu(update, context)
     return ConversationHandler.END
 
-# ----------------- View Sales Flow -------------------
-@require_unlock
-async def view_sales(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.answer()
-    customers = secure_db.all('customers')
-    if not customers:
-        await update.callback_query.edit_message_text(
-            "No customers found.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="sales_menu")]])
-        )
-        return ConversationHandler.END
-
-    # Show customer buttons
-    buttons = [
-        InlineKeyboardButton(f"{c['name']} ({c['currency']})", callback_data=f"view_cust_{c.doc_id}")
-        for c in customers
-    ]
-    kb = InlineKeyboardMarkup([buttons[i:i+2] for i in range(0, len(buttons), 2)])
-    await update.callback_query.edit_message_text("Select customer to view sales:", reply_markup=kb)
-    return S_VIEW_CUSTOMER
-
-
+# ----------------- View Sales: Handle Customer Selection -----------------
 async def get_view_customer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
-    cid = int(update.callback_query.data.split('_')[-1])
+    data = update.callback_query.data
+
+    # 🟢 Handle Back button (to customer selection)
+    if data == "view_time_back":
+        return await view_sales(update, context)  # Go back to customer list
+
+    # 🟢 Parse customer ID from callback
+    try:
+        cid = int(data.split('_')[-1])
+    except ValueError:
+        await update.callback_query.edit_message_text(
+            "❌ Invalid selection. Please try again.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="view_sales")]])
+        )
+        return S_VIEW_CUSTOMER
+
     context.user_data['view_customer_id'] = cid
 
     # Prompt for time filter
@@ -571,6 +565,7 @@ async def get_view_customer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ])
     await update.callback_query.edit_message_text("Select time period:", reply_markup=kb)
     return S_VIEW_TIME
+
 
 
 async def get_view_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
