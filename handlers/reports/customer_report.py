@@ -20,8 +20,7 @@ from handlers.utils import require_unlock, fmt_money, fmt_date
     DATE_RANGE_SELECT,
     CUSTOM_DATE_INPUT,
     REPORT_SCOPE_SELECT,
-    REPORT_DISPLAY,
-) = range(5)
+) = range(4)
 
 
 # ────────────────────────────────────────────────────────────
@@ -51,11 +50,17 @@ async def show_customer_report_menu(update: Update, context: ContextTypes.DEFAUL
     grid = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
     grid.append([InlineKeyboardButton("🔙 Back", callback_data="report_menu")])
 
-    await update.callback_query.answer()
-    await update.callback_query.edit_message_text(
-        "📄 Select a customer to view report:",
-        reply_markup=InlineKeyboardMarkup(grid)
-    )
+    if update.callback_query:
+        await update.callback_query.answer()
+        await update.callback_query.edit_message_text(
+            "📄 Select a customer to view report:",
+            reply_markup=InlineKeyboardMarkup(grid)
+        )
+    else:
+        await update.message.reply_text(
+            "📄 Select a customer to view report:",
+            reply_markup=InlineKeyboardMarkup(grid)
+        )
     return CUST_SELECT
 
 
@@ -106,11 +111,13 @@ async def save_custom_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Choose report scope
 # ────────────────────────────────────────────────────────────
 async def choose_report_scope(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.callback_query.data == "daterange_weekly":
-        context.user_data["start_date"] = datetime.now() - timedelta(days=7)
-        context.user_data["end_date"] = datetime.now()
-    elif update.callback_query.data == "daterange_custom":
-        return await get_custom_date(update, context)
+    if update.callback_query:
+        await update.callback_query.answer()
+        if update.callback_query.data == "daterange_weekly":
+            context.user_data["start_date"] = datetime.now() - timedelta(days=7)
+            context.user_data["end_date"] = datetime.now()
+        elif update.callback_query.data == "daterange_custom":
+            return await get_custom_date(update, context)
 
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("📝 Full Report", callback_data="scope_full")],
@@ -118,10 +125,11 @@ async def choose_report_scope(update: Update, context: ContextTypes.DEFAULT_TYPE
         [InlineKeyboardButton("💵 Payments Only", callback_data="scope_payments")],
         [InlineKeyboardButton("🔙 Back", callback_data="customer_report_menu")],
     ])
-    await update.callback_query.answer()
-    await update.callback_query.edit_message_text(
-        "Choose report scope:", reply_markup=kb
-    )
+    if update.callback_query:
+        await update.callback_query.edit_message_text("Choose report scope:", reply_markup=kb)
+    else:
+        await update.message.reply_text("Choose report scope:", reply_markup=kb)
+
     return REPORT_SCOPE_SELECT
 
 
@@ -148,7 +156,7 @@ async def show_customer_report(update: Update, context: ContextTypes.DEFAULT_TYP
         if p["customer_id"] == cid and start_date <= datetime.fromisoformat(p["timestamp"]) <= end_date
     ]
 
-    # Calculate totals
+    # Totals
     total_sales = sum(s["quantity"] * s["unit_price"] for s in sales)
     total_payments_local = sum(p["local_amt"] for p in payments)
     total_payments_usd = sum(p["usd_amt"] for p in payments)
