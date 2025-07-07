@@ -238,19 +238,38 @@ async def confirm_sale(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @require_unlock
 async def edit_sale(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
-    sales = secure_db.all('sales')
-    if not sales:
+    customers = secure_db.all('customers')
+    if not customers:
         await update.callback_query.edit_message_text(
-            "No sales to edit.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="sales_menu")]])
+            "No customers found.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="sales_menu")]])
         )
         return ConversationHandler.END
+    buttons = [InlineKeyboardButton(f"{c['name']} ({c['currency']})", callback_data=f"edit_cust_{c.doc_id}") for c in customers]
+    kb = InlineKeyboardMarkup([buttons[i:i+2] for i in range(0, len(buttons), 2)])
+    await update.callback_query.edit_message_text("Select customer:", reply_markup=kb)
+    return S_EDIT_SELECT
+
+async def get_edit_customer(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+    cid = int(update.callback_query.data.split('_')[-1])
+    context.user_data['edit_customer_id'] = cid
+
+    # Fetch only this customer's sales
+    rows = [r for r in secure_db.all('sales') if r['customer_id'] == cid]
+    if not rows:
+        await update.callback_query.edit_message_text(
+            "No sales found for this customer.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="sales_menu")]])
+        )
+        return ConversationHandler.END
+
     buttons = [InlineKeyboardButton(
-        f"[{s.doc_id}] Cust:{s['customer_id']} Store:{s['store_id']} Item:{s['item_id']} x{s['quantity']}",
-        callback_data=f"edit_sale_{s.doc_id}"
-    ) for s in sales]
+        f"[{r.doc_id}] Store:{r['store_id']} Item:{r['item_id']} x{r['quantity']}",
+        callback_data=f"edit_sale_{r.doc_id}"
+    ) for r in rows]
     kb = InlineKeyboardMarkup([buttons[i:i+1] for i in range(0, len(buttons), 1)])
     await update.callback_query.edit_message_text("Select sale to edit:", reply_markup=kb)
-    return S_EDIT_SELECT
+    return S_EDIT_FIELD
 
 async def get_edit_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
@@ -263,7 +282,6 @@ async def get_edit_selection(update: Update, context: ContextTypes.DEFAULT_TYPE)
     context.user_data['edit_sale_id'] = sid
 
     kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("Customer", callback_data="edit_field_customer")],
         [InlineKeyboardButton("Store", callback_data="edit_field_store")],
         [InlineKeyboardButton("Item & Quantity", callback_data="edit_field_itemqty")],
         [InlineKeyboardButton("Unit Price", callback_data="edit_field_price")],
@@ -272,18 +290,14 @@ async def get_edit_selection(update: Update, context: ContextTypes.DEFAULT_TYPE)
         [InlineKeyboardButton("❌ Cancel", callback_data="edit_field_cancel")]
     ])
     await update.callback_query.edit_message_text("Select field to edit:", reply_markup=kb)
-    return S_EDIT_FIELD
+    return S_EDIT_NEWVAL
 
 async def get_edit_field(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     field = update.callback_query.data.split('_')[-1]
     context.user_data['edit_field'] = field
-    if field == "customer":
-        customers = secure_db.all('customers')
-        buttons = [InlineKeyboardButton(f"{c['name']} ({c['currency']})", callback_data=f"edit_new_customer_{c.doc_id}") for c in customers]
-        kb = InlineKeyboardMarkup([buttons[i:i+2] for i in range(0, len(buttons), 2)])
-        await update.callback_query.edit_message_text("Select new customer:", reply_markup=kb)
-    elif field == "store":
+
+    if field == "store":
         stores = secure_db.all('stores')
         buttons = [InlineKeyboardButton(f"{s['name']} ({s['currency']})", callback_data=f"edit_new_store_{s.doc_id}") for s in stores]
         kb = InlineKeyboardMarkup([buttons[i:i+2] for i in range(0, len(buttons), 2)])
@@ -299,7 +313,7 @@ async def get_edit_field(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await show_sales_menu(update, context)
         return ConversationHandler.END
-    return S_EDIT_NEWVAL
+    return S_EDIT_CONFIRM
 
 async def save_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sid = context.user_data['edit_sale_id']
@@ -308,8 +322,8 @@ async def save_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     old_value = sale.get(field)
     new_value = None
 
-    # Handle new value based on field
-    if field in ["customer", "store"]:
+    # Get new value
+    if field == "store":
         new_value = int(update.callback_query.data.split('_')[-1])
     elif field == "itemqty":
         try:
@@ -317,17 +331,17 @@ async def save_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
             new_value = (item_id, qty)
         except:
             await update.message.reply_text("Invalid format. Use item_id,quantity (e.g. 5,10):")
-            return S_EDIT_NEWVAL
+            return S_EDIT_CONFIRM
     elif field in ["price", "fee"]:
         try:
             new_value = float(update.message.text.strip())
         except:
             await update.message.reply_text("Invalid number. Try again:")
-            return S_EDIT_NEWVAL
+            return S_EDIT_CONFIRM
     elif field == "note":
         new_value = "" if update.message.text.strip() == "-" else update.message.text.strip()
 
-    # Show confirmation screen
+    # Show confirmation
     summary = (
         f"✅ Confirm Edit\n"
         f"────────────────────────\n"
@@ -353,9 +367,7 @@ async def confirm_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
         new_value = context.user_data['new_value']
 
         # Apply changes and adjust inventory/fee if needed
-        if field == "customer":
-            secure_db.update('sales', {'customer_id': new_value}, [sid])
-        elif field == "store":
+        if field == "store":
             secure_db.update('sales', {'store_id': new_value}, [sid])
         elif field == "itemqty":
             old_qty = sale['quantity']
@@ -399,19 +411,38 @@ async def confirm_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @require_unlock
 async def delete_sale(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
-    sales = secure_db.all('sales')
-    if not sales:
+    customers = secure_db.all('customers')
+    if not customers:
         await update.callback_query.edit_message_text(
-            "No sales to delete.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="sales_menu")]])
+            "No customers found.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="sales_menu")]])
         )
         return ConversationHandler.END
+    buttons = [InlineKeyboardButton(f"{c['name']} ({c['currency']})", callback_data=f"del_cust_{c.doc_id}") for c in customers]
+    kb = InlineKeyboardMarkup([buttons[i:i+2] for i in range(0, len(buttons), 2)])
+    await update.callback_query.edit_message_text("Select customer:", reply_markup=kb)
+    return S_DELETE_SELECT
+
+async def get_delete_customer(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+    cid = int(update.callback_query.data.split('_')[-1])
+    context.user_data['delete_customer_id'] = cid
+
+    # Fetch only this customer's sales
+    rows = [r for r in secure_db.all('sales') if r['customer_id'] == cid]
+    if not rows:
+        await update.callback_query.edit_message_text(
+            "No sales found for this customer.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="sales_menu")]])
+        )
+        return ConversationHandler.END
+
     buttons = [InlineKeyboardButton(
-        f"[{s.doc_id}] Cust:{s['customer_id']} Store:{s['store_id']} Item:{s['item_id']} x{s['quantity']}",
-        callback_data=f"del_sale_{s.doc_id}"
-    ) for s in sales]
+        f"[{r.doc_id}] Store:{r['store_id']} Item:{r['item_id']} x{r['quantity']}",
+        callback_data=f"del_sale_{r.doc_id}"
+    ) for r in rows]
     kb = InlineKeyboardMarkup([buttons[i:i+1] for i in range(0, len(buttons), 1)])
     await update.callback_query.edit_message_text("Select sale to delete:", reply_markup=kb)
-    return S_DELETE_SELECT
+    return S_DELETE_CONFIRM
 
 async def confirm_delete_sale(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
