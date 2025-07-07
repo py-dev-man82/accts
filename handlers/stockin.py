@@ -55,6 +55,20 @@ def _filter_by_months(rows, months: int):
 # ───────────────────────────────────────────────────────────────
 #  Sub-menu
 # ───────────────────────────────────────────────────────────────
+
+async def show_stockin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Top-level Stock-In submenu shown from Main Menu and after flows."""
+    await update.callback_query.answer()
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("➕ Add Stock-In",    callback_data="add_stockin")],
+        [InlineKeyboardButton("👀 View Stock-Ins",  callback_data="view_stockin")],
+        [InlineKeyboardButton("✏️ Edit Stock-In",   callback_data="edit_stockin")],
+        [InlineKeyboardButton("🗑️ Remove Stock-In", callback_data="remove_stockin")],
+        [InlineKeyboardButton("🔙 Back",            callback_data="main_menu")],
+    ])
+    await update.callback_query.edit_message_text(
+        "📥 Stock-In: choose an action", reply_markup=kb
+    )
 async def edit_stockin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     kb = InlineKeyboardMarkup([
@@ -68,8 +82,6 @@ async def edit_stockin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     # ▶️ **ADD THIS RETURN**
     return SI_EDIT_SELECT
-
-
 # ======================================================================
 #                              ADD  FLOW
 # ======================================================================
