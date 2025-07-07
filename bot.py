@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 import logging
 import asyncio
+import os
+import sys
 import config
 from secure_db import secure_db
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -20,45 +22,28 @@ from handlers.sales           import register_sales_handlers
 from handlers.payments        import register_payment_handlers, show_payment_menu
 from handlers.payouts         import register_payout_handlers, show_payout_menu
 from handlers.stockin         import register_stockin_handlers, show_stockin_menu
-
-# 🆕 Partner Sales (replacing Reconciliation)
 from handlers.partner_sales   import register_partner_sales_handlers, show_partner_sales_menu
 
 
-# 🆕 Admin-only Kill Command
+# 🆕 Admin-only Soft Restart Command
+@require_unlock
+async def restart_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("♻️ Bot is restarting…")
+    logging.warning("⚠️ Admin issued /restart — restarting bot.")
+    await context.application.stop()
+    await context.application.shutdown()
+    # Soft-restart Python process
+    os.execv(sys.executable, [sys.executable] + sys.argv)
+
+
+# 🆕 Admin-only Hard Kill Command
 @require_unlock
 async def kill_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.callback_query:
-        await update.callback_query.answer()
-        await update.callback_query.edit_message_text("🛑 Bot is shutting down… it will restart automatically.")
-    else:
-        await update.message.reply_text("🛑 Bot is shutting down… it will restart automatically.")
+    await update.message.reply_text("🛑 Bot is shutting down… it will restart if managed.")
     logging.warning("⚠️ Admin issued /kill — shutting down cleanly.")
     await context.application.stop()
     await context.application.shutdown()
     raise SystemExit(0)
-
-
-# 🆕 Confirm shutdown from button
-async def confirm_kill(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.answer()
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ Yes, shut down", callback_data="kill_confirm_yes"),
-         InlineKeyboardButton("❌ Cancel",         callback_data="main_menu")]
-    ])
-    await update.callback_query.edit_message_text(
-        "⚠️ Are you sure you want to kill the bot?\nIt will restart automatically.",
-        reply_markup=kb
-    )
-
-
-async def handle_kill_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.answer()
-    if update.callback_query.data == "kill_confirm_yes":
-        await kill_bot(update, context)
-    else:
-        # Back to main menu
-        await start(update, context)
 
 
 # 🏠 Main Menu
@@ -72,7 +57,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
          InlineKeyboardButton("Payouts",          callback_data="payout_menu")],
         [InlineKeyboardButton("Stock-In",         callback_data="stockin_menu"),
          InlineKeyboardButton("Partner Sales",    callback_data="partner_sales_menu")],
-        [InlineKeyboardButton("🛑 Kill Bot",       callback_data="kill_bot")],  # 🆕 Kill button
     ])
     if update.callback_query:
         await update.callback_query.answer()
@@ -107,14 +91,13 @@ def main():
     register_stockin_handlers(app)
     app.add_handler(CallbackQueryHandler(show_stockin_menu, pattern="^stockin_menu$"))
 
-    # Partner Sales replaces Reconciliation
+    # Partner Sales
     register_partner_sales_handlers(app)
     app.add_handler(CallbackQueryHandler(show_partner_sales_menu, pattern="^partner_sales_menu$"))
 
-    # 🆕 Kill command handlers
-    app.add_handler(CommandHandler("kill", kill_bot))  # /kill command
-    app.add_handler(CallbackQueryHandler(confirm_kill,      pattern="^kill_bot$"))          # Kill button
-    app.add_handler(CallbackQueryHandler(handle_kill_confirm, pattern="^kill_confirm_"))    # Yes/Cancel confirm
+    # 🆕 Register admin-only /restart and /kill commands
+    app.add_handler(CommandHandler("restart", restart_bot))
+    app.add_handler(CommandHandler("kill", kill_bot))
 
     app.run_polling()
 
