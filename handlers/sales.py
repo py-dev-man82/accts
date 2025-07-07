@@ -241,10 +241,14 @@ async def edit_sale(update: Update, context: ContextTypes.DEFAULT_TYPE):
     customers = secure_db.all('customers')
     if not customers:
         await update.callback_query.edit_message_text(
-            "No customers found.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="sales_menu")]])
+            "No customers found.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="sales_menu")]])
         )
         return ConversationHandler.END
-    buttons = [InlineKeyboardButton(f"{c['name']} ({c['currency']})", callback_data=f"edit_cust_{c.doc_id}") for c in customers]
+    buttons = [
+        InlineKeyboardButton(f"{c['name']} ({c['currency']})", callback_data=f"edit_cust_{c.doc_id}")
+        for c in customers
+    ]
     kb = InlineKeyboardMarkup([buttons[i:i+2] for i in range(0, len(buttons), 2)])
     await update.callback_query.edit_message_text("Select customer:", reply_markup=kb)
     return S_EDIT_SELECT
@@ -263,10 +267,13 @@ async def get_edit_customer(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return ConversationHandler.END
 
-    buttons = [InlineKeyboardButton(
-        f"[{r.doc_id}] Store:{r['store_id']} Item:{r['item_id']} x{r['quantity']}",
-        callback_data=f"edit_sale_{r.doc_id}"
-    ) for r in rows]
+    buttons = [
+        InlineKeyboardButton(
+            f"[{r.doc_id}] Store:{r['store_id']} Item:{r['item_id']} x{r['quantity']}",
+            callback_data=f"edit_sale_{r.doc_id}"
+        )
+        for r in rows
+    ]
     kb = InlineKeyboardMarkup([buttons[i:i+1] for i in range(0, len(buttons), 1)])
     await update.callback_query.edit_message_text("Select sale to edit:", reply_markup=kb)
     return S_EDIT_FIELD
@@ -299,7 +306,10 @@ async def get_edit_field(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if field == "store":
         stores = secure_db.all('stores')
-        buttons = [InlineKeyboardButton(f"{s['name']} ({s['currency']})", callback_data=f"edit_new_store_{s.doc_id}") for s in stores]
+        buttons = [
+            InlineKeyboardButton(f"{s['name']} ({s['currency']})", callback_data=f"edit_new_store_{s.doc_id}")
+            for s in stores
+        ]
         kb = InlineKeyboardMarkup([buttons[i:i+2] for i in range(0, len(buttons), 2)])
         await update.callback_query.edit_message_text("Select new store:", reply_markup=kb)
     elif field == "itemqty":
@@ -313,7 +323,7 @@ async def get_edit_field(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await show_sales_menu(update, context)
         return ConversationHandler.END
-    return S_EDIT_CONFIRM
+    return S_EDIT_NEWVAL
 
 async def save_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sid = context.user_data['edit_sale_id']
@@ -331,13 +341,13 @@ async def save_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
             new_value = (item_id, qty)
         except:
             await update.message.reply_text("Invalid format. Use item_id,quantity (e.g. 5,10):")
-            return S_EDIT_CONFIRM
+            return S_EDIT_NEWVAL
     elif field in ["price", "fee"]:
         try:
             new_value = float(update.message.text.strip())
         except:
             await update.message.reply_text("Invalid number. Try again:")
-            return S_EDIT_CONFIRM
+            return S_EDIT_NEWVAL
     elif field == "note":
         new_value = "" if update.message.text.strip() == "-" else update.message.text.strip()
 
@@ -352,7 +362,8 @@ async def save_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Apply this change?"
     )
     kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ Yes", callback_data="edit_conf_yes"), InlineKeyboardButton("❌ No", callback_data="edit_conf_no")]
+        [InlineKeyboardButton("✅ Yes", callback_data="edit_conf_yes")],
+        [InlineKeyboardButton("❌ No", callback_data="edit_conf_no")]
     ])
     context.user_data['new_value'] = new_value
     await update.message.reply_text(summary, reply_markup=kb)
