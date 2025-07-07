@@ -543,15 +543,29 @@ def register_sales_handlers(app):
             CallbackQueryHandler(add_sale, pattern="^add_sale$")
         ],
         states={
-            S_CUST_SELECT:  [CallbackQueryHandler(get_sale_customer, pattern="^sale_cust_")],
-            S_STORE_SELECT: [CallbackQueryHandler(get_sale_store, pattern="^sale_store_")],
-            S_ITEM_QTY:     [MessageHandler(filters.TEXT & ~filters.COMMAND, get_sale_item_qty)],
-            S_PRICE:        [MessageHandler(filters.TEXT & ~filters.COMMAND, get_sale_price)],
-            S_FEE:          [CallbackQueryHandler(get_sale_fee, pattern="^fee_skip$"),
-                             MessageHandler(filters.TEXT & ~filters.COMMAND, get_sale_fee)],
-            S_NOTE:         [CallbackQueryHandler(get_sale_note, pattern="^note_skip$"),
-                             MessageHandler(filters.TEXT & ~filters.COMMAND, get_sale_note)],
-            S_CONFIRM:      [CallbackQueryHandler(confirm_sale, pattern="^sale_")]
+            S_CUST_SELECT: [
+                CallbackQueryHandler(get_sale_customer, pattern="^sale_cust_")
+            ],
+            S_STORE_SELECT: [
+                CallbackQueryHandler(get_sale_store, pattern="^sale_store_")
+            ],
+            S_ITEM_QTY: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, get_sale_item_qty)
+            ],
+            S_PRICE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, get_sale_price)
+            ],
+            S_FEE: [
+                CallbackQueryHandler(get_sale_fee, pattern="^fee_skip$"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, get_sale_fee)
+            ],
+            S_NOTE: [
+                CallbackQueryHandler(get_sale_note, pattern="^note_skip$"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, get_sale_note)
+            ],
+            S_CONFIRM: [
+                CallbackQueryHandler(confirm_sale, pattern="^sale_")
+            ]
         },
         fallbacks=[CommandHandler("cancel", show_sales_menu)],
         per_message=False
@@ -560,13 +574,23 @@ def register_sales_handlers(app):
 
     # Edit Sale
     edit_conv = ConversationHandler(
-        entry_points=[CallbackQueryHandler(edit_sale, pattern="^edit_sale$")],
+        entry_points=[
+            CallbackQueryHandler(edit_sale, pattern="^edit_sale$")
+        ],
         states={
-            S_EDIT_SELECT:  [CallbackQueryHandler(get_edit_selection, pattern="^edit_sale_")],
-            S_EDIT_FIELD:   [CallbackQueryHandler(get_edit_field, pattern="^edit_field_")],
-            S_EDIT_NEWVAL:  [CallbackQueryHandler(save_edit, pattern="^edit_new_"),
-                             MessageHandler(filters.TEXT & ~filters.COMMAND, save_edit)],
-            S_EDIT_CONFIRM: [CallbackQueryHandler(confirm_edit, pattern="^edit_conf_")]
+            S_EDIT_SELECT: [
+                CallbackQueryHandler(get_edit_customer, pattern="^edit_cust_")  # ✅ Added handler for customer buttons
+            ],
+            S_EDIT_FIELD: [
+                CallbackQueryHandler(get_edit_selection, pattern="^edit_sale_")
+            ],
+            S_EDIT_NEWVAL: [
+                CallbackQueryHandler(save_edit, pattern="^edit_new_"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, save_edit)
+            ],
+            S_EDIT_CONFIRM: [
+                CallbackQueryHandler(confirm_edit, pattern="^edit_conf_")
+            ]
         },
         fallbacks=[CommandHandler("cancel", show_sales_menu)],
         per_message=False
@@ -575,10 +599,17 @@ def register_sales_handlers(app):
 
     # Delete Sale
     delete_conv = ConversationHandler(
-        entry_points=[CallbackQueryHandler(delete_sale, pattern="^remove_sale$")],
+        entry_points=[
+            CallbackQueryHandler(delete_sale, pattern="^remove_sale$")
+        ],
         states={
-            S_DELETE_SELECT:  [CallbackQueryHandler(confirm_delete_sale, pattern="^del_sale_")],
-            S_DELETE_CONFIRM: [CallbackQueryHandler(perform_delete_sale, pattern="^del_conf_")]
+            S_DELETE_SELECT: [
+                CallbackQueryHandler(get_delete_customer, pattern="^del_cust_")  # ✅ Added handler for customer buttons
+            ],
+            S_DELETE_CONFIRM: [
+                CallbackQueryHandler(confirm_delete_sale, pattern="^del_sale_"),
+                CallbackQueryHandler(perform_delete_sale, pattern="^del_conf_")
+            ]
         },
         fallbacks=[CommandHandler("cancel", show_sales_menu)],
         per_message=False
