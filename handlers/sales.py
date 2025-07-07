@@ -673,6 +673,40 @@ async def save_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ])
     await update.message.reply_text(summary, reply_markup=kb)
     return S_EDIT_CONFIRM
+# ----------------- Edit Sale: Confirm Edit -------------------
+async def confirm_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+    if update.callback_query.data == "edit_conf_yes":
+        sid = context.user_data['edit_sale_id']
+        field = context.user_data['edit_field']
+        new_value = context.user_data['new_value']
+
+        # Apply changes to the database
+        if field == "store":
+            secure_db.update('sales', {'store_id': int(new_value)}, [sid])
+
+        elif field == "itemqty":
+            item_id, qty = map(int, new_value.split(','))
+            secure_db.update('sales', {'item_id': item_id, 'quantity': qty}, [sid])
+
+        elif field == "price":
+            secure_db.update('sales', {'unit_price': float(new_value)}, [sid])
+
+        elif field == "fee":
+            secure_db.update('sales', {'handling_fee': float(new_value)}, [sid])
+
+        elif field == "note":
+            secure_db.update('sales', {'note': new_value}, [sid])
+
+        await update.callback_query.edit_message_text(
+            "✅ Sale updated successfully.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="sales_menu")]])
+        )
+    else:
+        # User selected "No" - go back to the sales menu
+        await edit_sale(update, context)
+
+    return ConversationHandler.END
 
 # ----------------- Register Handlers -------------------
 def register_sales_handlers(app):
