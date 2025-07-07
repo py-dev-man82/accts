@@ -1,10 +1,14 @@
 # handlers/partner_sales.py
 # ────────────────────────────────────────────────────────────────
 #  Partner-Sales module  (Owner → Partner lump-sum reconciliation)
-#  Mirrors handlers/stockin.py structure & UX.
+#  Mirrors handlers/stockin.py structure & UX; now with proper
+#  currency and date formatting using utils.fmt_money & fmt_date
 # ────────────────────────────────────────────────────────────────
 import logging
 from datetime import datetime
+import subprocess
+import sys
+
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     ConversationHandler,
@@ -16,7 +20,7 @@ from telegram.ext import (
 )
 from tinydb import Query
 
-from handlers.utils import require_unlock
+from handlers.utils import require_unlock, fmt_money, fmt_date
 from secure_db import secure_db
 
 DEFAULT_CUR = "USD"
@@ -91,11 +95,9 @@ async def add_psale_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not partners:
         await update.callback_query.edit_message_text(
             "No partners defined.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back",
-                                                                     callback_data="partner_sales_menu")]]))
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="partner_sales_menu")]]))
         return ConversationHandler.END
-    buttons = [InlineKeyboardButton(p["name"], callback_data=f"ps_part_{p.doc_id}")
-               for p in partners]
+    buttons = [InlineKeyboardButton(p["name"], callback_data=f"ps_part_{p.doc_id}") for p in partners]
     rows = [buttons[i:i+2] for i in range(0, len(buttons), 2)]
     rows.append([InlineKeyboardButton("🔙 Back", callback_data="partner_sales_menu")])
     await update.callback_query.edit_message_text("Select partner:", reply_markup=InlineKeyboardMarkup(rows))
@@ -111,7 +113,6 @@ async def psale_choose_partner(update: Update, context: ContextTypes.DEFAULT_TYP
 async def psale_item_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     if text.upper() == "DONE":
-        # proceed to note if at least one item entered
         if not context.user_data["ps_items"]:
             await update.message.reply_text("Please enter at least one item before DONE.")
             return PS_ITEM_ID
@@ -174,21 +175,23 @@ async def psale_get_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return PS_DATE
     context.user_data["ps_date"] = date_str
 
-    # Confirmation card
+    # Confirmation card with formatted currency & date
     pid    = context.user_data["ps_partner"]
     pname  = secure_db.table("partners").get(doc_id=pid)["name"]
     items  = context.user_data["ps_items"]
     cur    = _partner_currency(pid)
     total  = sum(d["qty"]*d["unit_price"] for d in items.values())
-    lines  = [f" • {iid} ×{d['qty']} @ {d['unit_price']:.2f} = {d['qty']*d['unit_price']:.2f}"
-              for iid,d in items.items()]
+    lines  = [
+        f" • {iid} ×{d['qty']} @ {fmt_money(d['unit_price'], cur)} = {fmt_money(d['qty']*d['unit_price'], cur)}"
+        for iid, d in items.items()
+    ]
     summary = (
         f"✅ **Confirm Partner Sale**\n"
         f"Partner: {pname}\n\n"
         f"Items:\n" + "\n".join(lines) + "\n\n"
-        f"Total: {total:.2f} {cur}\n"
+        f"Total: {fmt_money(total, cur)}\n"
         f"Note: {context.user_data.get('ps_note') or '—'}\n"
-        f"Date: {datetime.strptime(date_str,'%d%m%Y').strftime('%d %b %Y')}\n\n"
+        f"Date: {fmt_date(date_str)}\n\n"
         "Confirm?"
     )
     kb = InlineKeyboardMarkup([
@@ -203,7 +206,8 @@ async def psale_get_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def psale_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     if update.callback_query.data != "ps_conf_yes":
-        await show_partner_sales_menu(update, context); return ConversationHandler.END
+        await show_partner_sales_menu(update, context)
+        return ConversationHandler.END
 
     d     = context.user_data
     pid   = d["ps_partner"]
@@ -240,8 +244,7 @@ async def psale_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.callback_query.edit_message_text(
         "✅ Partner Sale recorded.",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back",
-                                                                 callback_data="partner_sales_menu")]]))
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="partner_sales_menu")]]))
     return ConversationHandler.END
 
 
@@ -252,10 +255,9 @@ async def psale_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def view_psale_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     partners = secure_db.all("partners")
-    buttons = [InlineKeyboardButton(p["name"], callback_data=f"ps_view_part_{p.doc_id}")
-               for p in partners]
+    buttons = [InlineKeyboardButton(p["name"], callback_data=f"ps_view_part_{p.doc_id}") for p in partners]
     buttons.append(InlineKeyboardButton("🔙 Back", callback_data="partner_sales_menu"))
-    kb = InlineKeyboardMarkup([buttons[i:i+2] for i in range(0,len(buttons),2)])
+    kb = InlineKeyboardMarkup([buttons[i:i+2] for i in range(0, len(buttons), 2)])
     await update.callback_query.edit_message_text("Select partner:", reply_markup=kb)
     return PS_VIEW_PARTNER
 
@@ -279,38 +281,41 @@ async def view_psale_set_filter(update: Update, context: ContextTypes.DEFAULT_TY
     return await send_psale_view_page(update, context)
 
 async def send_psale_view_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    pid   = context.user_data["view_pid"]
-    period= context.user_data["view_time"]
-    page  = context.user_data["view_page"]
-    size  = 20
+    pid    = context.user_data["view_pid"]
+    period = context.user_data["view_time"]
+    page   = context.user_data["view_page"]
+    size   = 20
 
-    rows = [r for r in secure_db.all("partner_sales") if r["partner_id"]==pid]
+    rows = [r for r in secure_db.all("partner_sales") if r["partner_id"] == pid]
     rows = _filter_by_time(rows, period)
-    total_pages = max(1,(len(rows)+size-1)//size)
-    chunk = rows[(page-1)*size : page*size]
+    total_pages = max(1, (len(rows) + size - 1) // size)
+    chunk = rows[(page - 1) * size : page * size]
     if not chunk:
         await update.callback_query.edit_message_text(
             "No partner sales in that window.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back",
-                                                                     callback_data="view_psale")]]))
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="view_psale")]]))
         return ConversationHandler.END
 
-    lines=[]
+    lines = []
     for r in chunk:
-        dt = datetime.strptime(r["date"],"%d%m%Y").strftime("%d %b %Y")
-        lines.append(f"{r.doc_id}: {len(r['items'])} items  Total {r['total_value']:.2f} on {dt}")
+        dt = fmt_date(r["date"])
+        amt = fmt_money(r["total_value"], r["currency"])
+        lines.append(f"{r.doc_id}: {len(r['items'])} items  Total {amt} on {dt}")
     text = f"📄 **Partner Sales**  P{page}/{total_pages}\n\n" + "\n".join(lines)
-    nav=[]
-    if page>1: nav.append(InlineKeyboardButton("⬅️ Prev", callback_data="ps_view_prev"))
-    if page<total_pages: nav.append(InlineKeyboardButton("➡️ Next", callback_data="ps_view_next"))
+
+    nav = []
+    if page > 1: nav.append(InlineKeyboardButton("⬅️ Prev", callback_data="ps_view_prev"))
+    if page < total_pages: nav.append(InlineKeyboardButton("➡️ Next", callback_data="ps_view_next"))
     nav.append(InlineKeyboardButton("🔙 Back", callback_data="view_psale"))
     await update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup([nav]))
     return PS_VIEW_PAGE
 
 async def handle_psale_view_nav(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
-    if update.callback_query.data=="ps_view_prev": context.user_data["view_page"]-=1
-    else: context.user_data["view_page"]+=1
+    if update.callback_query.data == "ps_view_prev":
+        context.user_data["view_page"] -= 1
+    else:
+        context.user_data["view_page"] += 1
     return await send_psale_view_page(update, context)
 
 
@@ -321,10 +326,9 @@ async def handle_psale_view_nav(update: Update, context: ContextTypes.DEFAULT_TY
 async def edit_psale_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     partners = secure_db.all("partners")
-    buttons = [InlineKeyboardButton(p["name"], callback_data=f"ps_edit_part_{p.doc_id}")
-               for p in partners]
+    buttons = [InlineKeyboardButton(p["name"], callback_data=f"ps_edit_part_{p.doc_id}") for p in partners]
     buttons.append(InlineKeyboardButton("🔙 Back", callback_data="partner_sales_menu"))
-    kb = InlineKeyboardMarkup([buttons[i:i+2] for i in range(0,len(buttons),2)])
+    kb = InlineKeyboardMarkup([buttons[i:i+2] for i in range(0, len(buttons), 2)])
     await update.callback_query.edit_message_text("Select partner:", reply_markup=kb)
     return PS_EDIT_PARTNER
 
@@ -348,28 +352,26 @@ async def edit_psale_set_filter(update: Update, context: ContextTypes.DEFAULT_TY
     return await send_psale_edit_page(update, context)
 
 async def send_psale_edit_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    pid   = context.user_data["edit_pid"]
-    period= context.user_data["edit_time"]
-    page  = context.user_data["edit_page"]
-    size  = 20
+    pid    = context.user_data["edit_pid"]
+    period = context.user_data["edit_time"]
+    page   = context.user_data["edit_page"]
+    size   = 20
 
-    rows = [r for r in secure_db.all("partner_sales") if r["partner_id"]==pid]
+    rows = [r for r in secure_db.all("partner_sales") if r["partner_id"] == pid]
     rows = _filter_by_time(rows, period)
-    total_pages = max(1,(len(rows)+size-1)//size)
-    chunk = rows[(page-1)*size : page*size]
+    total_pages = max(1, (len(rows) + size - 1) // size)
+    chunk = rows[(page - 1) * size : page * size]
     if not chunk:
         await update.callback_query.edit_message_text(
-            "No records.", reply_markup=InlineKeyboardMarkup(
-                [[InlineKeyboardButton("🔙 Back", callback_data="edit_psale")]])
-        )
+            "No records.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="edit_psale")]]))
         return ConversationHandler.END
 
     lines = []
     for r in chunk:
-        dt = datetime.strptime(r["date"],"%d%m%Y").strftime("%d %b %Y")
-        lines.append(f"{r.doc_id}: {len(r['items'])} items  Total {r['total_value']:.2f} on {dt}")
-    msg = (f"✏️ **Edit Partner Sales**  P{page}/{total_pages}\n\n" + "\n".join(lines) +
-           "\n\nReply with record ID or use ⬅️➡️")
+        dt = fmt_date(r["date"])
+        amt = fmt_money(r["total_value"], r["currency"])
+        lines.append(f"{r.doc_id}: {len(r['items'])} items  Total {amt} on {dt}")
+    msg = f"✏️ **Edit Partner Sales**  P{page}/{total_pages}\n\n" + "\n".join(lines) + "\n\nReply with record ID or use ⬅️➡️"
     nav=[]
     if page>1: nav.append(InlineKeyboardButton("⬅️ Prev", callback_data="ps_edit_prev"))
     if page<total_pages: nav.append(InlineKeyboardButton("➡️ Next", callback_data="ps_edit_next"))
@@ -386,12 +388,13 @@ async def handle_psale_edit_nav(update: Update, context: ContextTypes.DEFAULT_TY
 async def edit_psale_pick_doc(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         sid = int(update.message.text.strip())
-    except: sid=None
+    except:
+        sid = None
     rec = secure_db.table("partner_sales").get(doc_id=sid) if sid else None
-    if not rec or rec["partner_id"]!=context.user_data["edit_pid"]:
+    if not rec or rec["partner_id"] != context.user_data["edit_pid"]:
         await update.message.reply_text("ID not in this list.")
         return PS_EDIT_PAGE
-    context.user_data["edit_sid"]=sid
+    context.user_data["edit_sid"] = sid
     kb=InlineKeyboardMarkup([
         [InlineKeyboardButton("Date", callback_data="ps_edit_field_date"),
          InlineKeyboardButton("Note", callback_data="ps_edit_field_note")],
@@ -403,16 +406,16 @@ async def edit_psale_pick_doc(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def edit_psale_choose_field(update:Update, context:ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     field = update.callback_query.data.split("_")[-1]   # date or note
-    context.user_data["edit_field"]=field
+    context.user_data["edit_field"] = field
     if field=="date":
-        today=datetime.now().strftime("%d%m%Y")
+        today = datetime.now().strftime("%d%m%Y")
         await update.callback_query.edit_message_text(f"New date DDMMYYYY (today {today}):")
     else:
         await update.callback_query.edit_message_text("New note (or '-' to clear):")
     return PS_EDIT_NEWVAL
 
 async def edit_psale_newval(update:Update, context:ContextTypes.DEFAULT_TYPE):
-    context.user_data["edit_newval"]=update.message.text.strip()
+    context.user_data["edit_newval"] = update.message.text.strip()
     kb=InlineKeyboardMarkup([
         [InlineKeyboardButton("✅ Yes", callback_data="ps_edit_conf_yes"),
          InlineKeyboardButton("❌ No",  callback_data="ps_edit_conf_no")]
@@ -426,7 +429,8 @@ async def edit_psale_newval(update:Update, context:ContextTypes.DEFAULT_TYPE):
 async def edit_psale_confirm(update:Update, context:ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     if update.callback_query.data!="ps_edit_conf_yes":
-        await show_partner_sales_menu(update, context); return ConversationHandler.END
+        await show_partner_sales_menu(update, context)
+        return ConversationHandler.END
     sid   = context.user_data["edit_sid"]
     field = context.user_data["edit_field"]
     newv  = context.user_data["edit_newval"]
@@ -436,8 +440,7 @@ async def edit_psale_confirm(update:Update, context:ContextTypes.DEFAULT_TYPE):
         secure_db.update("partner_sales", {"note":"" if newv=="-" else newv}, [sid])
     await update.callback_query.edit_message_text(
         "✅ Partner Sale updated.",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back",
-                                                                 callback_data="partner_sales_menu")]]))
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="partner_sales_menu")]]))
     return ConversationHandler.END
 
 
@@ -448,10 +451,9 @@ async def edit_psale_confirm(update:Update, context:ContextTypes.DEFAULT_TYPE):
 async def del_psale_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     partners = secure_db.all("partners")
-    buttons = [InlineKeyboardButton(p["name"], callback_data=f"ps_del_part_{p.doc_id}")
-               for p in partners]
+    buttons = [InlineKeyboardButton(p["name"], callback_data=f"ps_del_part_{p.doc_id}") for p in partners]
     buttons.append(InlineKeyboardButton("🔙 Back", callback_data="partner_sales_menu"))
-    kb = InlineKeyboardMarkup([buttons[i:i+2] for i in range(0,len(buttons),2)])
+    kb = InlineKeyboardMarkup([buttons[i:i+2] for i in range(0, len(buttons), 2)])
     await update.callback_query.edit_message_text("Select partner:", reply_markup=kb)
     return PS_DEL_PARTNER
 
@@ -468,34 +470,34 @@ async def del_psale_period(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.edit_message_text("Select period:", reply_markup=kb)
     return PS_DEL_TIME
 
-async def del_psale_set_filter(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def del_psale_set_filter(update: Update, context:ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     context.user_data["del_time"] = update.callback_query.data.split("_")[-1]
     context.user_data["del_page"] = 1
     return await send_psale_del_page(update, context)
 
-async def send_psale_del_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    pid   = context.user_data["del_pid"]
-    period= context.user_data["del_time"]
-    page  = context.user_data["del_page"]
-    size  = 20
+async def send_psale_del_page(update: Update, context:ContextTypes.DEFAULT_TYPE):
+    pid    = context.user_data["del_pid"]
+    period = context.user_data["del_time"]
+    page   = context.user_data["del_page"]
+    size   = 20
 
-    rows = [r for r in secure_db.all("partner_sales") if r["partner_id"]==pid]
+    rows = [r for r in secure_db.all("partner_sales") if r["partner_id"] == pid]
     rows = _filter_by_time(rows, period)
-    total_pages = max(1,(len(rows)+size-1)//size)
-    chunk = rows[(page-1)*size : page*size]
+    total_pages = max(1, (len(rows) + size - 1) // size)
+    chunk = rows[(page - 1) * size : page * size]
     if not chunk:
         await update.callback_query.edit_message_text(
-            "No records.", reply_markup=InlineKeyboardMarkup(
-                [[InlineKeyboardButton("🔙 Back", callback_data="del_psale")]]))
+            "No records.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="del_psale")]]))
         return ConversationHandler.END
 
-    lines=[]
+    lines = []
     for r in chunk:
-        dt = datetime.strptime(r["date"],"%d%m%Y").strftime("%d %b %Y")
-        lines.append(f"{r.doc_id}: {len(r['items'])} items  Total {r['total_value']:.2f} on {dt}")
-    msg = (f"🗑️ **Delete Partner Sales**  P{page}/{total_pages}\n\n" + "\n".join(lines) +
-           "\n\nReply with record ID or use ⬅️➡️")
+        dt = fmt_date(r["date"])
+        amt = fmt_money(r["total_value"], r["currency"])
+        lines.append(f"{r.doc_id}: {len(r['items'])} items  Total {amt} on {dt}")
+    msg = f"🗑️ **Delete Partner Sales**  P{page}/{total_pages}\n\n" + "\n".join(lines) + "\n\nReply with record ID or use ⬅️➡️"
+
     nav=[]
     if page>1: nav.append(InlineKeyboardButton("⬅️ Prev", callback_data="ps_del_prev"))
     if page<total_pages: nav.append(InlineKeyboardButton("➡️ Next", callback_data="ps_del_next"))
@@ -503,21 +505,22 @@ async def send_psale_del_page(update: Update, context: ContextTypes.DEFAULT_TYPE
     await update.callback_query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup([nav]))
     return PS_DEL_PAGE
 
-async def handle_psale_del_nav(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_psale_del_nav(update:Update, context:ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     if update.callback_query.data=="ps_del_prev": context.user_data["del_page"]-=1
     else: context.user_data["del_page"]+=1
     return await send_psale_del_page(update, context)
 
-async def del_psale_pick_doc(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def del_psale_pick_doc(update: Update, context:ContextTypes.DEFAULT_TYPE):
     try:
         sid = int(update.message.text.strip())
-    except: sid=None
+    except:
+        sid = None
     rec = secure_db.table("partner_sales").get(doc_id=sid) if sid else None
-    if not rec or rec["partner_id"]!=context.user_data["del_pid"]:
+    if not rec or rec["partner_id"] != context.user_data["del_pid"]:
         await update.message.reply_text("ID not in this list.")
         return PS_DEL_PAGE
-    context.user_data["del_sid"]=sid
+    context.user_data["del_sid"] = sid
     kb=InlineKeyboardMarkup([
         [InlineKeyboardButton("✅ Yes", callback_data="ps_del_conf_yes"),
          InlineKeyboardButton("❌ No",  callback_data="ps_del_conf_no")]
@@ -526,15 +529,16 @@ async def del_psale_pick_doc(update: Update, context: ContextTypes.DEFAULT_TYPE)
     return PS_DEL_CONFIRM
 
 @require_unlock
-async def del_psale_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def del_psale_confirm(update:Update, context:ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
-    if update.callback_query.data != "ps_del_conf_yes":
-        await show_partner_sales_menu(update, context); return ConversationHandler.END
+    if update.callback_query.data!="ps_del_conf_yes":
+        await show_partner_sales_menu(update, context)
+        return ConversationHandler.END
     sid = context.user_data["del_sid"]
     rec = secure_db.table("partner_sales").get(doc_id=sid)
     Q = Query()
     # revert partner_inventory
-    for iid,d in rec["items"].items():
+    for iid, d in rec["items"].items():
         row = secure_db.table("partner_inventory").get(
             (Q.partner_id==rec["partner_id"]) & (Q.item_id==iid))
         if row:
@@ -544,8 +548,7 @@ async def del_psale_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     secure_db.remove("partner_sales", [sid])
     await update.callback_query.edit_message_text(
         f"✅ Partner Sale #{sid} deleted.",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back",
-                                                                 callback_data="partner_sales_menu")]]))
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="partner_sales_menu")]]))
     return ConversationHandler.END
 
 
@@ -558,7 +561,7 @@ def register_partner_sales_handlers(app):
         entry_points=[CallbackQueryHandler(add_psale_start, pattern="^add_psale$"),
                       CommandHandler("add_psale", add_psale_start)],
         states={
-            PS_PARTNER_SELECT:[CallbackQueryHandler(psale_choose_partner, pattern="^ps_part_")],
+            PS_PARTNER_SELECT:[CallbackQueryHandler(psale_choose_partner, pattern="^ps_part_\\d+$")],
             PS_ITEM_ID:       [MessageHandler(filters.TEXT & ~filters.COMMAND, psale_item_id)],
             PS_ITEM_QTY:      [MessageHandler(filters.TEXT & ~filters.COMMAND, psale_item_qty)],
             PS_ITEM_PRICE:    [MessageHandler(filters.TEXT & ~filters.COMMAND, psale_item_price)],
@@ -577,12 +580,9 @@ def register_partner_sales_handlers(app):
     view_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(view_psale_start, pattern="^view_psale$")],
         states={
-            PS_VIEW_PARTNER:[CallbackQueryHandler(view_psale_period, pattern="^ps_view_part_"),
-                             CallbackQueryHandler(show_partner_sales_menu, pattern="^partner_sales_menu$")],
-            PS_VIEW_TIME:   [CallbackQueryHandler(view_psale_set_filter, pattern="^ps_view_time_"),
-                             CallbackQueryHandler(view_psale_start,      pattern="^view_psale$")],
-            PS_VIEW_PAGE:   [CallbackQueryHandler(handle_psale_view_nav, pattern="^ps_view_(prev|next)$"),
-                             CallbackQueryHandler(view_psale_start,      pattern="^view_psale$")],
+            PS_VIEW_PARTNER:[CallbackQueryHandler(view_psale_period, pattern="^ps_view_part_\\d+$")],
+            PS_VIEW_TIME:   [CallbackQueryHandler(view_psale_set_filter, pattern="^ps_view_time_")],
+            PS_VIEW_PAGE:   [CallbackQueryHandler(handle_psale_view_nav, pattern="^ps_view_(prev|next)$")],
         },
         fallbacks=[CommandHandler("cancel", show_partner_sales_menu)],
         per_message=False,
@@ -593,14 +593,10 @@ def register_partner_sales_handlers(app):
     edit_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(edit_psale_start, pattern="^edit_psale$")],
         states={
-            PS_EDIT_PARTNER:[CallbackQueryHandler(edit_psale_period, pattern="^ps_edit_part_"),
-                             CallbackQueryHandler(show_partner_sales_menu, pattern="^partner_sales_menu$")],
-            PS_EDIT_TIME:   [CallbackQueryHandler(edit_psale_set_filter, pattern="^ps_edit_time_"),
-                             CallbackQueryHandler(edit_psale_start,        pattern="^edit_psale$")],
-            PS_EDIT_PAGE:   [CallbackQueryHandler(handle_psale_edit_nav,    pattern="^ps_edit_(prev|next)$"),
-                             CallbackQueryHandler(edit_psale_start,         pattern="^edit_psale$"),
-                             MessageHandler(filters.Regex(r"^\d+$") & ~filters.COMMAND,
-                                            edit_psale_pick_doc)],
+            PS_EDIT_PARTNER:[CallbackQueryHandler(edit_psale_period, pattern="^ps_edit_part_\\d+$")],
+            PS_EDIT_TIME:   [CallbackQueryHandler(edit_psale_set_filter, pattern="^ps_edit_time_")],
+            PS_EDIT_PAGE:   [CallbackQueryHandler(handle_psale_edit_nav, pattern="^ps_edit_(prev|next)$"),
+                             MessageHandler(filters.Regex(r"^\\d+$") & ~filters.COMMAND, edit_psale_pick_doc)],
             PS_EDIT_FIELD:  [CallbackQueryHandler(edit_psale_choose_field, pattern="^ps_edit_field_")],
             PS_EDIT_NEWVAL: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_psale_newval)],
             PS_EDIT_CONFIRM:[CallbackQueryHandler(edit_psale_confirm, pattern="^ps_edit_conf_")],
@@ -614,18 +610,13 @@ def register_partner_sales_handlers(app):
     del_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(del_psale_start, pattern="^del_psale$")],
         states={
-            PS_DEL_PARTNER:[CallbackQueryHandler(del_psale_period, pattern="^ps_del_part_"),
-                            CallbackQueryHandler(show_partner_sales_menu, pattern="^partner_sales_menu$")],
-            PS_DEL_TIME:   [CallbackQueryHandler(del_psale_set_filter, pattern="^ps_del_time_"),
-                            CallbackQueryHandler(del_psale_start,        pattern="^del_psale$")],
-            PS_DEL_PAGE:   [CallbackQueryHandler(handle_psale_del_nav,   pattern="^ps_del_(prev|next)$"),
-                            CallbackQueryHandler(del_psale_start,        pattern="^del_psale$"),
-                            MessageHandler(filters.Regex(r"^\d+$") & ~filters.COMMAND,
-                                           del_psale_pick_doc)],
+            PS_DEL_PARTNER:[CallbackQueryHandler(del_psale_period, pattern="^ps_del_part_\\d+$")],
+            PS_DEL_TIME:   [CallbackQueryHandler(del_psale_set_filter, pattern="^ps_del_time_")],
+            PS_DEL_PAGE:   [CallbackQueryHandler(handle_psale_del_nav, pattern="^ps_del_(prev|next)$"),
+                             MessageHandler(filters.Regex(r"^\\d+$") & ~filters.COMMAND, del_psale_pick_doc)],
             PS_DEL_CONFIRM:[CallbackQueryHandler(del_psale_confirm, pattern="^ps_del_conf_")],
         },
         fallbacks=[CommandHandler("cancel", show_partner_sales_menu)],
         per_message=False,
     )
     app.add_handler(del_conv)
-
