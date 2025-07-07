@@ -646,6 +646,24 @@ async def handle_pagination(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await get_view_customer(update, context)
     return await send_sales_page(update, context)
 
+@require_unlock
+async def view_sales(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logging.info("View sales")
+    await update.callback_query.answer()
+    rows = secure_db.all('sales')
+    if not rows:
+        text = "No sales found."
+    else:
+        lines = []
+        for r in rows:
+            total = r['quantity'] * r['unit_price']
+            lines.append(
+                f"• [{r.doc_id}] cust:{r['customer_id']} store:{r['store_id']} "
+                f"item:{r['item_id']} x{r['quantity']} @ {r['unit_price']} = {total}" )
+        text = "Sales:\n" + "\n".join(lines)
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="sales_menu")]])
+    await update.callback_query.edit_message_text(text, reply_markup=kb)
+
 # ----------------- Register Handlers -------------------
 def register_sales_handlers(app):
     app.add_handler(CallbackQueryHandler(show_sales_menu, pattern="^sales_menu$"))
