@@ -29,7 +29,7 @@ from secure_db      import secure_db
     SI_EDIT_QTY,     SI_EDIT_COST,  SI_EDIT_DATE, SI_EDIT_CONFIRM,
 
     SI_DEL_PARTNER,  SI_DEL_TIME,   SI_DEL_PAGE,  SI_DEL_CONFIRM,
-) = range(23)
+) = range(22)
 
 ROWS_PER_PAGE = 20   # same as sales.py
 
