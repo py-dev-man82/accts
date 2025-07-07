@@ -42,7 +42,7 @@ from secure_db import secure_db
     PO_EDIT_NOTE,    PO_EDIT_DATE, PO_EDIT_CONFIRM,
 
     PO_DEL_PARTNER,  PO_DEL_TIME,  PO_DEL_PAGE, PO_DEL_CONFIRM,
-) = range(24)
+) = range(23)
 
 ROWS_PER_PAGE = 20   # keep in sync with stockin.py
 
