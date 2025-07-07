@@ -209,16 +209,32 @@ def register_customer_report_handlers(app):
     conv = ConversationHandler(
         entry_points=[
             CallbackQueryHandler(show_customer_report_menu, pattern="^rep_cust$"),
-            CallbackQueryHandler(show_customer_report_menu, pattern="^customer_report_menu$"),
+            CallbackQueryHandler(show_customer_report_menu, pattern="^customer_report_menu$")
         ],
         states={
-            CUST_SELECT:        [CallbackQueryHandler(select_date_range,   pattern="^custrep_")],
-            DATE_RANGE_SELECT:  [CallbackQueryHandler(choose_report_scope,  pattern="^daterange_")],
-            CUSTOM_DATE_INPUT:  [MessageHandler(filters.TEXT & ~filters.COMMAND, save_custom_date)],
-            REPORT_SCOPE_SELECT:[CallbackQueryHandler(show_customer_report, pattern="^scope_")],
-            REPORT_PAGE:        [CallbackQueryHandler(paginate_report,       pattern="^page_(prev|next)$")],
+            CUST_SELECT: [
+                CallbackQueryHandler(select_date_range, pattern="^custrep_"),
+                CallbackQueryHandler(show_customer_report_menu, pattern="^customer_report_menu$")
+            ],
+            DATE_RANGE_SELECT: [
+                CallbackQueryHandler(choose_report_scope, pattern="^daterange_"),
+                CallbackQueryHandler(show_customer_report_menu, pattern="^customer_report_menu$")
+            ],
+            CUSTOM_DATE_INPUT: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, save_custom_date),
+                CallbackQueryHandler(show_customer_report_menu, pattern="^customer_report_menu$")
+            ],
+            REPORT_SCOPE_SELECT: [
+                CallbackQueryHandler(show_customer_report, pattern="^scope_"),
+                CallbackQueryHandler(show_customer_report_menu, pattern="^customer_report_menu$")
+            ],
+            REPORT_PAGE: [
+                CallbackQueryHandler(paginate_report, pattern="^page_(prev|next)$"),
+                CallbackQueryHandler(show_customer_report_menu, pattern="^customer_report_menu$")
+            ],
         },
         fallbacks=[],
         per_message=False,
     )
     app.add_handler(conv)
+
