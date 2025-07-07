@@ -600,16 +600,34 @@ add_conv = ConversationHandler(
     fallbacks=[CommandHandler("cancel", show_sales_menu)],
     per_message=False
 )
+# ----------------- Edit Sale: Select Sale -------------------
+async def get_edit_sale(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+    sid = int(update.callback_query.data.split('_')[-1])
+    context.user_data['edit_sale_id'] = sid
+
+    # Prompt to select field to edit
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("Store", callback_data="edit_field_store")],
+        [InlineKeyboardButton("Item & Quantity", callback_data="edit_field_itemqty")],
+        [InlineKeyboardButton("Unit Price", callback_data="edit_field_price")],
+        [InlineKeyboardButton("Handling Fee", callback_data="edit_field_fee")],
+        [InlineKeyboardButton("Note", callback_data="edit_field_note")],
+        [InlineKeyboardButton("🔙 Cancel", callback_data="edit_sale")]
+    ])
+    await update.callback_query.edit_message_text("Select field to edit:", reply_markup=kb)
+    return S_EDIT_FIELD
 
 
+# ----------------- Register Handlers -------------------
 # ----------------- Register Handlers -------------------
 def register_sales_handlers(app):
     app.add_handler(CallbackQueryHandler(show_sales_menu, pattern="^sales_menu$"))
 
-    # Add Sale
+    # ----------------- Add Sale -----------------
     app.add_handler(add_conv)
 
-    # Edit Sale
+    # ----------------- Edit Sale -----------------
     edit_conv = ConversationHandler(
         entry_points=[
             CallbackQueryHandler(edit_sale, pattern="^edit_sale$")
@@ -617,18 +635,18 @@ def register_sales_handlers(app):
         states={
             S_EDIT_SELECT: [
                 CallbackQueryHandler(get_edit_customer, pattern="^edit_cust_"),
-                CallbackQueryHandler(edit_sale, pattern="^edit_sale$")  # Back button to menu
+                CallbackQueryHandler(edit_sale, pattern="^edit_sale$")  # Back button
             ],
             S_EDIT_TIME: [
                 CallbackQueryHandler(get_edit_time, pattern="^edit_time_"),
-                CallbackQueryHandler(edit_sale, pattern="^edit_sale$")  # Back button to customer selection
+                CallbackQueryHandler(edit_sale, pattern="^edit_sale$")  # Back button
             ],
             S_EDIT_PAGE: [
                 CallbackQueryHandler(handle_edit_pagination, pattern="^edit_(prev|next)$"),
                 CallbackQueryHandler(get_edit_customer, pattern="^edit_time_back$")
             ],
             S_EDIT_FIELD: [
-                CallbackQueryHandler(get_edit_selection, pattern="^edit_sale_")
+                CallbackQueryHandler(get_edit_sale, pattern="^edit_sale_")  # 🆕 Fixed handler
             ],
             S_EDIT_NEWVAL: [
                 CallbackQueryHandler(get_edit_field, pattern="^edit_field_"),
@@ -643,29 +661,8 @@ def register_sales_handlers(app):
     )
     app.add_handler(edit_conv)
 
-    # Delete Sale
+    # ----------------- Delete Sale -----------------
     app.add_handler(delete_conv)
 
-    # View Sales
-    view_conv = ConversationHandler(
-        entry_points=[
-            CallbackQueryHandler(view_sales, pattern="^view_sales$")
-        ],
-        states={
-            S_VIEW_CUSTOMER: [
-                CallbackQueryHandler(get_view_customer, pattern="^view_cust_"),
-                CallbackQueryHandler(view_sales, pattern="^view_sales$")  # Back button to menu
-            ],
-            S_VIEW_TIME: [
-                CallbackQueryHandler(get_view_time, pattern="^view_time_"),
-                CallbackQueryHandler(view_sales, pattern="^view_sales$")  # Back button to customer selection
-            ],
-            S_VIEW_PAGE: [
-                CallbackQueryHandler(handle_pagination, pattern="^view_(prev|next)$"),
-                CallbackQueryHandler(get_view_customer, pattern="^view_time_back$")
-            ]
-        },
-        fallbacks=[CommandHandler("cancel", show_sales_menu)],
-        per_message=False
-    )
+    # ----------------- View Sales -----------------
     app.add_handler(view_conv)
