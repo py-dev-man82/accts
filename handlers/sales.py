@@ -16,22 +16,32 @@ from tinydb import Query
 from handlers.utils import require_unlock
 from secure_db import secure_db
 
-# Conversation state constants
+# Conversation state constants for sales.py
 (
-    S_CUST_SELECT,
-    S_STORE_SELECT,
-    S_ITEM_QTY,
-    S_PRICE,
-    S_FEE,
-    S_NOTE,
-    S_CONFIRM,
-    S_EDIT_SELECT,
-    S_EDIT_FIELD,
-    S_EDIT_NEWVAL,
-    S_EDIT_CONFIRM,
-    S_DELETE_SELECT,
-    S_DELETE_CONFIRM,
-) = range(13)
+    # Add Sale flow states
+    S_CUST_SELECT,      # Select customer
+    S_STORE_SELECT,     # Select store
+    S_ITEM_QTY,         # Enter item and quantity
+    S_PRICE,            # Enter unit price
+    S_FEE,              # Enter handling fee
+    S_NOTE,             # Enter optional note
+    S_CONFIRM,          # Final confirmation for Add
+
+    # Edit Sale flow states
+    S_EDIT_SELECT,      # Select customer for Edit
+    S_EDIT_FIELD,       # Select sale for Edit
+    S_EDIT_NEWVAL,      # Enter new value for field
+    S_EDIT_CONFIRM,     # Confirm Edit changes
+
+    # Delete Sale flow states
+    S_DELETE_SELECT,    # Select customer for Delete
+    S_DELETE_CONFIRM,   # Confirm Delete
+
+    # View Sales flow states
+    S_VIEW_CUSTOMER,    # Select customer for View
+    S_VIEW_TIME,        # Select time period (3m, 6m, all)
+    S_VIEW_PAGE         # Pagination state for View
+) = range(16)
 
 # ----------------- Sales Menu -------------------
 async def show_sales_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -526,22 +536,120 @@ async def perform_delete_sale(update: Update, context: ContextTypes.DEFAULT_TYPE
     return ConversationHandler.END
 
 # ----------------- View Sales Flow -------------------
+@require_unlock
 async def view_sales(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
-    rows = secure_db.all('sales')
-    if not rows:
-        text = "No sales found."
-    else:
-        lines = []
-        for r in rows:
-            total = r['quantity'] * r['unit_price']
-            lines.append(
-                f"• [{r.doc_id}] cust:{r['customer_id']} store:{r['store_id']} "
-                f"item:{r['item_id']} x{r['quantity']} @ {r['unit_price']} = {total}"
-            )
-        text = "Sales:\n" + "\n".join(lines)
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="sales_menu")]])
+    customers = secure_db.all('customers')
+    if not customers:
+        await update.callback_query.edit_message_text(
+            "No customers found.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="sales_menu")]])
+        )
+        return ConversationHandler.END
+
+    # Show customer buttons
+    buttons = [
+        InlineKeyboardButton(f"{c['name']} ({c['currency']})", callback_data=f"view_cust_{c.doc_id}")
+        for c in customers
+    ]
+    kb = InlineKeyboardMarkup([buttons[i:i+2] for i in range(0, len(buttons), 2)])
+    await update.callback_query.edit_message_text("Select customer to view sales:", reply_markup=kb)
+    return S_VIEW_CUSTOMER
+
+
+async def get_view_customer(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+    cid = int(update.callback_query.data.split('_')[-1])
+    context.user_data['view_customer_id'] = cid
+
+    # Prompt for time filter
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📅 Last 3 Months", callback_data="view_time_3m")],
+        [InlineKeyboardButton("📅 Last 6 Months", callback_data="view_time_6m")],
+        [InlineKeyboardButton("📅 All Time", callback_data="view_time_all")],
+        [InlineKeyboardButton("🔙 Back", callback_data="view_sales")]
+    ])
+    await update.callback_query.edit_message_text("Select time period:", reply_markup=kb)
+    return S_VIEW_TIME
+
+
+async def get_view_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+    time_filter = update.callback_query.data.split('_')[-1]
+    context.user_data['view_time_filter'] = time_filter
+
+    # Start pagination at page 1
+    context.user_data['view_page'] = 1
+    return await send_sales_page(update, context)
+
+
+async def send_sales_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    cid = context.user_data['view_customer_id']
+    time_filter = context.user_data['view_time_filter']
+    page = context.user_data['view_page']
+    page_size = 20  # Number of sales per page
+
+    # Filter sales for this customer and time period
+    all_sales = [
+        r for r in secure_db.all('sales') if r['customer_id'] == cid
+    ]
+
+    if time_filter == "3m":
+        cutoff = datetime.utcnow().timestamp() - (90 * 86400)
+        all_sales = [r for r in all_sales if datetime.fromisoformat(r['timestamp']).timestamp() >= cutoff]
+    elif time_filter == "6m":
+        cutoff = datetime.utcnow().timestamp() - (180 * 86400)
+        all_sales = [r for r in all_sales if datetime.fromisoformat(r['timestamp']).timestamp() >= cutoff]
+
+    # Paginate
+    total_pages = max(1, (len(all_sales) + page_size - 1) // page_size)
+    start = (page - 1) * page_size
+    end = start + page_size
+    sales_chunk = all_sales[start:end]
+
+    if not sales_chunk:
+        await update.callback_query.edit_message_text(
+            "No sales found for this customer in the selected period.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="view_sales")]])
+        )
+        return ConversationHandler.END
+
+    # Build sales list text
+    lines = []
+    for r in sales_chunk:
+        total = r['quantity'] * r['unit_price']
+        lines.append(
+            f"• [{r.doc_id}] Store:{r['store_id']} Item:{r['item_id']} "
+            f"x{r['quantity']} @ {r['unit_price']} = {total:.2f} {r['currency']}"
+        )
+    text = (
+        f"📄 Sales (Page {page}/{total_pages}):\n"
+        + "\n".join(lines)
+    )
+
+    # Pagination buttons
+    buttons = []
+    if page > 1:
+        buttons.append(InlineKeyboardButton("⬅️ Previous", callback_data="view_prev"))
+    if page < total_pages:
+        buttons.append(InlineKeyboardButton("➡️ Next", callback_data="view_next"))
+    buttons.append(InlineKeyboardButton("🔙 Back", callback_data="view_time_back"))
+    kb = InlineKeyboardMarkup([buttons])
+
     await update.callback_query.edit_message_text(text, reply_markup=kb)
+    return S_VIEW_PAGE
+
+
+async def handle_pagination(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+    action = update.callback_query.data
+    if action == "view_prev":
+        context.user_data['view_page'] -= 1
+    elif action == "view_next":
+        context.user_data['view_page'] += 1
+    elif action == "view_time_back":
+        return await get_view_customer(update, context)
+    return await send_sales_page(update, context)
 
 # ----------------- Register Handlers -------------------
 def register_sales_handlers(app):
@@ -628,5 +736,23 @@ def register_sales_handlers(app):
     )
     app.add_handler(delete_conv)
 
-    # View Sales
-    app.add_handler(CallbackQueryHandler(view_sales, pattern="^view_sales$"))
+# View Sales
+view_conv = ConversationHandler(
+    entry_points=[
+        CallbackQueryHandler(view_sales, pattern="^view_sales$")
+    ],
+    states={
+        S_VIEW_CUSTOMER: [
+            CallbackQueryHandler(get_view_customer, pattern="^view_cust_")
+        ],
+        S_VIEW_TIME: [
+            CallbackQueryHandler(get_view_time, pattern="^view_time_")
+        ],
+        S_VIEW_PAGE: [
+            CallbackQueryHandler(handle_pagination, pattern="^view_(prev|next|time_back)$")
+        ],
+    },
+    fallbacks=[CommandHandler("cancel", show_sales_menu)],
+    per_message=False
+)
+app.add_handler(view_conv)
