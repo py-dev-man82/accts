@@ -16,32 +16,31 @@ from tinydb import Query
 from handlers.utils import require_unlock
 from secure_db import secure_db
 
-# Conversation state constants for sales.py
+# Conversation state constants
 (
-    # Add Sale flow states
-    S_CUST_SELECT,      # Select customer
-    S_STORE_SELECT,     # Select store
-    S_ITEM_QTY,         # Enter item and quantity
-    S_PRICE,            # Enter unit price
-    S_FEE,              # Enter handling fee
-    S_NOTE,             # Enter optional note
-    S_CONFIRM,          # Final confirmation for Add
+    S_CUST_SELECT,      # Add flow: customer select
+    S_STORE_SELECT,     # Add flow: store select
+    S_ITEM_QTY,         # Add flow: item/qty input
+    S_PRICE,            # Add flow: price input
+    S_FEE,              # Add flow: handling fee input
+    S_NOTE,             # Add flow: note input
+    S_CONFIRM,          # Add flow: confirm
 
-    # Edit Sale flow states
-    S_EDIT_SELECT,      # Select customer for Edit
-    S_EDIT_FIELD,       # Select sale for Edit
-    S_EDIT_NEWVAL,      # Enter new value for field
-    S_EDIT_CONFIRM,     # Confirm Edit changes
+    S_EDIT_SELECT,      # Edit flow: customer select
+    S_EDIT_TIME,        # 🆕 Edit flow: time filter
+    S_EDIT_PAGE,        # 🆕 Edit flow: paginated sales list
+    S_EDIT_FIELD,       # Edit flow: field select
+    S_EDIT_NEWVAL,      # Edit flow: new value input
+    S_EDIT_CONFIRM,     # Edit flow: confirm
 
-    # Delete Sale flow states
-    S_DELETE_SELECT,    # Select customer for Delete
-    S_DELETE_CONFIRM,   # Confirm Delete
+    S_DELETE_SELECT,    # Delete flow: customer select
+    S_DELETE_CONFIRM,   # Delete flow: confirm delete
 
-    # View Sales flow states
-    S_VIEW_CUSTOMER,    # Select customer for View
-    S_VIEW_TIME,        # Select time period (3m, 6m, all)
-    S_VIEW_PAGE         # Pagination state for View
-) = range(16)
+    S_VIEW_CUSTOMER,    # View flow: customer select
+    S_VIEW_TIME,        # View flow: time filter
+    S_VIEW_PAGE         # View flow: paginated sales list
+) = range(18)
+
 
 # ----------------- Sales Menu -------------------
 async def show_sales_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
