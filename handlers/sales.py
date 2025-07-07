@@ -655,7 +655,7 @@ async def handle_pagination(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def register_sales_handlers(app):
     app.add_handler(CallbackQueryHandler(show_sales_menu, pattern="^sales_menu$"))
 
-    # Add Sale
+    # ----------------- Add Sale -----------------
     add_conv = ConversationHandler(
         entry_points=[
             CommandHandler("add_sale", add_sale),
@@ -691,25 +691,24 @@ def register_sales_handlers(app):
     )
     app.add_handler(add_conv)
 
-    # Edit Sale
+    # ----------------- Edit Sale -----------------
     edit_conv = ConversationHandler(
         entry_points=[
             CallbackQueryHandler(edit_sale, pattern="^edit_sale$")
         ],
         states={
             S_EDIT_SELECT: [
-                CallbackQueryHandler(get_edit_customer, pattern="^edit_cust_")  # ✅ Handles customer buttons
+                CallbackQueryHandler(get_edit_customer, pattern="^edit_cust_")  # 🟢 Customer selection
             ],
             S_EDIT_FIELD: [
-                CallbackQueryHandler(get_edit_selection, pattern="^edit_sale_")  # ✅ Handles sale selection
+                CallbackQueryHandler(get_edit_selection, pattern="^edit_sale_")  # 🟢 Sale selection
             ],
             S_EDIT_NEWVAL: [
-                CallbackQueryHandler(get_edit_field, pattern="^edit_field_"),    # ✅ Handles field selection buttons
-                CallbackQueryHandler(save_edit, pattern="^edit_new_"),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, save_edit)
+                CallbackQueryHandler(get_edit_field, pattern="^edit_field_"),    # 🟢 Field buttons
+                MessageHandler(filters.TEXT & ~filters.COMMAND, save_edit)       # 🟢 New value input
             ],
             S_EDIT_CONFIRM: [
-                CallbackQueryHandler(confirm_edit, pattern="^edit_conf_")
+                CallbackQueryHandler(confirm_edit, pattern="^edit_conf_")        # 🟢 Confirm edit
             ]
         },
         fallbacks=[CommandHandler("cancel", show_sales_menu)],
@@ -717,18 +716,18 @@ def register_sales_handlers(app):
     )
     app.add_handler(edit_conv)
 
-    # Delete Sale
+    # ----------------- Delete Sale -----------------
     delete_conv = ConversationHandler(
         entry_points=[
             CallbackQueryHandler(delete_sale, pattern="^remove_sale$")
         ],
         states={
             S_DELETE_SELECT: [
-                CallbackQueryHandler(get_delete_customer, pattern="^del_cust_")  # ✅ Handles customer buttons
+                CallbackQueryHandler(get_delete_customer, pattern="^del_cust_")  # 🟢 Customer selection
             ],
             S_DELETE_CONFIRM: [
-                CallbackQueryHandler(confirm_delete_sale, pattern="^del_sale_"),
-                CallbackQueryHandler(perform_delete_sale, pattern="^del_conf_")
+                CallbackQueryHandler(confirm_delete_sale, pattern="^del_sale_"), # 🟢 Sale selection
+                CallbackQueryHandler(perform_delete_sale, pattern="^del_conf_") # 🟢 Confirm delete
             ]
         },
         fallbacks=[CommandHandler("cancel", show_sales_menu)],
@@ -736,23 +735,23 @@ def register_sales_handlers(app):
     )
     app.add_handler(delete_conv)
 
-# View Sales
-view_conv = ConversationHandler(
-    entry_points=[
-        CallbackQueryHandler(view_sales, pattern="^view_sales$")
-    ],
-    states={
-        S_VIEW_CUSTOMER: [
-            CallbackQueryHandler(get_view_customer, pattern="^view_cust_")
+    # ----------------- View Sales -----------------
+    view_conv = ConversationHandler(
+        entry_points=[
+            CallbackQueryHandler(view_sales, pattern="^view_sales$")
         ],
-        S_VIEW_TIME: [
-            CallbackQueryHandler(get_view_time, pattern="^view_time_")
-        ],
-        S_VIEW_PAGE: [
-            CallbackQueryHandler(handle_pagination, pattern="^view_(prev|next|time_back)$")
-        ],
-    },
-    fallbacks=[CommandHandler("cancel", show_sales_menu)],
-    per_message=False
-)
-app.add_handler(view_conv)
+        states={
+            S_VIEW_CUSTOMER: [
+                CallbackQueryHandler(get_view_customer, pattern="^view_cust_")   # 🟢 Customer selection
+            ],
+            S_VIEW_TIME: [
+                CallbackQueryHandler(get_view_time, pattern="^view_time_")       # 🟢 Time filter
+            ],
+            S_VIEW_PAGE: [
+                CallbackQueryHandler(handle_pagination, pattern="^view_(prev|next|time_back)$")  # 🟢 Pagination
+            ]
+        },
+        fallbacks=[CommandHandler("cancel", show_sales_menu)],
+        per_message=False
+    )
+    app.add_handler(view_conv)
