@@ -213,6 +213,7 @@ async def confirm_add_stockin(update: Update, context: ContextTypes.DEFAULT_TYPE
 # ======================================================================
 @require_unlock
 async def view_stockin_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Step 1 of View flow: choose partner."""
     await update.callback_query.answer()
     partners = secure_db.all("partners")
     if not partners:
@@ -220,11 +221,14 @@ async def view_stockin_start(update: Update, context: ContextTypes.DEFAULT_TYPE)
             "No partners found.",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="stockin_menu")]]))
         return ConversationHandler.END
-    buttons = [InlineKeyboardButton(p["name"], callback_data=f"si_view_part_{p.doc_id}") for p in partners]
+
+    buttons = [InlineKeyboardButton(p["name"], callback_data=f"si_view_part_{p.doc_id}")
+               for p in partners]
+    buttons.append(InlineKeyboardButton("🔙 Back", callback_data="stockin_menu"))  # new back button
+
     kb = InlineKeyboardMarkup([buttons[i:i+2] for i in range(0, len(buttons), 2)])
     await update.callback_query.edit_message_text("Select partner:", reply_markup=kb)
     return SI_VIEW_PARTNER
-
 
 async def view_choose_period(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
@@ -293,15 +297,21 @@ async def view_paginate(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ======================================================================
 @require_unlock
 async def edit_stockin_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Step 1 of Edit flow: choose partner."""
     await update.callback_query.answer()
     partners = secure_db.all("partners")
     if not partners:
         await update.callback_query.edit_message_text(
-            "No partners.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="stockin_menu")]]))
+            "No partners.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="stockin_menu")]]))
         return ConversationHandler.END
-    buttons=[InlineKeyboardButton(p["name"],callback_data=f"si_edit_part_{p.doc_id}") for p in partners]
-    kb=InlineKeyboardMarkup([buttons[i:i+2] for i in range(0,len(buttons),2)])
-    await update.callback_query.edit_message_text("Select partner:",reply_markup=kb)
+
+    buttons = [InlineKeyboardButton(p["name"], callback_data=f"si_edit_part_{p.doc_id}")
+               for p in partners]
+    buttons.append(InlineKeyboardButton("🔙 Back", callback_data="stockin_menu"))  # new back
+
+    kb = InlineKeyboardMarkup([buttons[i:i+2] for i in range(0, len(buttons), 2)])
+    await update.callback_query.edit_message_text("Select partner:", reply_markup=kb)
     return SI_EDIT_PARTNER
 
 
@@ -420,15 +430,21 @@ async def edit_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ======================================================================
 @require_unlock
 async def del_stockin_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Step 1 of Delete flow: choose partner."""
     await update.callback_query.answer()
-    partners=secure_db.all("partners")
+    partners = secure_db.all("partners")
     if not partners:
         await update.callback_query.edit_message_text(
-            "No partners.",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back",callback_data="stockin_menu")]]))
+            "No partners.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="stockin_menu")]]))
         return ConversationHandler.END
-    buttons=[InlineKeyboardButton(p["name"],callback_data=f"si_del_part_{p.doc_id}") for p in partners]
-    kb=InlineKeyboardMarkup([buttons[i:i+2] for i in range(0,len(buttons),2)])
-    await update.callback_query.edit_message_text("Select partner:",reply_markup=kb)
+
+    buttons = [InlineKeyboardButton(p["name"], callback_data=f"si_del_part_{p.doc_id}")
+               for p in partners]
+    buttons.append(InlineKeyboardButton("🔙 Back", callback_data="stockin_menu"))  # new back
+
+    kb = InlineKeyboardMarkup([buttons[i:i+2] for i in range(0, len(buttons), 2)])
+    await update.callback_query.edit_message_text("Select partner:", reply_markup=kb)
     return SI_DEL_PARTNER
 
 
@@ -522,14 +538,10 @@ def register_stockin_handlers(app: Application):
         ],
         states={
             # 1) Partner picker  →  Period picker
-            SI_VIEW_PARTNER: [
-                CallbackQueryHandler(view_choose_period, pattern="^si_view_part_\\d+$"),
-            ],
-            # 2) Period picker   →  Page list  OR 🔙 Back → Partner picker
-            SI_VIEW_TIME: [
-                CallbackQueryHandler(view_set_filter,    pattern="^si_view_filt_"),
-                CallbackQueryHandler(view_stockin_start, pattern="^view_stockin$"),   # 🔙 Back
-            ],
+           SI_VIEW_PARTNER: [
+            CallbackQueryHandler(view_choose_period, pattern="^si_view_part_\\d+$"),
+            CallbackQueryHandler(show_stockin_menu,  pattern="^stockin_menu$"),   # 🔙 Back wired
+        ],
             # 3) Page list       →  Prev/Next OR 🔙 Back → Partner picker
             SI_VIEW_PAGE: [
                 CallbackQueryHandler(view_paginate,      pattern="^si_view_(prev|next)$"),
@@ -549,8 +561,9 @@ def register_stockin_handlers(app: Application):
         states={
             # 1) Partner picker  →  Period picker
             SI_EDIT_PARTNER: [
-                CallbackQueryHandler(edit_choose_period, pattern="^si_edit_part_\\d+$"),
-            ],
+            CallbackQueryHandler(edit_choose_period, pattern="^si_edit_part_\\d+$"),
+            CallbackQueryHandler(show_stockin_menu,  pattern="^stockin_menu$"),   # 🔙 Back wired
+        ],
             # 2) Period picker   →  Page list  OR 🔙 Back → Partner picker
             SI_EDIT_TIME: [
                 CallbackQueryHandler(edit_set_filter,    pattern="^si_edit_filt_"),
@@ -595,8 +608,9 @@ def register_stockin_handlers(app: Application):
         states={
             # 1) Partner picker  →  Period picker
             SI_DEL_PARTNER: [
-                CallbackQueryHandler(del_choose_period, pattern="^si_del_part_\\d+$"),
-            ],
+            CallbackQueryHandler(del_choose_period,  pattern="^si_del_part_\\d+$"),
+            CallbackQueryHandler(show_stockin_menu,  pattern="^stockin_menu$"),   # 🔙 Back wired
+        ],
             # 2) Period picker   →  Page list  OR 🔙 Back → Partner picker
             SI_DEL_TIME: [
                 CallbackQueryHandler(del_set_filter,    pattern="^si_del_filt_"),
