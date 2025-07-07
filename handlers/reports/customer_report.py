@@ -1,5 +1,6 @@
 # handlers/reports/customer_report.py
 
+import logging
 from datetime import datetime, timedelta
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
@@ -26,6 +27,7 @@ _PAGE_SIZE = 8
 
 @require_unlock
 async def show_customer_report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logging.info("show_customer_report_menu called")
     customers = secure_db.all("customers")
     if not customers:
         await update.callback_query.answer()
@@ -52,6 +54,7 @@ async def show_customer_report_menu(update: Update, context: ContextTypes.DEFAUL
     return CUST_SELECT
 
 async def select_date_range(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logging.info("select_date_range: %s", update.callback_query.data)
     await update.callback_query.answer()
     cid = int(update.callback_query.data.split("_")[-1])
     context.user_data["customer_id"] = cid
@@ -67,11 +70,13 @@ async def select_date_range(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return DATE_RANGE_SELECT
 
 async def get_custom_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logging.info("get_custom_date")
     await update.callback_query.answer()
     await update.callback_query.edit_message_text("📅 Enter start date (DDMMYYYY):")
     return CUSTOM_DATE_INPUT
 
 async def save_custom_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logging.info("save_custom_date: %s", update.message.text)
     text = update.message.text.strip()
     try:
         start_date = datetime.strptime(text, "%d%m%Y")
@@ -84,6 +89,7 @@ async def save_custom_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return await choose_report_scope(update, context)
 
 async def choose_report_scope(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logging.info("choose_report_scope: %s", update.callback_query.data)
     await update.callback_query.answer()
     data = update.callback_query.data
     if data == "daterange_weekly":
@@ -108,6 +114,7 @@ def _paginate(items, page):
 
 @require_unlock
 async def show_customer_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logging.info("show_customer_report: page=%s scope=%s", context.user_data.get("page"), context.user_data.get("scope"))
     await update.callback_query.answer()
     scope = update.callback_query.data.split("_")[-1]
     context.user_data["scope"] = scope
@@ -146,10 +153,9 @@ async def show_customer_report(update: Update, context: ContextTypes.DEFAULT_TYP
         lines.append("🛒 *Sales*")
         if sales_page:
             for s in sales_page:
+                date = datetime.fromisoformat(s['timestamp']).strftime('%d%m%Y')
                 lines.append(
-                    f"• {fmt_date(datetime.fromisoformat(s['timestamp']).strftime('%d%m%Y'))}: "
-                    f"Item {s['item_id']} x{s['quantity']} @ {fmt_money(s['unit_price'], customer['currency'])} "
-                    f"= {fmt_money(s['quantity'] * s['unit_price'], customer['currency'])}"
+                    f"• {fmt_date(date)}: Item {s['item_id']} x{s['quantity']} @ {fmt_money(s['unit_price'], customer['currency'])} = {fmt_money(s['quantity'] * s['unit_price'], customer['currency'])}"
                 )
         else:
             lines.append("  (No sales on this page)")
@@ -160,12 +166,10 @@ async def show_customer_report(update: Update, context: ContextTypes.DEFAULT_TYP
         lines.append("\n💵 *Payments*")
         if payments_page:
             for p in payments_page:
+                date = datetime.fromisoformat(p['timestamp']).strftime('%d%m%Y')
                 fee_perc = p.get("fee_perc", 0.0)
                 lines.append(
-                    f"• {fmt_date(datetime.fromisoformat(p['timestamp']).strftime('%d%m%Y'))}: "
-                    f"{fmt_money(p['local_amt'], customer['currency'])} "
-                    f"(Fee: {fee_perc:.1f}% = {fmt_money(p['fee_amt'], customer['currency'])}) → "
-                    f"{fmt_money(p['usd_amt'], 'USD')} @ {p['fx_rate']:.4f}"
+                    f"• {fmt_date(date)}: {fmt_money(p['local_amt'], customer['currency'])} (Fee: {fee_perc:.1f}% = {fmt_money(p['fee_amt'], customer['currency'])}) → {fmt_money(p['usd_amt'], 'USD')} @ {p['fx_rate']:.4f}"
                 )
         else:
             lines.append("  (No payments on this page)")
@@ -191,6 +195,7 @@ async def show_customer_report(update: Update, context: ContextTypes.DEFAULT_TYP
 
 @require_unlock
 async def paginate_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logging.info("paginate_report: %s", update.callback_query.data)
     await update.callback_query.answer()
     if update.callback_query.data == "page_next":
         context.user_data["page"] += 1
@@ -200,6 +205,7 @@ async def paginate_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 def register_customer_report_handlers(app):
+    logging.info("Registering customer_report handlers")
     conv = ConversationHandler(
         entry_points=[
             CallbackQueryHandler(show_customer_report_menu, pattern="^rep_cust$"),
