@@ -6,15 +6,14 @@ from telegram.ext import (
     ConversationHandler,
     CallbackQueryHandler,
     MessageHandler,
-    CommandHandler,
     filters,
     ContextTypes,
 )
 from secure_db import secure_db
-from handlers.utils import require_unlock, format_currency, format_date
+from handlers.utils import require_unlock, fmt_money, fmt_date
 
 # ────────────────────────────────────────────────────────────
-#  Conversation-state constants
+# Conversation-state constants
 # ────────────────────────────────────────────────────────────
 (
     CUST_SELECT,
@@ -26,36 +25,42 @@ from handlers.utils import require_unlock, format_currency, format_date
 
 
 # ────────────────────────────────────────────────────────────
-#  Menu
+# Show customer report menu
 # ────────────────────────────────────────────────────────────
+@require_unlock
 async def show_customer_report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show customer report menu"""
-    await update.callback_query.answer()
     customers = secure_db.all("customers")
     if not customers:
+        await update.callback_query.answer()
         await update.callback_query.edit_message_text(
-            "No customers found.",
+            "⚠️ No customers found.",
             reply_markup=InlineKeyboardMarkup(
-                [[InlineKeyboardButton("🔙 Back", callback_data="main_menu")]]
+                [[InlineKeyboardButton("🔙 Back", callback_data="report_menu")]]
             ),
         )
         return ConversationHandler.END
 
     buttons = [
-        InlineKeyboardButton(f"{c['name']} ({c['currency']})", callback_data=f"custrep_{c.doc_id}")
+        InlineKeyboardButton(
+            f"{c['name']} ({c['currency']})",
+            callback_data=f"custrep_{c.doc_id}"
+        )
         for c in customers
     ]
     grid = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
-    grid.append([InlineKeyboardButton("🔙 Back", callback_data="main_menu")])
+    grid.append([InlineKeyboardButton("🔙 Back", callback_data="report_menu")])
 
+    await update.callback_query.answer()
     await update.callback_query.edit_message_text(
-        "📄 Select a customer to view report:", reply_markup=InlineKeyboardMarkup(grid)
+        "📄 Select a customer to view report:",
+        reply_markup=InlineKeyboardMarkup(grid)
     )
     return CUST_SELECT
 
 
 # ────────────────────────────────────────────────────────────
-#  Date Range Selection
+# Select date range
 # ────────────────────────────────────────────────────────────
 async def select_date_range(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
@@ -67,7 +72,10 @@ async def select_date_range(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("📆 Custom Range", callback_data="daterange_custom")],
         [InlineKeyboardButton("🔙 Back", callback_data="customer_report_menu")],
     ])
-    await update.callback_query.edit_message_text("Choose date range:", reply_markup=kb)
+    await update.callback_query.edit_message_text(
+        "Choose date range:",
+        reply_markup=kb
+    )
     return DATE_RANGE_SELECT
 
 
@@ -84,7 +92,9 @@ async def save_custom_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         start_date = datetime.strptime(text, "%d%m%Y")
     except ValueError:
-        await update.message.reply_text("❌ Invalid format. Enter date as DDMMYYYY.")
+        await update.message.reply_text(
+            "❌ Invalid format. Enter date as DDMMYYYY."
+        )
         return CUSTOM_DATE_INPUT
 
     context.user_data["start_date"] = start_date
@@ -93,16 +103,14 @@ async def save_custom_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ────────────────────────────────────────────────────────────
-#  Scope Selection
+# Choose report scope
 # ────────────────────────────────────────────────────────────
 async def choose_report_scope(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.callback_query:
-        await update.callback_query.answer()
-        if update.callback_query.data == "daterange_weekly":
-            context.user_data["start_date"] = datetime.now() - timedelta(days=7)
-            context.user_data["end_date"] = datetime.now()
-        elif update.callback_query.data == "daterange_custom":
-            return await get_custom_date(update, context)
+    if update.callback_query.data == "daterange_weekly":
+        context.user_data["start_date"] = datetime.now() - timedelta(days=7)
+        context.user_data["end_date"] = datetime.now()
+    elif update.callback_query.data == "daterange_custom":
+        return await get_custom_date(update, context)
 
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("📝 Full Report", callback_data="scope_full")],
@@ -110,12 +118,15 @@ async def choose_report_scope(update: Update, context: ContextTypes.DEFAULT_TYPE
         [InlineKeyboardButton("💵 Payments Only", callback_data="scope_payments")],
         [InlineKeyboardButton("🔙 Back", callback_data="customer_report_menu")],
     ])
-    await update.callback_query.edit_message_text("Choose report scope:", reply_markup=kb)
+    await update.callback_query.answer()
+    await update.callback_query.edit_message_text(
+        "Choose report scope:", reply_markup=kb
+    )
     return REPORT_SCOPE_SELECT
 
 
 # ────────────────────────────────────────────────────────────
-#  Report Display
+# Display customer report
 # ────────────────────────────────────────────────────────────
 async def show_customer_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
@@ -142,51 +153,51 @@ async def show_customer_report(update: Update, context: ContextTypes.DEFAULT_TYP
     total_payments = sum(p["local_amt"] for p in payments)
     balance = total_sales - total_payments
 
-    # Format report
-    report_lines = [f"📄 **Customer Report: {customer['name']}**"]
-    report_lines.append(f"Period: {format_date(start_date)} → {format_date(end_date)}")
-    report_lines.append(f"Currency: {customer['currency']}\n")
+    # Build report
+    lines = [f"📄 *Customer Report: {customer['name']}*"]
+    lines.append(f"Period: {fmt_date(start_date.strftime('%d%m%Y'))} → {fmt_date(end_date.strftime('%d%m%Y'))}")
+    lines.append(f"Currency: {customer['currency']}\n")
 
     if scope in ["full", "sales"]:
-        report_lines.append("🛒 **Sales**")
+        lines.append("🛒 *Sales*")
         if sales:
             for s in sales:
-                report_lines.append(
-                    f"• {format_date(datetime.fromisoformat(s['timestamp']))}: "
-                    f"Item {s['item_id']} x{s['quantity']} @ {format_currency(s['unit_price'], customer['currency'])} "
-                    f"= {format_currency(s['quantity'] * s['unit_price'], customer['currency'])}"
+                lines.append(
+                    f"• {fmt_date(datetime.fromisoformat(s['timestamp']).strftime('%d%m%Y'))}: "
+                    f"Item {s['item_id']} x{s['quantity']} @ {fmt_money(s['unit_price'], customer['currency'])} "
+                    f"= {fmt_money(s['quantity'] * s['unit_price'], customer['currency'])}"
                 )
         else:
-            report_lines.append("  (No sales)")
+            lines.append("  (No sales)")
 
     if scope in ["full", "payments"]:
-        report_lines.append("\n💵 **Payments**")
+        lines.append("\n💵 *Payments*")
         if payments:
             for p in payments:
-                report_lines.append(
-                    f"• {format_date(datetime.fromisoformat(p['timestamp']))}: "
-                    f"{format_currency(p['local_amt'], customer['currency'])} "
-                    f"(Fee: {format_currency(p['fee_amt'], customer['currency'])}) → "
-                    f"{format_currency(p['usd_amt'], 'USD')} @ {p['fx_rate']:.4f}"
+                lines.append(
+                    f"• {fmt_date(datetime.fromisoformat(p['timestamp']).strftime('%d%m%Y'))}: "
+                    f"{fmt_money(p['local_amt'], customer['currency'])} "
+                    f"(Fee: {fmt_money(p['fee_amt'], customer['currency'])}) → "
+                    f"{fmt_money(p['usd_amt'], 'USD')} @ {p['fx_rate']:.4f}"
                 )
         else:
-            report_lines.append("  (No payments)")
+            lines.append("  (No payments)")
 
-    report_lines.append(f"\n📊 **Balance:** {format_currency(balance, customer['currency'])}")
+    lines.append(f"\n📊 *Balance:* {fmt_money(balance, customer['currency'])}")
 
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("🔙 Back", callback_data="customer_report_menu")]
     ])
-    await update.callback_query.edit_message_text("\n".join(report_lines), reply_markup=kb)
+    await update.callback_query.edit_message_text(
+        "\n".join(lines), reply_markup=kb, parse_mode="Markdown"
+    )
     return ConversationHandler.END
 
 
 # ────────────────────────────────────────────────────────────
-#  Register Handlers
+# Register handlers
 # ────────────────────────────────────────────────────────────
 def register_customer_report_handlers(app):
-    app.add_handler(CallbackQueryHandler(show_customer_report_menu, pattern="^customer_report_menu$"))
-
     conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(show_customer_report_menu, pattern="^rep_cust$")],
         states={
@@ -195,7 +206,7 @@ def register_customer_report_handlers(app):
             CUSTOM_DATE_INPUT:  [MessageHandler(filters.TEXT & ~filters.COMMAND, save_custom_date)],
             REPORT_SCOPE_SELECT:[CallbackQueryHandler(show_customer_report, pattern="^scope_")],
         },
-        fallbacks=[CommandHandler("cancel", show_customer_report_menu)],
+        fallbacks=[],
         per_message=False,
     )
     app.add_handler(conv)
