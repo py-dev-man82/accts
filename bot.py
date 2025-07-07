@@ -33,7 +33,6 @@ async def restart_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("♻️ Bot is restarting…")
     logging.warning("⚠️ Admin issued /restart — restarting bot.")
     await context.application.stop()
-    await context.application.shutdown()
     # Relaunch bot in the same venv
     venv_python = sys.executable  # path to venv python
     bot_script   = os.path.abspath(sys.argv[0])
@@ -44,7 +43,7 @@ async def restart_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # 🆕 Admin-only Hard Kill Command
 @require_unlock
 async def kill_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🛑 Bot is shutting down… it will auto-restart in a moment.")
+    await update.message.reply_text("🛑 Bot is shutting down… it will auto-restart.")
     logging.warning("⚠️ Admin issued /kill — shutting down cleanly.")
     raise SystemExit(0)
 
@@ -102,7 +101,16 @@ async def run_bot():
     app.add_handler(CommandHandler("restart", restart_bot))
     app.add_handler(CommandHandler("kill", kill_bot))
 
-    await app.run_polling()
+    await app.initialize()    # Properly initialize application
+    await app.start()         # Start polling
+    await app.updater.start_polling()
+    try:
+        # Run until stopped
+        await asyncio.Event().wait()
+    finally:
+        await app.updater.stop()
+        await app.stop()
+        await app.shutdown()
 
 
 # 🆕 Self-Supervisor Wrapper
@@ -119,8 +127,7 @@ def main_supervisor():
 
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "child":
-        # Run child process (actual bot logic)
-        asyncio.run(run_bot())
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(run_bot())
     else:
-        # Run supervisor loop
         main_supervisor()
