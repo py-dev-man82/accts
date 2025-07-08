@@ -272,7 +272,7 @@ async def confirm_sale(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # 🔥 Ledger entry: charge customer (sale + total fee)
     total_charge = d["sale_qty"] * d["sale_price"] + total_fee
     add_ledger_entry(
-        entity_type="customer",
+        account_type="customer",
         entity_id=d["sale_customer"],
         amount=-total_charge,
         currency=cur,
