@@ -136,7 +136,7 @@ async def psale_item_qty(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def psale_item_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        price = float(update.message.text.strip()); assert price >= 0
+        price = float(update.message.text.strip());
     except Exception:
         await update.message.reply_text("Numeric price please.")
         return PS_ITEM_PRICE
