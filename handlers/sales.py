@@ -13,76 +13,84 @@ from telegram.ext import (
 )
 from tinydb import Query
 
-from handlers.utils import require_unlock, fmt_money, fmt_date
+from handlers.utils import require_unlock
 from secure_db import secure_db
-from handlers.ledger import add_ledger_entry, delete_ledger_entries_by_related  # LEDGER PATCH
 
-# ───────────────────────────────────────────────────────────────
-#  Quick helper – numeric ID from plain text
-# ───────────────────────────────────────────────────────────────
+# LEDGER PATCH: Import ledger
+from handlers.ledger import add_ledger_entry
+
+# ────────────────────────────────────────────────────────────────
+#  Utility – validate a numeric doc_id from user text
+# ────────────────────────────────────────────────────────────────
 def _extract_doc_id(text: str) -> int | None:
     try:
         return int(text.strip())
     except Exception:
         return None
 
-# ───────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────
 #  Conversation-state constants
-# ───────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────
 (
-    S_CUST_SELECT,  S_STORE_SELECT, S_ITEM_QTY,  S_PRICE,
-    S_FEE,          S_NOTE,         S_CONFIRM,
+    S_CUST_SELECT,      # Add flow: customer select
+    S_STORE_SELECT,     # Add flow: store select
+    S_ITEM_QTY,         # Add flow: item/qty input
+    S_PRICE,            # Add flow: price input
+    S_FEE,              # Add flow: handling fee input
+    S_NOTE,             # Add flow: note input
+    S_CONFIRM,          # Add flow: confirm
 
-    S_EDIT_SELECT,  S_EDIT_TIME,    S_EDIT_PAGE,
-    S_EDIT_FIELD,   S_EDIT_NEWVAL,  S_EDIT_CONFIRM,
+    S_EDIT_SELECT,      # Edit flow: customer select
+    S_EDIT_TIME,        # Edit flow: time filter
+    S_EDIT_PAGE,        # Edit flow: paginated list
+    S_EDIT_FIELD,       # Edit flow: choose field
+    S_EDIT_NEWVAL,      # Edit flow: enter new value
+    S_EDIT_CONFIRM,     # Edit flow: confirm change
 
-    S_DELETE_SELECT,S_DELETE_CONFIRM,
+    S_DELETE_SELECT,    # Delete flow: customer select
+    S_DELETE_CONFIRM,   # Delete flow: confirm delete
 
-    S_VIEW_CUSTOMER,S_VIEW_TIME,    S_VIEW_PAGE,
+    S_VIEW_CUSTOMER,    # View flow: customer select
+    S_VIEW_TIME,        # View flow: time filter
+    S_VIEW_PAGE,        # View flow: paginated list
 ) = range(18)
 
-# ───────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────
 #  SALES MENU
-# ───────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────
 async def show_sales_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.callback_query:
         await update.callback_query.answer()
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("➕ Add Sale",    callback_data="add_sale")],
-        [InlineKeyboardButton("👀 View Sales",  callback_data="view_sales")],
-        [InlineKeyboardButton("✏️ Edit Sale",   callback_data="edit_sale")],
-        [InlineKeyboardButton("🗑️ Remove Sale", callback_data="remove_sale")],
-        [InlineKeyboardButton("🔙 Main Menu",   callback_data="main_menu")],
-    ])
-    msg = "Sales: choose an action"
-    if update.callback_query:
-        await update.callback_query.edit_message_text(msg, reply_markup=kb)
-    else:
-        await update.message.reply_text(msg, reply_markup=kb)
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("➕ Add Sale",    callback_data="add_sale")],
+            [InlineKeyboardButton("👀 View Sales",  callback_data="view_sales")],
+            [InlineKeyboardButton("✏️ Edit Sale",   callback_data="edit_sale")],
+            [InlineKeyboardButton("🗑️ Remove Sale", callback_data="remove_sale")],
+            [InlineKeyboardButton("🔙 Main Menu",   callback_data="main_menu")],
+        ])
+        await update.callback_query.edit_message_text(
+            "Sales: choose an action", reply_markup=kb
+        )
 
-# ======================================================================
-#                                ADD FLOW
-# ======================================================================
+# ────────────────────────────────────────────────────────────────
+#  ADD FLOW
+# ────────────────────────────────────────────────────────────────
 @require_unlock
 async def add_sale(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     customers = secure_db.all("customers")
     if not customers:
         await update.callback_query.edit_message_text(
-            "No customers configured.",
-            reply_markup=InlineKeyboardMarkup(
-                [[InlineKeyboardButton("🔙 Back", callback_data="sales_menu")]]
-            ),
+            "No customers found.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="sales_menu")]])
         )
         return ConversationHandler.END
 
     buttons = [InlineKeyboardButton(f"{c['name']} ({c['currency']})",
-                                    callback_data=f"sale_cust_{c.doc_id}")
-               for c in customers]
-    rows = [buttons[i:i+2] for i in range(0, len(buttons), 2)]
+                                    callback_data=f"sale_cust_{c.doc_id}") for c in customers]
+    rows = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
     rows.append([InlineKeyboardButton("🔙 Back", callback_data="sales_menu")])
-    await update.callback_query.edit_message_text("Select customer:",
-                                                  reply_markup=InlineKeyboardMarkup(rows))
+    await update.callback_query.edit_message_text("Select customer:", reply_markup=InlineKeyboardMarkup(rows))
     return S_CUST_SELECT
 
 async def get_sale_customer(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -93,20 +101,16 @@ async def get_sale_customer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     stores = secure_db.all("stores")
     if not stores:
         await update.callback_query.edit_message_text(
-            "No stores configured.",
-            reply_markup=InlineKeyboardMarkup(
-                [[InlineKeyboardButton("🔙 Back", callback_data="sales_menu")]]
-            ),
+            "No stores found.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="sales_menu")]])
         )
         return ConversationHandler.END
 
     buttons = [InlineKeyboardButton(f"{s['name']} ({s['currency']})",
-                                    callback_data=f"sale_store_{s.doc_id}")
-               for s in stores]
-    rows = [buttons[i:i+2] for i in range(0, len(buttons), 2)]
+                                    callback_data=f"sale_store_{s.doc_id}") for s in stores]
+    rows = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
     rows.append([InlineKeyboardButton("🔙 Back", callback_data="sales_menu")])
-    await update.callback_query.edit_message_text("Select store:",
-                                                  reply_markup=InlineKeyboardMarkup(rows))
+    await update.callback_query.edit_message_text("Select store:", reply_markup=InlineKeyboardMarkup(rows))
     return S_STORE_SELECT
 
 async def get_sale_store(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -114,59 +118,53 @@ async def get_sale_store(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sid = int(update.callback_query.data.split("_")[-1])
     context.user_data["sale_store"] = sid
 
-    # show inventory
-    q = Query()
-    inv_rows = secure_db.table("store_inventory").search(q.store_id == sid)
-    inv_txt = ("\n".join([f"• Item {r['item_id']}: {r['quantity']}"
-                          for r in inv_rows]) or "No inventory.")
+    # Show store inventory
+    Inventory = Query()
+    inv_rows = secure_db.table("store_inventory").search(Inventory.store_id == sid)
+    if inv_rows:
+        lines = [f"• Item {r['item_id']}: {r['quantity']} units" for r in inv_rows]
+        inv_txt = "\n".join(lines)
+    else:
+        inv_txt = "No inventory found for this store."
+
     await update.callback_query.edit_message_text(
-        f"📦 Inventory:\n{inv_txt}\n\nEnter item_id,quantity (e.g. 7,3):"
+        f"📦 Current Inventory:\n{inv_txt}\n\nEnter item_id,quantity (e.g. 7,3):"
     )
     return S_ITEM_QTY
 
 async def get_sale_item_qty(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
-    if "," not in text:
-        await update.message.reply_text("❌ Format: item_id,quantity  (e.g. 7,3)")
-        return S_ITEM_QTY
-
-    item_part, qty_part = text.split(",", 1)
-    item_id = item_part.strip()          # ← keep **as text**
     try:
-        qty = int(qty_part.strip())
-        assert qty > 0
+        item_id, qty = map(int, text.split(","))
     except Exception:
-        await update.message.reply_text("❌ Quantity must be a positive integer.")
+        await update.message.reply_text("❌ Format: item_id,quantity  (e.g. 7,3)")
         return S_ITEM_QTY
 
     # stock check
     sid = context.user_data["sale_store"]
-    q   = Query()
-    rec = secure_db.table("store_inventory").get(
-        (q.store_id == sid) & (q.item_id == item_id)   # string-to-string match
-    )
+    q = Query()
+    rec = secure_db.table("store_inventory").get((q.store_id == sid) & (q.item_id == item_id))
     if not rec or rec["quantity"] < qty:
         avail = rec["quantity"] if rec else 0
         await update.message.reply_text(
-            f"❌ Not enough stock (available {avail}). Try again:"
+            f"❌ Not enough stock. Available: {avail}. Enter a new item_id,quantity:"
         )
         return S_ITEM_QTY
 
     context.user_data.update({"sale_item": item_id, "sale_qty": qty})
-    await update.message.reply_text("Unit price:")
+    await update.message.reply_text("Enter unit price:")
     return S_PRICE
 
 async def get_sale_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        price = float(update.message.text)
-        assert price >= 0
+        price = float(update.message.text.strip())
     except Exception:
         await update.message.reply_text("Enter a numeric price:")
         return S_PRICE
 
     context.user_data["sale_price"] = price
     kb = InlineKeyboardMarkup([[InlineKeyboardButton("➖ Skip", callback_data="fee_skip")]])
-    await update.message.reply_text("Handling fee (or Skip):", reply_markup=kb)
+    await update.message.reply_text("Handling fee amount (or Skip):", reply_markup=kb)
     return S_FEE
 
 async def get_sale_fee(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -175,55 +173,44 @@ async def get_sale_fee(update: Update, context: ContextTypes.DEFAULT_TYPE):
         fee = 0.0
     else:
         try:
-            fee = float(update.message.text)
-            assert fee >= 0
+            fee = float(update.message.text.strip())
         except Exception:
-            await update.message.reply_text("Numeric fee or press Skip:")
+            await update.message.reply_text("Enter a numeric fee or press Skip:")
             return S_FEE
+
     context.user_data["sale_fee"] = fee
     kb = InlineKeyboardMarkup([[InlineKeyboardButton("➖ Skip", callback_data="note_skip")]])
     await update.message.reply_text("Optional note (or Skip):", reply_markup=kb)
     return S_NOTE
 
 async def get_sale_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Determine note from callback or message
     if update.callback_query and update.callback_query.data == "note_skip":
         await update.callback_query.answer()
         note = ""
     else:
         note = update.message.text.strip()
-    context.user_data["sale_note"] = note
 
-   # Build the summary
     d = context.user_data
-    cust  = secure_db.table("customers").get(doc_id=d["sale_customer"])
+    cust = secure_db.table("customers").get(doc_id=d["sale_customer"])
     store = secure_db.table("stores").get(doc_id=d["sale_store"])
-    cur   = store["currency"]
     total = d["sale_qty"] * d["sale_price"]
-    total_fee = d["sale_fee"] * d["sale_qty"]
 
     summary = (
         f"✅ **Confirm Sale**\n"
         f"Customer: {cust['name']}\n"
-        f"Store: {store['name']} ({cur})\n"
-        f"Item {d['sale_item']} ×{d['sale_qty']}\n"
-        f"Unit:  {fmt_money(d['sale_price'], cur)}\n"
-        f"Total: {fmt_money(total, cur)}\n"
-        f"Fee:   {fmt_money(total_fee, cur)}\n"
-        f"Note:  {note or '—'}\n\nConfirm?"
+        f"Store: {store['name']}\n"
+        f"Item {d['sale_item']}  x{d['sale_qty']}\n"
+        f"Unit Price: {d['sale_price']:.2f} {store['currency']}\n"
+        f"Total: {total:.2f} {store['currency']}\n"
+        f"Handling Fee: {d['sale_fee']:.2f} {store['currency']}\n"
+        f"Note: {note or '—'}\n\nConfirm?"
     )
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("✅ Yes", callback_data="sale_yes"),
          InlineKeyboardButton("❌ No",  callback_data="sale_no")]
     ])
-
-    # **BRANCH** on callback vs message
-    if update.callback_query:
-        # edit the existing prompt
-        await update.callback_query.edit_message_text(summary, reply_markup=kb)
-    else:
-        await update.message.reply_text(summary, reply_markup=kb)
-
+    await update.message.reply_text(summary, reply_markup=kb)
+    d["sale_note"] = note
     return S_CONFIRM
 
 @require_unlock
@@ -233,17 +220,18 @@ async def confirm_sale(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_sales_menu(update, context)
         return ConversationHandler.END
 
-    d   = context.user_data
+    d = context.user_data
     cur = secure_db.table("stores").get(doc_id=d["sale_store"])["currency"]
-    total_fee = d["sale_fee"] * d["sale_qty"]
+    total = d["sale_qty"] * d["sale_price"]
 
+    # Save the sale and get the doc_id
     sale_id = secure_db.insert("sales", {
         "customer_id": d["sale_customer"],
         "store_id":    d["sale_store"],
         "item_id":     d["sale_item"],
         "quantity":    d["sale_qty"],
         "unit_price":  d["sale_price"],
-        "handling_fee": total_fee,  # Store total fee for all units
+        "handling_fee":d["sale_fee"],
         "note":        d["sale_note"],
         "currency":    cur,
         "timestamp":   datetime.utcnow().isoformat(),
@@ -251,41 +239,51 @@ async def confirm_sale(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # deduct inventory
     q = Query()
-    rec = secure_db.table("store_inventory").get(
-        (q.store_id == d["sale_store"]) & (q.item_id == d["sale_item"])
-    )
+    rec = secure_db.table("store_inventory").get((q.store_id == d["sale_store"]) & (q.item_id == d["sale_item"]))
     if rec:
-        secure_db.update("store_inventory",
-                         {"quantity": rec["quantity"] - d["sale_qty"]},
-                         [rec.doc_id])
+        secure_db.update("store_inventory", {"quantity": rec["quantity"] - d["sale_qty"]}, [rec.doc_id])
 
-    # credit handling fee to store
-    if total_fee > 0:
+    # credit handling fee
+    if d["sale_fee"] > 0:
         secure_db.insert("store_payments", {
             "store_id": d["sale_store"],
-            "amount":   total_fee,
+            "amount":   d["sale_fee"],
             "currency": cur,
             "note":     "Handling fee for customer sale",
             "timestamp":datetime.utcnow().isoformat(),
         })
 
-    # 🔥 Ledger entry: charge customer (sale + total fee)
-    total_charge = d["sale_qty"] * d["sale_price"] + total_fee
+    # LEDGER PATCH: Add customer ledger entry
     add_ledger_entry(
-        account_type="customer",
-        account_id=d["sale_customer"],
-        amount=-total_charge,
-        currency=cur,
-        related_id="sale:" + str(sale_id),
-        note=f"Sale {d['sale_item']} ×{d['sale_qty']} + handling fee"
+        "customer",                # account_type
+        d["sale_customer"],        # account_id
+        "sale",                    # entry_type
+        sale_id,                   # related_id
+        total * -1,                # amount (customer is debited the sale value)
+        cur,                       # currency (from the store record)
+        d.get("sale_note", ""),    # note
     )
 
+    # LEDGER PATCH: Add store ledger entry for handling fee
+    if d["sale_fee"] > 0:
+        add_ledger_entry(
+            "store",
+            d["sale_store"],
+            "fee",
+            sale_id,
+            d["sale_fee"],
+            cur,
+            "Handling fee for customer sale"
+        )
+
     await update.callback_query.edit_message_text(
-        "✅ Sale recorded & inventory updated.",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back",
-                                                                 callback_data="sales_menu")]])
+        "✅ Sale recorded and inventory updated.",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="sales_menu")]])
     )
     return ConversationHandler.END
+
+# (No changes to edit/delete/view logic in this output, since the question was only about add/confirm)
+# Paste your original edit/delete/view handlers here as needed.
 
 # ======================================================================
 #                                EDIT FLOW
