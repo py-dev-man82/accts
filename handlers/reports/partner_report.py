@@ -1,5 +1,3 @@
-# handlers/reports/partner_report.py
-
 import logging
 from datetime import datetime, timedelta
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -12,9 +10,7 @@ from telegram.ext import (
 )
 from secure_db import secure_db
 from handlers.utils import require_unlock, fmt_money, fmt_date
-from handlers.owner import MARKET_PRICES
 
-# Conversation states (mirroring customer_report)
 (
     PARTNER_SELECT,
     DATE_RANGE_SELECT,
@@ -23,7 +19,6 @@ from handlers.owner import MARKET_PRICES
     REPORT_PAGE,
 ) = range(5)
 
-# Items per page for pagination
 _PAGE_SIZE = 8
 
 @require_unlock
@@ -145,7 +140,7 @@ async def show_partner_report(update: Update, context: ContextTypes.DEFAULT_TYPE
         if c["partner_id"] == pid and start_date <= datetime.strptime(c["date"], "%d%m%Y") <= end_date
     ]
 
-    # Inventory
+    # Inventory & market value lookup (per live DB)
     inventory = {}
     for c in all_costs:
         inventory.setdefault(c["item_id"], 0)
@@ -154,9 +149,12 @@ async def show_partner_report(update: Update, context: ContextTypes.DEFAULT_TYPE
         inventory.setdefault(s["item_id"], 0)
         inventory[s["item_id"]] -= s["quantity"]
 
-    # Inventory valuation
-    inv_values = {item_id: qty * MARKET_PRICES.get(str(item_id), 0.0)
-                  for item_id, qty in inventory.items()}
+    inv_values = {}
+    for item_id, qty in inventory.items():
+        # Live lookup from items table (item_id should be doc_id)
+        item_rec = secure_db.table("items").get(doc_id=int(item_id))
+        price = item_rec.get("current_price", 0.0) if item_rec else 0.0
+        inv_values[item_id] = qty * price
     total_inventory_value = sum(inv_values.values())
 
     # Totals
@@ -168,14 +166,12 @@ async def show_partner_report(update: Update, context: ContextTypes.DEFAULT_TYPE
     balance            = total_sales - total_costs - total_payments_loc - total_fees
     total_cash_position = balance + total_inventory_value
 
-    # Pagination per section
     sales_page,    sales_count    = _paginate(all_sales,    page) if scope in ["full","sales"]     else ([],0)
     payouts_page,  payouts_count  = _paginate(all_payments, page) if scope in ["full","payments"]  else ([],0)
     costs_page,    costs_count    = _paginate(all_costs,    page) if scope in ["full","costs"]     else ([],0)
     inv_items                     = list(inventory.items())
     inv_page,     inv_count       = _paginate(inv_items,     page) if scope in ["full","inventory"] else ([],0)
 
-    # Build lines
     lines = [
         f"📄 *Report — {partner['name']}*",
         f"Period: {fmt_date(start_date.strftime('%d%m%Y'))} → {fmt_date(end_date.strftime('%d%m%Y'))}",
@@ -233,7 +229,8 @@ async def show_partner_report(update: Update, context: ContextTypes.DEFAULT_TYPE
         lines.append("\n📦 *Inventory*")
         if inv_page:
             for item_id, qty in inv_page:
-                price = MARKET_PRICES.get(str(item_id), 0.0)
+                item_rec = secure_db.table("items").get(doc_id=int(item_id))
+                price = item_rec.get("current_price", 0.0) if item_rec else 0.0
                 value = inv_values.get(item_id, 0.0)
                 lines.append(
                     f"• Item {item_id}: {qty} units × {fmt_money(price, partner['currency'])} = {fmt_money(value, partner['currency'])}"
@@ -247,7 +244,6 @@ async def show_partner_report(update: Update, context: ContextTypes.DEFAULT_TYPE
     lines.append(f"\n📊 *Balance:* {fmt_money(balance, partner['currency'])}")
     lines.append(f"📊 *Total Cash Position:* {fmt_money(total_cash_position, partner['currency'])}")
 
-    # NAVIGATION
     total_items_current = {
         "sales":    sales_count,
         "payments": payouts_count,
@@ -281,7 +277,6 @@ async def paginate_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @require_unlock
 async def export_pdf_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Export current partner report to PDF (implementation parallels customer_report)."""
     await update.callback_query.answer()
     await update.callback_query.edit_message_text("🖨️ PDF export for partner report coming soon!")
     return REPORT_PAGE
