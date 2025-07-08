@@ -209,7 +209,6 @@ async def paginate_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def export_pdf_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Export the current report view as a PDF and send it."""
     await update.callback_query.answer()
-    # Rebuild full report text (no pagination) for PDF
     cid = context.user_data.get('customer_id')
     customer = secure_db.table('customers').get(doc_id=cid)
     start = context.user_data.get('start_date')
@@ -230,12 +229,12 @@ async def export_pdf_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Header
     pdf.setFont('Helvetica-Bold', 14)
-    pdf.drawString(50, y, f'Report — {customer['name']}')  # noqa: nested quotes
+    pdf.drawString(50, y, f"Report — {customer['name']}")
     y -= 20
     pdf.setFont('Helvetica', 10)
-    pdf.drawString(50, y, f'Period: {fmt_date(start.strftime('%d%m%Y'))} → {fmt_date(end.strftime('%d%m%Y'))}')  # noqa
+    pdf.drawString(50, y, f"Period: {fmt_date(start.strftime('%d%m%Y'))} → {fmt_date(end.strftime('%d%m%Y'))}")
     y -= 15
-    pdf.drawString(50, y, f'Currency: {customer['currency']}')  # noqa
+    pdf.drawString(50, y, f"Currency: {customer['currency']}")
     y -= 30
 
     if scope in ('full','sales'):
@@ -252,7 +251,7 @@ async def export_pdf_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pdf.showPage(); y=height-50
         total_sales = sum(s['quantity']*s['unit_price'] for s in all_sales)
         pdf.setFont('Helvetica-Bold',10)
-        pdf.drawString(50, y, f'Total Sales: {fmt_money(total_sales,customer['currency'])}')  # noqa
+        pdf.drawString(50, y, f"Total Sales: {fmt_money(total_sales,customer['currency'])}")
         y -= 30
 
     if scope in ('full','payments'):
@@ -271,14 +270,14 @@ async def export_pdf_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
         total_local = sum(p['local_amt'] for p in all_payments)
         total_usd   = sum(p['usd_amt']    for p in all_payments)
         pdf.setFont('Helvetica-Bold',10)
-        pdf.drawString(50, y, f'Total Payments: {fmt_money(total_local,customer['currency'])}')  # noqa
+        pdf.drawString(50, y, f"Total Payments: {fmt_money(total_local,customer['currency'])}")
         y -= 15
-        pdf.drawString(50, y, f'Total USD Received: {fmt_money(total_usd,'USD')}')  # noqa
+        pdf.drawString(50, y, f"Total USD Received: {fmt_money(total_usd,'USD')}")
         y -= 30
 
     balance = sum(s['quantity']*s['unit_price'] for s in all_sales) - sum(p['local_amt'] for p in all_payments)
     pdf.setFont('Helvetica-Bold',12)
-    pdf.drawString(50, y, f'Balance: {fmt_money(balance,customer['currency'])}')  # noqa
+    pdf.drawString(50, y, f"Balance: {fmt_money(balance,customer['currency'])}")
 
     pdf.showPage()
     pdf.save()
