@@ -194,7 +194,11 @@ async def show_partner_report(update: Update, context: ContextTypes.DEFAULT_TYPE
             inventory[item_id] -= details["qty"]
 
     # Totals
-    total_sales = sum(s["quantity"] * s["unit_price"] for s in all_sales)
+        total_sales = sum(
+        detail["qty"] * detail["unit_price"]
+        for sale in all_sales
+        for detail in sale["items"].values()
+    )
     total_payments = sum(p["local_amt"] for p in all_payouts)
     total_costs = sum(c["quantity"] * c["cost"] for c in all_costs)
 
