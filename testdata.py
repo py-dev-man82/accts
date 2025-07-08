@@ -90,16 +90,11 @@ def generate_stockins(entries=25, partners=None, stores=None):
     from tinydb import Query
     Q = Query()
     for _ in range(entries):
-    """Generate stock-in entries and update store inventory"""
-    print(f"📦 Adding {entries} stock-in entries...")
-    Q = __import__('tinydb').Query
-    for _ in range(entries):
         partner_id = random.choice(list(partners.values()))
         store_id = random.choice(list(stores.values()))
         item_id = random.choice([1, 2])
         qty = random.randint(10, 100)
         cost = ITEM_COSTS[item_id]
-        # Insert partner inventory
         secure_db.insert('partner_inventory', {
             'partner_id': partner_id,
             'store_id': store_id,
@@ -110,7 +105,6 @@ def generate_stockins(entries=25, partners=None, stores=None):
             'date': random_date_within_weeks(6),
             'timestamp': datetime.utcnow().isoformat()
         })
-        # Update store inventory
         existing = secure_db.table('store_inventory').get((Q.store_id == store_id) & (Q.item_id == item_id))
         if existing:
             secure_db.update('store_inventory', {'quantity': existing['quantity'] + qty}, [existing.doc_id])
@@ -131,11 +125,6 @@ def generate_sales_and_payments(customers, stores):
     from tinydb import Query
     Q = Query()
     for cust_name, cust_id in customers.items():
-    """Generate sales + payments for all customers"""
-    print(f"💰 Adding sales & payments for customers...")
-
-    Q = __import__('tinydb').Query
-    for cust_name, cust_id in customers.items():
         for _ in range(8):
             store_id = random.choice(list(stores.values()))
             item_id = random.choice([1, 2])
@@ -147,7 +136,6 @@ def generate_sales_and_payments(customers, stores):
             else:
                 sale_type = 'owner'
                 handling_fee = HANDLING_FEES[item_id]
-            # Insert sale
             secure_db.insert('sales', {
                 'customer_id': cust_id,
                 'store_id': store_id,
@@ -161,7 +149,6 @@ def generate_sales_and_payments(customers, stores):
                 'date': random_date_within_weeks(6),
                 'timestamp': datetime.utcnow().isoformat()
             })
-            # Deduct from store inventory
             inv = secure_db.table('store_inventory').get((Q.store_id == store_id) & (Q.item_id == item_id))
             if inv and inv['quantity'] >= qty:
                 secure_db.update('store_inventory', {'quantity': inv['quantity'] - qty}, [inv.doc_id])
@@ -187,10 +174,6 @@ def generate_partner_sales(partners, entries_per_partner=8):
     print(f"📑 Adding {entries_per_partner} partner sales per partner...")
     from tinydb import Query
     Q = Query()
-    for pname, pid in partners.items():
-    """Generate partner sales and adjust inventory"""
-    print(f"📑 Adding {entries_per_partner} partner sales per partner...")
-    Q = __import__('tinydb').Query
     for pname, pid in partners.items():
         for _ in range(entries_per_partner):
             item_id = random.choice([1, 2])
@@ -239,12 +222,12 @@ def main():
     choice = input("⚠️ Reset database before generating? (y/n): ").strip().lower()
     if choice == 'y':
         reset_database()
-    action = input("⚠️ Do you want to exit or continue? (exit/continue): ").strip().lower()
-    if action == 'exit':
+    action = input("⚠️ Press 'x' to exit or 'c' to continue: ").strip().lower()
+    if action == 'x':
         print("🛑 Exiting without generating test data.")
         sys.exit(0)
-    elif action != 'continue':
-        print("⚠️ Invalid option. Exiting.")
+    elif action != 'c':
+        print("⚠️ Invalid key. Exiting.")
         sys.exit(1)
 
     owner_customers = ensure_customers(OWNER_CUSTOMERS, label="owner")
