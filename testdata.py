@@ -87,6 +87,11 @@ def ensure_stores():
 def generate_stockins(entries=25, partners=None, stores=None):
     """Generate stock-in entries and update store inventory"""
     print(f"📦 Adding {entries} stock-in entries...")
+    from tinydb import Query
+    Q = Query()
+    for _ in range(entries):
+    """Generate stock-in entries and update store inventory"""
+    print(f"📦 Adding {entries} stock-in entries...")
     Q = __import__('tinydb').Query
     for _ in range(entries):
         partner_id = random.choice(list(partners.values()))
@@ -120,6 +125,12 @@ def generate_stockins(entries=25, partners=None, stores=None):
 
 
 def generate_sales_and_payments(customers, stores):
+    """Generate sales + payments for all customers"""
+    print(f"💰 Adding sales & payments for customers...")
+
+    from tinydb import Query
+    Q = Query()
+    for cust_name, cust_id in customers.items():
     """Generate sales + payments for all customers"""
     print(f"💰 Adding sales & payments for customers...")
 
@@ -172,6 +183,11 @@ def generate_sales_and_payments(customers, stores):
 
 
 def generate_partner_sales(partners, entries_per_partner=8):
+    """Generate partner sales and adjust inventory"""
+    print(f"📑 Adding {entries_per_partner} partner sales per partner...")
+    from tinydb import Query
+    Q = Query()
+    for pname, pid in partners.items():
     """Generate partner sales and adjust inventory"""
     print(f"📑 Adding {entries_per_partner} partner sales per partner...")
     Q = __import__('tinydb').Query
