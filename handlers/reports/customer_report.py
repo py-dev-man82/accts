@@ -198,16 +198,23 @@ async def show_customer_report(update: Update, context: ContextTypes.DEFAULT_TYP
         f"Currency: {currency}\n"
     ]
 
-    if scope in ["full", "sales"]:
-        lines.append("🛒 *Sales*")
-        if sales_page:
-            for s in sales_page:
-                store = secure_db.table("stores").get(doc_id=s.get("store_id")) if s.get("store_id") else None
-                store_str = f"@{store['name']}" if store else ""
-                line = f"• {fmt_date(s['date'])}: {fmt_money(-s['amount'], currency)} {store_str}"
-                if s.get('note'):
-                    line += f"  📝 {s['note']}"
-                lines.append(line)
+if scope in ["full", "sales"]:
+    lines.append("🛒 *Sales*")
+    if sales_page:
+        for s in sales_page:
+            store = secure_db.table("stores").get(doc_id=s.get("store_id")) if s.get("store_id") else None
+            store_str = f"@{store['name']}" if store else ""
+            line = f"• {fmt_date(s['date'])}: {fmt_money(-s['amount'], currency)} {store_str}"
+            # Only show the note if it does NOT mention "handling fee" (any case)
+            note = s.get('note', '')
+            if note and "handling fee" not in note.lower():
+                line += f"  📝 {note}"
+            lines.append(line)
+    else:
+        lines.append("  (No sales on this page)")
+    if page == 0:
+        lines.append(f"📊 *Total Sales:* {fmt_money(total_sales, currency)}")
+
         else:
             lines.append("  (No sales on this page)")
         if page == 0:
