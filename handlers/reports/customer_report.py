@@ -1,5 +1,3 @@
-# handlers/reports/customer_report.py
-
 import logging
 from datetime import datetime, timedelta
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -12,6 +10,7 @@ from telegram.ext import (
 )
 from secure_db import secure_db
 from handlers.utils import require_unlock, fmt_money, fmt_date
+from handlers.ledger import get_ledger, get_balance
 
 # Conversation states
 (
@@ -22,7 +21,6 @@ from handlers.utils import require_unlock, fmt_money, fmt_date
     REPORT_PAGE,
 ) = range(5)
 
-# Number of items per page
 _PAGE_SIZE = 8
 
 @require_unlock
@@ -107,10 +105,21 @@ async def choose_report_scope(update: Update, context: ContextTypes.DEFAULT_TYPE
     await update.callback_query.edit_message_text("Choose report scope:", reply_markup=kb)
     return REPORT_SCOPE_SELECT
 
-# Helper for pagination
 def _paginate(items, page):
     start = page * _PAGE_SIZE
     return items[start:start + _PAGE_SIZE], len(items)
+
+def _filter_ledger(entries, start_date, end_date):
+    # entries from get_ledger() are already sorted oldest to newest
+    out = []
+    for e in entries:
+        try:
+            d = datetime.strptime(e["date"], "%d%m%Y")
+        except Exception:
+            continue
+        if start_date <= d <= end_date:
+            out.append(e)
+    return out
 
 @require_unlock
 async def show_customer_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -125,59 +134,61 @@ async def show_customer_report(update: Update, context: ContextTypes.DEFAULT_TYP
     end_date = context.user_data["end_date"]
     page = context.user_data["page"]
     customer = secure_db.table("customers").get(doc_id=cid)
+    currency = customer['currency']
 
-    all_sales = [
-        s for s in secure_db.all("sales")
-        if s["customer_id"] == cid and start_date <= datetime.fromisoformat(s["timestamp"]) <= end_date
-    ]
-    all_payments = [
-        p for p in secure_db.all("customer_payments")
-        if p["customer_id"] == cid and start_date <= datetime.fromisoformat(p["timestamp"]) <= end_date
-    ]
+    # Get all ledger entries for this customer in date range
+    ledger_entries = get_ledger("customer", cid)
+    filtered_entries = _filter_ledger(ledger_entries, start_date, end_date)
 
-    total_sales = sum(s["quantity"] * s["unit_price"] for s in all_sales)
-    total_payments_local = sum(p["local_amt"] for p in all_payments)
-    total_payments_usd = sum(p["usd_amt"] for p in all_payments)
-    balance = total_sales - total_payments_local
+    # Split by type
+    sales = [e for e in filtered_entries if e["entry_type"] == "sale"]
+    payments = [e for e in filtered_entries if e["entry_type"] == "payment"]
 
-    sales_page, sales_count = _paginate(all_sales, page) if scope in ["full", "sales"] else ([], 0)
-    payments_page, payments_count = _paginate(all_payments, page) if scope in ["full", "payments"] else ([], 0)
+    total_sales = sum(-e["amount"] for e in sales)   # sales recorded as negative
+    total_payments_local = sum(e["amount"] for e in payments)
+    # Optionally: extract USD received, fee, fx if present in note or amount fields
+    # But by default, only local currency shown (add fields as needed)
+
+    balance = get_balance("customer", cid)  # shows current, not just in range
+
+    sales_page, sales_count = _paginate(sales, page) if scope in ["full", "sales"] else ([], 0)
+    payments_page, payments_count = _paginate(payments, page) if scope in ["full", "payments"] else ([], 0)
 
     lines = [
         f"📄 *Report — {customer['name']}*",
         f"Period: {fmt_date(start_date.strftime('%d%m%Y'))} → {fmt_date(end_date.strftime('%d%m%Y'))}",
-        f"Currency: {customer['currency']}\n"
+        f"Currency: {currency}\n"
     ]
 
     if scope in ["full", "sales"]:
         lines.append("🛒 *Sales*")
         if sales_page:
             for s in sales_page:
-                date = datetime.fromisoformat(s['timestamp']).strftime('%d%m%Y')
                 lines.append(
-                    f"• {fmt_date(date)}: Item {s['item_id']} x{s['quantity']} @ {fmt_money(s['unit_price'], customer['currency'])} = {fmt_money(s['quantity'] * s['unit_price'], customer['currency'])}"
+                    f"• {fmt_date(s['date'])}: {fmt_money(-s['amount'], currency)}"
+                    + (f"  📝 {s['note']}" if s.get('note') else "")
                 )
         else:
             lines.append("  (No sales on this page)")
         if page == 0:
-            lines.append(f"📊 *Total Sales:* {fmt_money(total_sales, customer['currency'])}")
+            lines.append(f"📊 *Total Sales:* {fmt_money(total_sales, currency)}")
 
     if scope in ["full", "payments"]:
         lines.append("\n💵 *Payments*")
         if payments_page:
             for p in payments_page:
-                date = datetime.fromisoformat(p['timestamp']).strftime('%d%m%Y')
-                fee_perc = p.get("fee_perc", 0.0)
+                # If you have USD, FX, or fee fields in ledger notes, parse and show here.
                 lines.append(
-                    f"• {fmt_date(date)}: {fmt_money(p['local_amt'], customer['currency'])} (Fee: {fee_perc:.1f}% = {fmt_money(p['fee_amt'], customer['currency'])}) → {fmt_money(p['usd_amt'], 'USD')}"
+                    f"• {fmt_date(p['date'])}: {fmt_money(p['amount'], currency)}"
+                    + (f"  📝 {p['note']}" if p.get('note') else "")
                 )
         else:
             lines.append("  (No payments on this page)")
         if page == 0:
-            lines.append(f"📊 *Total Payments:* {fmt_money(total_payments_local, customer['currency'])}")
-            lines.append(f"📊 *Total USD Received:* {fmt_money(total_payments_usd, 'USD')}")
+            lines.append(f"📊 *Total Payments:* {fmt_money(total_payments_local, currency)}")
+            # Add total USD or FX rate if present in notes, or extend ledger schema
 
-    lines.append(f"\n📊 *Balance:* {fmt_money(balance, customer['currency'])}")
+    lines.append(f"\n📊 *Current Balance:* {fmt_money(balance, currency)}")
 
     # Navigation buttons: Prev, Next, Export PDF, Back
     nav = []
@@ -214,9 +225,12 @@ async def export_pdf_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     start = context.user_data.get('start_date')
     end = context.user_data.get('end_date')
     scope = context.user_data.get('scope')
+    currency = customer['currency']
 
-    all_sales = [s for s in secure_db.all('sales') if s['customer_id']==cid and start<=datetime.fromisoformat(s['timestamp'])<=end]
-    all_payments = [p for p in secure_db.all('customer_payments') if p['customer_id']==cid and start<=datetime.fromisoformat(p['timestamp'])<=end]
+    ledger_entries = get_ledger("customer", cid)
+    filtered_entries = _filter_ledger(ledger_entries, start, end)
+    sales = [e for e in filtered_entries if e["entry_type"] == "sale"]
+    payments = [e for e in filtered_entries if e["entry_type"] == "payment"]
 
     from io import BytesIO
     from reportlab.lib.pagesizes import letter
@@ -234,7 +248,7 @@ async def export_pdf_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pdf.setFont('Helvetica', 10)
     pdf.drawString(50, y, f"Period: {fmt_date(start.strftime('%d%m%Y'))} → {fmt_date(end.strftime('%d%m%Y'))}")
     y -= 15
-    pdf.drawString(50, y, f"Currency: {customer['currency']}")
+    pdf.drawString(50, y, f"Currency: {currency}")
     y -= 30
 
     if scope in ('full','sales'):
@@ -242,16 +256,17 @@ async def export_pdf_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pdf.drawString(50, y, 'Sales:')
         y -= 20
         pdf.setFont('Helvetica', 10)
-        for s in all_sales:
-            date = fmt_date(datetime.fromisoformat(s['timestamp']).strftime('%d%m%Y'))
-            line = f"{date}: Item {s['item_id']} x{s['quantity']} @ {fmt_money(s['unit_price'],customer['currency'])} = {fmt_money(s['quantity']*s['unit_price'],customer['currency'])}"
+        for s in sales:
+            line = f"{fmt_date(s['date'])}: {fmt_money(-s['amount'], currency)}"
+            if s.get('note'):
+                line += f"  Note: {s['note']}"
             pdf.drawString(60, y, line)
             y -= 15
             if y<50:
                 pdf.showPage(); y=height-50
-        total_sales = sum(s['quantity']*s['unit_price'] for s in all_sales)
+        total_sales = sum(-s['amount'] for s in sales)
         pdf.setFont('Helvetica-Bold',10)
-        pdf.drawString(50, y, f"Total Sales: {fmt_money(total_sales,customer['currency'])}")
+        pdf.drawString(50, y, f"Total Sales: {fmt_money(total_sales, currency)}")
         y -= 30
 
     if scope in ('full','payments'):
@@ -259,25 +274,22 @@ async def export_pdf_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pdf.drawString(50, y, 'Payments:')
         y -= 20
         pdf.setFont('Helvetica', 10)
-        for p in all_payments:
-            date = fmt_date(datetime.fromisoformat(p['timestamp']).strftime('%d%m%Y'))
-            fee_perc = p.get('fee_perc',0.0)
-            line = f"{date}: {fmt_money(p['local_amt'],customer['currency'])} (Fee: {fee_perc:.1f}% = {fmt_money(p['fee_amt'],customer['currency'])}) → {fmt_money(p['usd_amt'],'USD')}"
+        for p in payments:
+            line = f"{fmt_date(p['date'])}: {fmt_money(p['amount'], currency)}"
+            if p.get('note'):
+                line += f"  Note: {p['note']}"
             pdf.drawString(60, y, line)
             y -= 15
             if y<50:
                 pdf.showPage(); y=height-50
-        total_local = sum(p['local_amt'] for p in all_payments)
-        total_usd   = sum(p['usd_amt']    for p in all_payments)
+        total_local = sum(p['amount'] for p in payments)
         pdf.setFont('Helvetica-Bold',10)
-        pdf.drawString(50, y, f"Total Payments: {fmt_money(total_local,customer['currency'])}")
-        y -= 15
-        pdf.drawString(50, y, f"Total USD Received: {fmt_money(total_usd,'USD')}")
+        pdf.drawString(50, y, f"Total Payments: {fmt_money(total_local, currency)}")
         y -= 30
 
-    balance = sum(s['quantity']*s['unit_price'] for s in all_sales) - sum(p['local_amt'] for p in all_payments)
+    balance = get_balance("customer", cid)
     pdf.setFont('Helvetica-Bold',12)
-    pdf.drawString(50, y, f"Balance: {fmt_money(balance,customer['currency'])}")
+    pdf.drawString(50, y, f"Current Balance: {fmt_money(balance, currency)}")
 
     pdf.showPage()
     pdf.save()
@@ -288,7 +300,6 @@ async def export_pdf_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
         filename=f"report_{customer['name']}_{start.strftime('%Y%m%d')}.pdf"
     )
     return REPORT_PAGE
-
 
 def register_customer_report_handlers(app):
     logging.info("Registering customer_report handlers")
