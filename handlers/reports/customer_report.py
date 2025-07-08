@@ -12,7 +12,13 @@ from secure_db import secure_db
 from handlers.utils import require_unlock, fmt_money, fmt_date
 from handlers.ledger import get_ledger, get_balance
 
+# Utility to reset all report-related state
+def _reset_customer_report_state(context):
+    for k in ['customer_id', 'start_date', 'end_date', 'page', 'scope']:
+        context.user_data.pop(k, None)
+
 async def _goto_main_menu(update, context):
+    _reset_customer_report_state(context)
     from bot import start
     return await start(update, context)
 
@@ -31,11 +37,9 @@ def _is_general_customer(c):
     store_names = {s['name'] for s in secure_db.all("stores")}
     return c['name'] not in partner_names and c['name'] not in store_names
 
-
 @require_unlock
 async def show_customer_report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    for k in ['customer_id', 'start_date', 'end_date', 'page', 'scope']:
-        context.user_data.pop(k, None)
+    _reset_customer_report_state(context)
     logging.info("show_customer_report_menu called")
     customers = [c for c in secure_db.all("customers") if _is_general_customer(c)]
     if not customers:
@@ -198,10 +202,8 @@ async def show_customer_report(update: Update, context: ContextTypes.DEFAULT_TYP
         lines.append("🛒 *Sales*")
         if sales_page:
             for s in sales_page:
-                # Only show full sale value—NEVER display fee or mention "fee" anywhere
                 store = secure_db.table("stores").get(doc_id=s.get("store_id")) if s.get("store_id") else None
                 store_str = f"@{store['name']}" if store else ""
-                # Optional: If you want per-item/unit details, you can add here, but fee is always excluded.
                 line = f"• {fmt_date(s['date'])}: {fmt_money(-s['amount'], currency)} {store_str}"
                 if s.get('note'):
                     line += f"  📝 {s['note']}"
@@ -239,7 +241,7 @@ async def show_customer_report(update: Update, context: ContextTypes.DEFAULT_TYP
     if (page + 1) * _PAGE_SIZE < next_count:
         nav.append(InlineKeyboardButton("➡️ Next", callback_data="page_next"))
     nav.append(InlineKeyboardButton("📄 Export PDF", callback_data="export_pdf"))
-    nav.append(InlineKeyboardButton("🔙 Back", callback_data="customer_report_menu"))
+    nav.append(InlineKeyboardButton("👤 Select Another Customer", callback_data="customer_report_menu"))
     nav.append(InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu"))
 
     await update.callback_query.edit_message_text(
@@ -348,6 +350,7 @@ async def export_pdf_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
         document=buffer,
         filename=f"report_{customer['name']}_{start.strftime('%Y%m%d')}.pdf"
     )
+    _reset_customer_report_state(context)
     return REPORT_PAGE
 
 def register_customer_report_handlers(app):
