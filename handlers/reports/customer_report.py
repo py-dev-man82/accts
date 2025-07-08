@@ -169,7 +169,7 @@ async def show_customer_report(update: Update, context: ContextTypes.DEFAULT_TYP
                 date = datetime.fromisoformat(p['timestamp']).strftime('%d%m%Y')
                 fee_perc = p.get("fee_perc", 0.0)
                 lines.append(
-                    f"• {fmt_date(date)}: {fmt_money(p['local_amt'], customer['currency'])} (Fee: {fee_perc:.1f}% = {fmt_money(p['fee_amt'], customer['currency'])}) → {fmt_money(p['usd_amt'], 'USD')} @ {p['fx_rate']:.4f}"
+                    f"• {fmt_date(date)}: {fmt_money(p['local_amt'], customer['currency'])} (Fee: {fee_perc:.1f}% = {fmt_money(p['fee_amt'], customer['currency'])}) → {fmt_money(p['usd_amt'], 'USD')}"
                 )
         else:
             lines.append("  (No payments on this page)")
@@ -179,11 +179,13 @@ async def show_customer_report(update: Update, context: ContextTypes.DEFAULT_TYP
 
     lines.append(f"\n📊 *Balance:* {fmt_money(balance, customer['currency'])}")
 
+    # Navigation buttons: Prev, Next, Export PDF, Back
     nav = []
     if page > 0:
         nav.append(InlineKeyboardButton("⬅️ Prev", callback_data="page_prev"))
     if (page + 1) * _PAGE_SIZE < (sales_count if scope in ['full','sales'] else payments_count):
         nav.append(InlineKeyboardButton("➡️ Next", callback_data="page_next"))
+    nav.append(InlineKeyboardButton("📄 Export PDF", callback_data="export_pdf"))
     nav.append(InlineKeyboardButton("🔙 Back", callback_data="customer_report_menu"))
 
     await update.callback_query.edit_message_text(
@@ -198,10 +200,95 @@ async def paginate_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logging.info("paginate_report: %s", update.callback_query.data)
     await update.callback_query.answer()
     if update.callback_query.data == "page_next":
-        context.user_data["page"] += 1
+        context.user_data['page'] += 1
     elif update.callback_query.data == "page_prev":
-        context.user_data["page"] = max(0, context.user_data.get("page", 0) - 1)
+        context.user_data['page'] = max(0, context.user_data.get('page', 0) - 1)
     return await show_customer_report(update, context)
+
+@require_unlock
+async def export_pdf_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Export the current report view as a PDF and send it."""
+    await update.callback_query.answer()
+    # Rebuild full report text (no pagination) for PDF
+    cid = context.user_data.get('customer_id')
+    customer = secure_db.table('customers').get(doc_id=cid)
+    start = context.user_data.get('start_date')
+    end = context.user_data.get('end_date')
+    scope = context.user_data.get('scope')
+
+    all_sales = [s for s in secure_db.all('sales') if s['customer_id']==cid and start<=datetime.fromisoformat(s['timestamp'])<=end]
+    all_payments = [p for p in secure_db.all('customer_payments') if p['customer_id']==cid and start<=datetime.fromisoformat(p['timestamp'])<=end]
+
+    from io import BytesIO
+    from reportlab.lib.pagesizes import letter
+    from reportlab.pdfgen import canvas
+
+    buffer = BytesIO()
+    pdf = canvas.Canvas(buffer, pagesize=letter)
+    width, height = letter
+    y = height - 50
+
+    # Header
+    pdf.setFont('Helvetica-Bold', 14)
+    pdf.drawString(50, y, f'Report — {customer['name']}')  # noqa: nested quotes
+    y -= 20
+    pdf.setFont('Helvetica', 10)
+    pdf.drawString(50, y, f'Period: {fmt_date(start.strftime('%d%m%Y'))} → {fmt_date(end.strftime('%d%m%Y'))}')  # noqa
+    y -= 15
+    pdf.drawString(50, y, f'Currency: {customer['currency']}')  # noqa
+    y -= 30
+
+    if scope in ('full','sales'):
+        pdf.setFont('Helvetica-Bold', 12)
+        pdf.drawString(50, y, 'Sales:')
+        y -= 20
+        pdf.setFont('Helvetica', 10)
+        for s in all_sales:
+            date = fmt_date(datetime.fromisoformat(s['timestamp']).strftime('%d%m%Y'))
+            line = f"{date}: Item {s['item_id']} x{s['quantity']} @ {fmt_money(s['unit_price'],customer['currency'])} = {fmt_money(s['quantity']*s['unit_price'],customer['currency'])}"
+            pdf.drawString(60, y, line)
+            y -= 15
+            if y<50:
+                pdf.showPage(); y=height-50
+        total_sales = sum(s['quantity']*s['unit_price'] for s in all_sales)
+        pdf.setFont('Helvetica-Bold',10)
+        pdf.drawString(50, y, f'Total Sales: {fmt_money(total_sales,customer['currency'])}')  # noqa
+        y -= 30
+
+    if scope in ('full','payments'):
+        pdf.setFont('Helvetica-Bold', 12)
+        pdf.drawString(50, y, 'Payments:')
+        y -= 20
+        pdf.setFont('Helvetica', 10)
+        for p in all_payments:
+            date = fmt_date(datetime.fromisoformat(p['timestamp']).strftime('%d%m%Y'))
+            fee_perc = p.get('fee_perc',0.0)
+            line = f"{date}: {fmt_money(p['local_amt'],customer['currency'])} (Fee: {fee_perc:.1f}% = {fmt_money(p['fee_amt'],customer['currency'])}) → {fmt_money(p['usd_amt'],'USD')}"
+            pdf.drawString(60, y, line)
+            y -= 15
+            if y<50:
+                pdf.showPage(); y=height-50
+        total_local = sum(p['local_amt'] for p in all_payments)
+        total_usd   = sum(p['usd_amt']    for p in all_payments)
+        pdf.setFont('Helvetica-Bold',10)
+        pdf.drawString(50, y, f'Total Payments: {fmt_money(total_local,customer['currency'])}')  # noqa
+        y -= 15
+        pdf.drawString(50, y, f'Total USD Received: {fmt_money(total_usd,'USD')}')  # noqa
+        y -= 30
+
+    balance = sum(s['quantity']*s['unit_price'] for s in all_sales) - sum(p['local_amt'] for p in all_payments)
+    pdf.setFont('Helvetica-Bold',12)
+    pdf.drawString(50, y, f'Balance: {fmt_money(balance,customer['currency'])}')  # noqa
+
+    pdf.showPage()
+    pdf.save()
+    buffer.seek(0)
+
+    await update.callback_query.message.reply_document(
+        document=buffer,
+        filename=f"report_{customer['name']}_{start.strftime('%Y%m%d')}.pdf"
+    )
+    return REPORT_PAGE
 
 
 def register_customer_report_handlers(app):
@@ -209,28 +296,17 @@ def register_customer_report_handlers(app):
     conv = ConversationHandler(
         entry_points=[
             CallbackQueryHandler(show_customer_report_menu, pattern="^rep_cust$"),
-            CallbackQueryHandler(show_customer_report_menu, pattern="^customer_report_menu$")
+            CallbackQueryHandler(show_customer_report_menu, pattern="^customer_report_menu$"),
         ],
         states={
-            CUST_SELECT: [
-                CallbackQueryHandler(select_date_range, pattern="^custrep_"),
-                CallbackQueryHandler(show_customer_report_menu, pattern="^customer_report_menu$")
-            ],
-            DATE_RANGE_SELECT: [
-                CallbackQueryHandler(choose_report_scope, pattern="^daterange_"),
-                CallbackQueryHandler(show_customer_report_menu, pattern="^customer_report_menu$")
-            ],
-            CUSTOM_DATE_INPUT: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, save_custom_date),
-                CallbackQueryHandler(show_customer_report_menu, pattern="^customer_report_menu$")
-            ],
-            REPORT_SCOPE_SELECT: [
-                CallbackQueryHandler(show_customer_report, pattern="^scope_"),
-                CallbackQueryHandler(show_customer_report_menu, pattern="^customer_report_menu$")
-            ],
+            CUST_SELECT: [CallbackQueryHandler(select_date_range, pattern="^custrep_")],
+            DATE_RANGE_SELECT: [CallbackQueryHandler(choose_report_scope, pattern="^daterange_")],
+            CUSTOM_DATE_INPUT: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_custom_date)],
+            REPORT_SCOPE_SELECT: [CallbackQueryHandler(show_customer_report, pattern="^scope_")],
             REPORT_PAGE: [
                 CallbackQueryHandler(paginate_report, pattern="^page_(prev|next)$"),
-                CallbackQueryHandler(show_customer_report_menu, pattern="^customer_report_menu$")
+                CallbackQueryHandler(export_pdf_report, pattern="^export_pdf$"),
+                CallbackQueryHandler(show_customer_report_menu, pattern="^customer_report_menu$"),
             ],
         },
         fallbacks=[],
