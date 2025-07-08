@@ -458,7 +458,74 @@ async def del_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ╔══════════════════════════════════════════════════════════════╗
 # ║        ConversationHandlers and Registration                 ║
 # ╚══════════════════════════════════════════════════════════════╝
-# (all conversation handlers unchanged...)
+add_conv = ConversationHandler(
+    entry_points=[CallbackQueryHandler(add_stockin, pattern="^add_stockin$"),
+                  CommandHandler("add_stockin", add_stockin)],
+    states={
+        SI_PARTNER_SELECT:[CallbackQueryHandler(get_stockin_partner, pattern="^si_part_")],
+        SI_STORE_SELECT:  [CallbackQueryHandler(get_stockin_store,  pattern="^si_store_")],
+        SI_ITEM_ID:       [MessageHandler(filters.TEXT & ~filters.COMMAND, get_stockin_item)],
+        SI_QTY:           [MessageHandler(filters.TEXT & ~filters.COMMAND, get_stockin_qty)],
+        SI_COST:          [MessageHandler(filters.TEXT & ~filters.COMMAND, get_stockin_cost)],
+        SI_NOTE:          [CallbackQueryHandler(get_stockin_note, pattern="^note_skip$"),
+                           MessageHandler(filters.TEXT & ~filters.COMMAND, get_stockin_note)],
+        SI_DATE:          [CallbackQueryHandler(get_stockin_date, pattern="^date_skip$"),
+                           MessageHandler(filters.TEXT & ~filters.COMMAND, get_stockin_date)],
+        SI_CONFIRM:       [CallbackQueryHandler(confirm_stockin, pattern="^si_")],
+    },
+    fallbacks=[CommandHandler("cancel", show_stockin_menu)],
+    per_message=False,
+)
+
+view_conv = ConversationHandler(
+    entry_points=[CallbackQueryHandler(view_stockin_start, pattern="^view_stockin$")],
+    states={
+        SI_VIEW_PARTNER:[CallbackQueryHandler(view_choose_period, pattern="^si_view_part_"),
+                         CallbackQueryHandler(show_stockin_menu,  pattern="^stockin_menu$")],
+        SI_VIEW_TIME:   [CallbackQueryHandler(view_set_filter,    pattern="^view_time_"),
+                         CallbackQueryHandler(view_stockin_start, pattern="^view_stockin$")],
+        SI_VIEW_PAGE:   [CallbackQueryHandler(handle_view_pagination, pattern="^view_(prev|next)$"),
+                         CallbackQueryHandler(view_stockin_start,     pattern="^view_stockin$")],
+    },
+    fallbacks=[CommandHandler("cancel", show_stockin_menu)],
+    per_message=False,
+)
+
+edit_conv = ConversationHandler(
+    entry_points=[CallbackQueryHandler(edit_stockin_start, pattern="^edit_stockin$")],
+    states={
+        SI_EDIT_PARTNER:[CallbackQueryHandler(edit_choose_period, pattern="^si_edit_part_"),
+                         CallbackQueryHandler(show_stockin_menu,  pattern="^stockin_menu$")],
+        SI_EDIT_TIME:   [CallbackQueryHandler(edit_set_filter,    pattern="^edit_time_"),
+                         CallbackQueryHandler(edit_stockin_start, pattern="^edit_stockin$")],
+        SI_EDIT_PAGE:   [CallbackQueryHandler(handle_edit_pagination, pattern="^edit_(prev|next)$"),
+                         CallbackQueryHandler(edit_stockin_start,     pattern="^edit_stockin$"),
+                         MessageHandler(filters.Regex(r"^\d+$") & ~filters.COMMAND,
+                                        edit_pick_doc)],
+        SI_EDIT_FIELD:  [CallbackQueryHandler(get_edit_field, pattern="^edit_field_")],
+        SI_EDIT_NEWVAL: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_edit)],
+        SI_EDIT_CONFIRM:[CallbackQueryHandler(confirm_edit, pattern="^edit_conf_")],
+    },
+    fallbacks=[CommandHandler("cancel", show_stockin_menu)],
+    per_message=False,
+)
+
+del_conv = ConversationHandler(
+    entry_points=[CallbackQueryHandler(del_stockin_start, pattern="^remove_stockin$")],
+    states={
+        SI_DEL_PARTNER:[CallbackQueryHandler(del_choose_period,  pattern="^si_del_part_"),
+                        CallbackQueryHandler(show_stockin_menu,  pattern="^stockin_menu$")],
+        SI_DEL_TIME:   [CallbackQueryHandler(del_set_filter,     pattern="^del_time_"),
+                        CallbackQueryHandler(del_stockin_start,  pattern="^remove_stockin$")],
+        SI_DEL_PAGE:   [CallbackQueryHandler(handle_del_pagination, pattern="^del_(prev|next)$"),
+                        CallbackQueryHandler(del_stockin_start,      pattern="^remove_stockin$"),
+                        MessageHandler(filters.Regex(r"^\d+$") & ~filters.COMMAND,
+                                       del_pick_doc)],
+        SI_DEL_CONFIRM:[CallbackQueryHandler(del_confirm, pattern="^del_conf_")],
+    },
+    fallbacks=[CommandHandler("cancel", show_stockin_menu)],
+    per_message=False,
+)
 
 def register_stockin_handlers(app: Application):
     app.add_handler(CallbackQueryHandler(show_stockin_menu, pattern="^stockin_menu$"))
