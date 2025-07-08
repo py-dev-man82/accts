@@ -26,8 +26,14 @@ from handlers.payouts           import register_payout_handlers, show_payout_men
 from handlers.stockin           import register_stockin_handlers, show_stockin_menu
 from handlers.partner_sales     import register_partner_sales_handlers, show_partner_sales_menu
 
-# 🆕 New Customer Report module
+# Customer Report (already present)
 from handlers.reports.customer_report import register_customer_report_handlers
+
+# 🆕 Partner Report modules
+from handlers.reports.partner_report import (
+    register_partner_report_handlers,
+    show_partner_report_menu,
+)
 
 
 # 🆕 Admin-only Soft Restart Command
@@ -35,7 +41,6 @@ from handlers.reports.customer_report import register_customer_report_handlers
 async def restart_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("♻️ Bot is restarting…")
     logging.warning("⚠️ Admin issued /restart — restarting bot.")
-    # Relaunch bot in same venv
     venv_python = sys.executable
     bot_script   = os.path.abspath(sys.argv[0])
     subprocess.Popen([venv_python, bot_script, "child"])
@@ -65,13 +70,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ])
     if update.callback_query:
         await update.callback_query.answer()
-        await update.callback_query.edit_message_text(
-            "Main Menu: choose a section", reply_markup=kb
-        )
+        await update.callback_query.edit_message_text("Main Menu: choose a section", reply_markup=kb)
     else:
-        await update.message.reply_text(
-            "Main Menu: choose a section", reply_markup=kb
-        )
+        await update.message.reply_text("Main Menu: choose a section", reply_markup=kb)
 
 
 # 📊 Reports Menu
@@ -79,15 +80,12 @@ async def show_report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("📄 Customer Report", callback_data="rep_cust")],
-        # Placeholder for future reports
-        [InlineKeyboardButton("📄 Partner Report",  callback_data="rep_part")],
+        [InlineKeyboardButton("📄 Report — Partner", callback_data="rep_part")],
         [InlineKeyboardButton("📄 Store Report",    callback_data="rep_store")],
         [InlineKeyboardButton("📄 Owner Summary",   callback_data="rep_owner")],
         [InlineKeyboardButton("🔙 Back",            callback_data="main_menu")],
     ])
-    await update.callback_query.edit_message_text(
-        "Reports: choose a type", reply_markup=kb
-    )
+    await update.callback_query.edit_message_text("Reports: choose a type", reply_markup=kb)
 
 
 # 🔥 Main Bot Logic
@@ -98,14 +96,14 @@ async def run_bot():
     )
     app = ApplicationBuilder().token(config.BOT_TOKEN).build()
 
-    # Main menu + back button
+    # Main menu + back handler
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(start, pattern="^main_menu$"))
 
-    # Reports menu
+    # Reports menu handler
     app.add_handler(CallbackQueryHandler(show_report_menu, pattern="^report_menu$"))
 
-    # Register handlers
+    # Register core handlers
     register_customer_handlers(app)
     register_store_handlers(app)
     register_partner_handlers(app)
@@ -118,14 +116,18 @@ async def run_bot():
     register_partner_sales_handlers(app)
     app.add_handler(CallbackQueryHandler(show_partner_sales_menu, pattern="^partner_sales_menu$"))
 
-    # 🆕 Register Customer Report handlers
+    # Customer Report
     register_customer_report_handlers(app)
+
+    # 🆕 Partner Report
+    register_partner_report_handlers(app)
+    app.add_handler(CallbackQueryHandler(show_partner_report_menu, pattern="^rep_part$"))
 
     # Admin commands
     app.add_handler(CommandHandler("restart", restart_bot))
     app.add_handler(CommandHandler("kill", kill_bot))
 
-    # Start polling without closing loop
+    # Start polling
     await app.initialize()
     await app.start()
     await app.updater.start_polling()
