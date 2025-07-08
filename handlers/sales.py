@@ -121,18 +121,26 @@ async def get_sale_store(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return S_ITEM_QTY
 
 async def get_sale_item_qty(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    txt = update.message.text.strip()
-    try:
-        item_id, qty = map(int, txt.split(","))
-        assert qty > 0
-    except Exception:
-        await update.message.reply_text("❌ Format item_id,quantity (e.g. 7,3)")
+    text = update.message.text.strip()
+    if "," not in text:
+        await update.message.reply_text("❌ Format: item_id,quantity  (e.g. 7,3)")
         return S_ITEM_QTY
 
-    sid = context.user_data["sale_store"]
-    q = Query()
-    rec = secure_db.table("store_inventory").get((q.store_id == sid) &
-                                                 (q.item_id == item_id))
+    item_part, qty_part = text.split(",", 1)
+    item_id = item_part.strip()          # ← keep as str
+    try:
+        qty = int(qty_part.strip()); assert qty > 0
+    except Exception:
+        await update.message.reply_text("❌ Quantity must be a positive integer.")
+        return S_ITEM_QTY
+
+
+   sid = context.user_data["sale_store"]
+q   = Query()
+rec = secure_db.table("store_inventory").get(
+        (q.store_id == sid) & (q.item_id == item_id)   # ← item_id is str now
+)
+
     if not rec or rec["quantity"] < qty:
         avail = rec["quantity"] if rec else 0
         await update.message.reply_text(
