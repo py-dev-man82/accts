@@ -273,7 +273,7 @@ async def confirm_sale(update: Update, context: ContextTypes.DEFAULT_TYPE):
     total_charge = d["sale_qty"] * d["sale_price"] + total_fee
     add_ledger_entry(
         account_type="customer",
-        entity_id=d["sale_customer"],
+        account_id=d["sale_customer"],
         amount=-total_charge,
         currency=cur,
         reference="sale:" + str(sale_id),
