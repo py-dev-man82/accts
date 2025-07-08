@@ -175,16 +175,23 @@ async def show_partner_report(update: Update, context: ContextTypes.DEFAULT_TYPE
         if c["partner_id"] == pid and start_date <= datetime.strptime(c["date"], "%d%m%Y") <= end_date
     ]
 
-    # Inventory levels per item
+# Inventory levels per item (correct)
     inventory = {}
-    for c in secure_db.all("partner_inventory"):
-        if c["partner_id"] == pid:
-            inventory.setdefault(c["item_id"], 0)
-            inventory[c["item_id"]] += c["quantity"]
-    for s in secure_db.all("partner_sales"):
-        if s["partner_id"] == pid:
-            inventory.setdefault(s["item_id"], 0)
-            inventory[s["item_id"]] -= s["quantity"]
+
+    # 1) Add up all stock-ins for this partner
+    for rec in secure_db.all("partner_inventory"):
+        if rec["partner_id"] == pid:
+            inventory.setdefault(rec["item_id"], 0)
+            inventory[rec["item_id"]] += rec["quantity"]
+
+    # 2) Subtract *every* sold quantity from each line item
+    for sale in secure_db.table("partner_sales").all():
+        if sale["partner_id"] != pid:
+            continue
+        # sale["items"] is a dict { item_id: { "qty":…, "unit_price":… }, … }
+        for item_id, details in sale["items"].items():
+            inventory.setdefault(item_id, 0)
+            inventory[item_id] -= details["qty"]
 
     # Totals
     total_sales = sum(s["quantity"] * s["unit_price"] for s in all_sales)
