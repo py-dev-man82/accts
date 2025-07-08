@@ -12,7 +12,6 @@ from secure_db import secure_db
 from handlers.utils import require_unlock, fmt_money, fmt_date
 from handlers.ledger import get_ledger, get_balance
 
-# ---- Main menu jump: local import to avoid circular import ----
 async def _goto_main_menu(update, context):
     from bot import start
     return await start(update, context)
@@ -28,12 +27,18 @@ async def _goto_main_menu(update, context):
 _PAGE_SIZE = 8
 
 def _is_general_customer(c):
-    # Filter out partners and stores
-    return not c.get('is_partner') and not c.get('is_store')
+    # Exclude any customer who is a partner, a store, or present in the partner/store tables
+    partner_ids = {p.doc_id for p in secure_db.all("partners")}
+    store_ids = {s.doc_id for s in secure_db.all("stores")}
+    return (
+        not c.get('is_partner')
+        and not c.get('is_store')
+        and c.doc_id not in partner_ids
+        and c.doc_id not in store_ids
+    )
 
 @require_unlock
 async def show_customer_report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Clear all state on entry for reliability!
     for k in ['customer_id', 'start_date', 'end_date', 'page', 'scope']:
         context.user_data.pop(k, None)
     logging.info("show_customer_report_menu called")
@@ -115,7 +120,6 @@ async def save_custom_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return await choose_report_scope(update, context)
 
 async def choose_report_scope(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Handles being called from both a CallbackQuery and a Message
     data = None
     if getattr(update, "callback_query", None):
         await update.callback_query.answer()
@@ -199,9 +203,10 @@ async def show_customer_report(update: Update, context: ContextTypes.DEFAULT_TYP
         lines.append("🛒 *Sales*")
         if sales_page:
             for s in sales_page:
-                # Do NOT show handling_fee or fee anywhere
+                # Only show full sale value—NEVER display fee or mention "fee" anywhere
                 store = secure_db.table("stores").get(doc_id=s.get("store_id")) if s.get("store_id") else None
                 store_str = f"@{store['name']}" if store else ""
+                # Optional: If you want per-item/unit details, you can add here, but fee is always excluded.
                 line = f"• {fmt_date(s['date'])}: {fmt_money(-s['amount'], currency)} {store_str}"
                 if s.get('note'):
                     line += f"  📝 {s['note']}"
@@ -215,9 +220,7 @@ async def show_customer_report(update: Update, context: ContextTypes.DEFAULT_TYP
         lines.append("\n💵 *Payments*")
         if payments_page:
             for p in payments_page:
-                # Do NOT show fee or net values
                 line = f"• {fmt_date(p['date'])}: {fmt_money(p['amount'], currency)}"
-                # FX/Note shown if present
                 fx = p.get("fx_rate")
                 usd = p.get("usd_amt")
                 if fx is not None:
@@ -237,7 +240,6 @@ async def show_customer_report(update: Update, context: ContextTypes.DEFAULT_TYP
     nav = []
     if page > 0:
         nav.append(InlineKeyboardButton("⬅️ Prev", callback_data="page_prev"))
-    # Fix: only show "Next" if there's a next page
     next_count = sales_count if scope in ['full','sales'] else payments_count
     if (page + 1) * _PAGE_SIZE < next_count:
         nav.append(InlineKeyboardButton("➡️ Next", callback_data="page_next"))
