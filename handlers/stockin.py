@@ -458,6 +458,7 @@ async def del_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ╔══════════════════════════════════════════════════════════════╗
 # ║        ConversationHandlers and Registration                 ║
 # ╚══════════════════════════════════════════════════════════════╝
+
 add_conv = ConversationHandler(
     entry_points=[CallbackQueryHandler(add_stockin, pattern="^add_stockin$"),
                   CommandHandler("add_stockin", add_stockin)],
@@ -533,3 +534,4 @@ def register_stockin_handlers(app: Application):
     app.add_handler(view_conv)
     app.add_handler(edit_conv)
     app.add_handler(del_conv)
+
