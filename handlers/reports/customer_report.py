@@ -29,6 +29,9 @@ _PAGE_SIZE = 8
 
 @require_unlock
 async def show_customer_report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Clear all state on entry for reliability!
+    for k in ['customer_id', 'start_date', 'end_date', 'page', 'scope']:
+        context.user_data.pop(k, None)
     logging.info("show_customer_report_menu called")
     customers = secure_db.all("customers")
     if not customers:
