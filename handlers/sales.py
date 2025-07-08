@@ -243,7 +243,7 @@ async def confirm_sale(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "item_id":     d["sale_item"],
         "quantity":    d["sale_qty"],
         "unit_price":  d["sale_price"],
-        "handling_fee": total_fee,  # Store total fee
+        "handling_fee": total_fee,  # Store total fee for all units
         "note":        d["sale_note"],
         "currency":    cur,
         "timestamp":   datetime.utcnow().isoformat(),
@@ -259,7 +259,7 @@ async def confirm_sale(update: Update, context: ContextTypes.DEFAULT_TYPE):
                          {"quantity": rec["quantity"] - d["sale_qty"]},
                          [rec.doc_id])
 
-    # credit handling fee
+    # credit handling fee to store
     if total_fee > 0:
         secure_db.insert("store_payments", {
             "store_id": d["sale_store"],
@@ -269,16 +269,16 @@ async def confirm_sale(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "timestamp":datetime.utcnow().isoformat(),
         })
 
-    # If using ledger, also update the customer account here
-    # total_charge = d["sale_qty"] * d["sale_price"] + total_fee
-     add_ledger_entry(
+    # 🔥 Ledger entry: charge customer (sale + total fee)
+    total_charge = d["sale_qty"] * d["sale_price"] + total_fee
+    add_ledger_entry(
         entity_type="customer",
-         entity_id=d["sale_customer"],
-         amount=-total_charge,
-         currency=cur,
-         reference="sale:" + str(sale_id),
-         note=f"Sale {d['sale_item']} ×{d['sale_qty']} + handling fee"
-     )
+        entity_id=d["sale_customer"],
+        amount=-total_charge,
+        currency=cur,
+        reference="sale:" + str(sale_id),
+        note=f"Sale {d['sale_item']} ×{d['sale_qty']} + handling fee"
+    )
 
     await update.callback_query.edit_message_text(
         "✅ Sale recorded & inventory updated.",
