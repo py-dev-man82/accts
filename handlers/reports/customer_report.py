@@ -144,7 +144,7 @@ async def show_customer_report(update: Update, context: ContextTypes.DEFAULT_TYP
     payments_page, payments_count = _paginate(all_payments, page) if scope in ["full", "payments"] else ([], 0)
 
     lines = [
-        f"📄 *Customer Report: {customer['name']}*",
+        f"📄 *Report — {customer['name']}*",
         f"Period: {fmt_date(start_date.strftime('%d%m%Y'))} → {fmt_date(end_date.strftime('%d%m%Y'))}",
         f"Currency: {customer['currency']}\n"
     ]
@@ -237,4 +237,3 @@ def register_customer_report_handlers(app):
         per_message=False,
     )
     app.add_handler(conv)
-
