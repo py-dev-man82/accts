@@ -11,8 +11,8 @@ from telegram.ext import (
 from secure_db import secure_db
 from handlers.utils import require_unlock, fmt_money, fmt_date
 from handlers.ledger import get_ledger, get_balance
+from handlers.bot import start  # Main menu handler
 
-# Conversation states
 (
     CUST_SELECT,
     DATE_RANGE_SELECT,
@@ -32,7 +32,10 @@ async def show_customer_report_menu(update: Update, context: ContextTypes.DEFAUL
         await update.callback_query.edit_message_text(
             "⚠️ No customers found.",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔙 Back", callback_data="customer_report_menu")]
+                [
+                    InlineKeyboardButton("🔙 Back", callback_data="customer_report_menu"),
+                    InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu"),
+                ]
             ])
         )
         return ConversationHandler.END
@@ -42,7 +45,10 @@ async def show_customer_report_menu(update: Update, context: ContextTypes.DEFAUL
         for c in customers
     ]
     grid = [buttons[i:i+2] for i in range(0, len(buttons), 2)]
-    grid.append([InlineKeyboardButton("🔙 Back", callback_data="customer_report_menu")])
+    grid.append([
+        InlineKeyboardButton("🔙 Back", callback_data="customer_report_menu"),
+        InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu"),
+    ])
 
     await update.callback_query.answer()
     await update.callback_query.edit_message_text(
@@ -60,7 +66,10 @@ async def select_date_range(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("📅 Weekly (Last 7 days)", callback_data="daterange_weekly")],
         [InlineKeyboardButton("📆 Custom Range", callback_data="daterange_custom")],
-        [InlineKeyboardButton("🔙 Back", callback_data="customer_report_menu")],
+        [
+            InlineKeyboardButton("🔙 Back", callback_data="customer_report_menu"),
+            InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu"),
+        ],
     ])
     await update.callback_query.edit_message_text(
         "Choose date range:", reply_markup=kb
@@ -70,7 +79,15 @@ async def select_date_range(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def get_custom_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logging.info("get_custom_date")
     await update.callback_query.answer()
-    await update.callback_query.edit_message_text("📅 Enter start date (DDMMYYYY):")
+    await update.callback_query.edit_message_text(
+        "📅 Enter start date (DDMMYYYY):",
+        reply_markup=InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("🔙 Back", callback_data="customer_report_menu"),
+                InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu"),
+            ]
+        ])
+    )
     return CUSTOM_DATE_INPUT
 
 async def save_custom_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -87,22 +104,38 @@ async def save_custom_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return await choose_report_scope(update, context)
 
 async def choose_report_scope(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logging.info("choose_report_scope: %s", update.callback_query.data)
-    await update.callback_query.answer()
-    data = update.callback_query.data
+    # Handles being called from both a CallbackQuery and a Message
+    data = None
+    if getattr(update, "callback_query", None):
+        await update.callback_query.answer()
+        data = update.callback_query.data
+    elif getattr(update, "message", None):
+        # Coming from save_custom_date (after date entry)
+        data = "custom_date_message"
+
+    logging.info("choose_report_scope: %s", data)
+
     if data == "daterange_weekly":
         context.user_data["start_date"] = datetime.now() - timedelta(days=7)
         context.user_data["end_date"] = datetime.now()
     elif data == "daterange_custom":
         return await get_custom_date(update, context)
+    # If coming from a message after entering custom date, just proceed
 
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("📝 Full Report", callback_data="scope_full")],
         [InlineKeyboardButton("🛒 Sales Only", callback_data="scope_sales")],
         [InlineKeyboardButton("💵 Payments Only", callback_data="scope_payments")],
-        [InlineKeyboardButton("🔙 Back", callback_data="customer_report_menu")],
+        [
+            InlineKeyboardButton("🔙 Back", callback_data="customer_report_menu"),
+            InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu"),
+        ],
     ])
-    await update.callback_query.edit_message_text("Choose report scope:", reply_markup=kb)
+    # Use the appropriate method to reply depending on the update type
+    if getattr(update, "callback_query", None):
+        await update.callback_query.edit_message_text("Choose report scope:", reply_markup=kb)
+    else:
+        await update.message.reply_text("Choose report scope:", reply_markup=kb)
     return REPORT_SCOPE_SELECT
 
 def _paginate(items, page):
@@ -110,7 +143,6 @@ def _paginate(items, page):
     return items[start:start + _PAGE_SIZE], len(items)
 
 def _filter_ledger(entries, start_date, end_date):
-    # entries from get_ledger() are already sorted oldest to newest
     out = []
     for e in entries:
         try:
@@ -136,20 +168,14 @@ async def show_customer_report(update: Update, context: ContextTypes.DEFAULT_TYP
     customer = secure_db.table("customers").get(doc_id=cid)
     currency = customer['currency']
 
-    # Get all ledger entries for this customer in date range
     ledger_entries = get_ledger("customer", cid)
     filtered_entries = _filter_ledger(ledger_entries, start_date, end_date)
-
-    # Split by type
     sales = [e for e in filtered_entries if e["entry_type"] == "sale"]
     payments = [e for e in filtered_entries if e["entry_type"] == "payment"]
 
-    total_sales = sum(-e["amount"] for e in sales)   # sales recorded as negative
+    total_sales = sum(-e["amount"] for e in sales)
     total_payments_local = sum(e["amount"] for e in payments)
-    # Optionally: extract USD received, fee, fx if present in note or amount fields
-    # But by default, only local currency shown (add fields as needed)
-
-    balance = get_balance("customer", cid)  # shows current, not just in range
+    balance = get_balance("customer", cid)
 
     sales_page, sales_count = _paginate(sales, page) if scope in ["full", "sales"] else ([], 0)
     payments_page, payments_count = _paginate(payments, page) if scope in ["full", "payments"] else ([], 0)
@@ -177,7 +203,6 @@ async def show_customer_report(update: Update, context: ContextTypes.DEFAULT_TYP
         lines.append("\n💵 *Payments*")
         if payments_page:
             for p in payments_page:
-                # If you have USD, FX, or fee fields in ledger notes, parse and show here.
                 lines.append(
                     f"• {fmt_date(p['date'])}: {fmt_money(p['amount'], currency)}"
                     + (f"  📝 {p['note']}" if p.get('note') else "")
@@ -186,11 +211,9 @@ async def show_customer_report(update: Update, context: ContextTypes.DEFAULT_TYP
             lines.append("  (No payments on this page)")
         if page == 0:
             lines.append(f"📊 *Total Payments:* {fmt_money(total_payments_local, currency)}")
-            # Add total USD or FX rate if present in notes, or extend ledger schema
 
     lines.append(f"\n📊 *Current Balance:* {fmt_money(balance, currency)}")
 
-    # Navigation buttons: Prev, Next, Export PDF, Back
     nav = []
     if page > 0:
         nav.append(InlineKeyboardButton("⬅️ Prev", callback_data="page_prev"))
@@ -198,6 +221,7 @@ async def show_customer_report(update: Update, context: ContextTypes.DEFAULT_TYP
         nav.append(InlineKeyboardButton("➡️ Next", callback_data="page_next"))
     nav.append(InlineKeyboardButton("📄 Export PDF", callback_data="export_pdf"))
     nav.append(InlineKeyboardButton("🔙 Back", callback_data="customer_report_menu"))
+    nav.append(InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu"))
 
     await update.callback_query.edit_message_text(
         "\n".join(lines),
@@ -218,7 +242,6 @@ async def paginate_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @require_unlock
 async def export_pdf_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Export the current report view as a PDF and send it."""
     await update.callback_query.answer()
     cid = context.user_data.get('customer_id')
     customer = secure_db.table('customers').get(doc_id=cid)
@@ -241,7 +264,6 @@ async def export_pdf_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     width, height = letter
     y = height - 50
 
-    # Header
     pdf.setFont('Helvetica-Bold', 14)
     pdf.drawString(50, y, f"Report — {customer['name']}")
     y -= 20
@@ -307,16 +329,34 @@ def register_customer_report_handlers(app):
         entry_points=[
             CallbackQueryHandler(show_customer_report_menu, pattern="^rep_cust$"),
             CallbackQueryHandler(show_customer_report_menu, pattern="^customer_report_menu$"),
+            CallbackQueryHandler(start, pattern="^main_menu$"),
         ],
         states={
-            CUST_SELECT: [CallbackQueryHandler(select_date_range, pattern="^custrep_")],
-            DATE_RANGE_SELECT: [CallbackQueryHandler(choose_report_scope, pattern="^daterange_")],
-            CUSTOM_DATE_INPUT: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_custom_date)],
-            REPORT_SCOPE_SELECT: [CallbackQueryHandler(show_customer_report, pattern="^scope_")],
+            CUST_SELECT: [
+                CallbackQueryHandler(select_date_range, pattern="^custrep_"),
+                CallbackQueryHandler(show_customer_report_menu, pattern="^customer_report_menu$"),
+                CallbackQueryHandler(start, pattern="^main_menu$"),
+            ],
+            DATE_RANGE_SELECT: [
+                CallbackQueryHandler(choose_report_scope, pattern="^daterange_"),
+                CallbackQueryHandler(show_customer_report_menu, pattern="^customer_report_menu$"),
+                CallbackQueryHandler(start, pattern="^main_menu$"),
+            ],
+            CUSTOM_DATE_INPUT: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, save_custom_date),
+                CallbackQueryHandler(show_customer_report_menu, pattern="^customer_report_menu$"),
+                CallbackQueryHandler(start, pattern="^main_menu$"),
+            ],
+            REPORT_SCOPE_SELECT: [
+                CallbackQueryHandler(show_customer_report, pattern="^scope_"),
+                CallbackQueryHandler(show_customer_report_menu, pattern="^customer_report_menu$"),
+                CallbackQueryHandler(start, pattern="^main_menu$"),
+            ],
             REPORT_PAGE: [
                 CallbackQueryHandler(paginate_report, pattern="^page_(prev|next)$"),
                 CallbackQueryHandler(export_pdf_report, pattern="^export_pdf$"),
                 CallbackQueryHandler(show_customer_report_menu, pattern="^customer_report_menu$"),
+                CallbackQueryHandler(start, pattern="^main_menu$"),
             ],
         },
         fallbacks=[],
