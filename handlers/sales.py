@@ -15,7 +15,7 @@ from tinydb import Query
 
 from handlers.utils import require_unlock, fmt_money, fmt_date
 from secure_db import secure_db
-
+from handlers.ledger import add_ledger_entry, delete_ledger_entries_by_related  # LEDGER PATCH
 
 # ───────────────────────────────────────────────────────────────
 #  Quick helper – numeric ID from plain text
@@ -25,7 +25,6 @@ def _extract_doc_id(text: str) -> int | None:
         return int(text.strip())
     except Exception:
         return None
-
 
 # ───────────────────────────────────────────────────────────────
 #  Conversation-state constants
@@ -41,7 +40,6 @@ def _extract_doc_id(text: str) -> int | None:
 
     S_VIEW_CUSTOMER,S_VIEW_TIME,    S_VIEW_PAGE,
 ) = range(18)
-
 
 # ───────────────────────────────────────────────────────────────
 #  SALES MENU
@@ -61,7 +59,6 @@ async def show_sales_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.callback_query.edit_message_text(msg, reply_markup=kb)
     else:
         await update.message.reply_text(msg, reply_markup=kb)
-
 
 # ======================================================================
 #                                ADD FLOW
@@ -88,7 +85,6 @@ async def add_sale(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                                   reply_markup=InlineKeyboardMarkup(rows))
     return S_CUST_SELECT
 
-
 async def get_sale_customer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     cid = int(update.callback_query.data.split("_")[-1])
@@ -113,7 +109,6 @@ async def get_sale_customer(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                                   reply_markup=InlineKeyboardMarkup(rows))
     return S_STORE_SELECT
 
-
 async def get_sale_store(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     sid = int(update.callback_query.data.split("_")[-1])
@@ -128,7 +123,6 @@ async def get_sale_store(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📦 Inventory:\n{inv_txt}\n\nEnter item_id,quantity (e.g. 7,3):"
     )
     return S_ITEM_QTY
-
 
 async def get_sale_item_qty(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
@@ -162,7 +156,6 @@ async def get_sale_item_qty(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Unit price:")
     return S_PRICE
 
-
 async def get_sale_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         price = float(update.message.text)
@@ -175,7 +168,6 @@ async def get_sale_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kb = InlineKeyboardMarkup([[InlineKeyboardButton("➖ Skip", callback_data="fee_skip")]])
     await update.message.reply_text("Handling fee (or Skip):", reply_markup=kb)
     return S_FEE
-
 
 async def get_sale_fee(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.callback_query and update.callback_query.data == "fee_skip":
@@ -192,7 +184,6 @@ async def get_sale_fee(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kb = InlineKeyboardMarkup([[InlineKeyboardButton("➖ Skip", callback_data="note_skip")]])
     await update.message.reply_text("Optional note (or Skip):", reply_markup=kb)
     return S_NOTE
-
 
 async def get_sale_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Determine note from callback or message
@@ -234,8 +225,6 @@ async def get_sale_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     return S_CONFIRM
 
-
-
 @require_unlock
 async def confirm_sale(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
@@ -246,7 +235,7 @@ async def confirm_sale(update: Update, context: ContextTypes.DEFAULT_TYPE):
     d   = context.user_data
     cur = secure_db.table("stores").get(doc_id=d["sale_store"])["currency"]
 
-    secure_db.insert("sales", {
+    sale_data = {
         "customer_id": d["sale_customer"],
         "store_id":    d["sale_store"],
         "item_id":     d["sale_item"],        # stays as str
@@ -256,7 +245,49 @@ async def confirm_sale(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "note":        d["sale_note"],
         "currency":    cur,
         "timestamp":   datetime.utcnow().isoformat(),
-    })
+    }
+
+    secure_db.insert("sales", sale_data)
+
+    # Try to get doc_id of the inserted sale for ledger linkage
+    try:
+        sale_doc_id = secure_db.table("sales")[-1].doc_id
+    except Exception as e:
+        sale_doc_id = None
+        logging.error(f"[sales] Could not retrieve sale doc_id: {e}")
+
+    # LEDGER PATCH - customer ledger (debit full sale value)
+    try:
+        add_ledger_entry(
+            account_type="customer",
+            account_id=d["sale_customer"],
+            entry_type="sale",
+            related_id=sale_doc_id,
+            amount=-(d["sale_qty"] * d["sale_price"]),
+            currency=cur,
+            note=d.get("sale_note", ""),
+            date=datetime.utcnow().strftime("%d%m%Y"),
+            timestamp=sale_data["timestamp"],
+        )
+    except Exception as e:
+        logging.error(f"[sales] Failed to add customer ledger entry: {e}")
+
+    # LEDGER PATCH - store ledger (credit handling fee, if any)
+    if d["sale_fee"] > 0:
+        try:
+            add_ledger_entry(
+                account_type="store",
+                account_id=d["sale_store"],
+                entry_type="handling_fee",
+                related_id=sale_doc_id,
+                amount=d["sale_fee"],
+                currency=cur,
+                note="Handling fee for customer sale",
+                date=datetime.utcnow().strftime("%d%m%Y"),
+                timestamp=sale_data["timestamp"],
+            )
+        except Exception as e:
+            logging.error(f"[sales] Failed to add store ledger entry: {e}")
 
     # deduct inventory
     q = Query()
@@ -268,7 +299,7 @@ async def confirm_sale(update: Update, context: ContextTypes.DEFAULT_TYPE):
                          {"quantity": rec["quantity"] - d["sale_qty"]},
                          [rec.doc_id])
 
-    # credit handling fee
+    # credit handling fee to store_payments table as before
     if d["sale_fee"] > 0:
         secure_db.insert("store_payments", {
             "store_id": d["sale_store"],
@@ -285,7 +316,6 @@ async def confirm_sale(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     return ConversationHandler.END
 
-
 # ======================================================================
 #                                EDIT FLOW
 # ======================================================================
@@ -297,8 +327,7 @@ async def edit_sale(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.callback_query.edit_message_text(
             "No customers.",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back",
-                                                                     callback_data="sales_menu")]])
-        )
+                                                                     callback_data="sales_menu")]]))
         return ConversationHandler.END
     buttons = [InlineKeyboardButton(f"{c['name']} ({c['currency']})",
                                     callback_data=f"edit_cust_{c.doc_id}")
@@ -308,7 +337,6 @@ async def edit_sale(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.edit_message_text("Select customer:",
                                                   reply_markup=InlineKeyboardMarkup(rows))
     return S_EDIT_SELECT
-
 
 async def get_edit_customer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
@@ -325,13 +353,11 @@ async def get_edit_customer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.edit_message_text("Select period:", reply_markup=kb)
     return S_EDIT_TIME
 
-
 async def get_edit_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     context.user_data["edit_time_filter"] = update.callback_query.data.split("_")[-1]
     context.user_data["edit_page"] = 1
     return await send_edit_page(update, context)
-
 
 async def send_edit_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cid  = context.user_data["edit_customer_id"]
@@ -350,8 +376,7 @@ async def send_edit_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.callback_query.edit_message_text(
             "No sales in that window.",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back",
-                                                                     callback_data="edit_sale")]])
-        )
+                                                                     callback_data="edit_sale")]]))
         return ConversationHandler.END
 
     lines = []
@@ -370,7 +395,6 @@ async def send_edit_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup([nav]))
     return S_EDIT_PAGE
 
-
 async def handle_edit_pagination(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     if update.callback_query.data == "edit_prev":
@@ -380,7 +404,6 @@ async def handle_edit_pagination(update: Update, context: ContextTypes.DEFAULT_T
     elif update.callback_query.data == "edit_time_back":
         return await get_edit_customer(update, context)
     return await send_edit_page(update, context)
-
 
 async def select_edit_sale_by_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sid = _extract_doc_id(update.message.text)
@@ -404,7 +427,6 @@ async def select_edit_sale_by_id(update: Update, context: ContextTypes.DEFAULT_T
     await update.message.reply_text(f"Editing sale #{sid}. Choose field:", reply_markup=kb)
     return S_EDIT_FIELD
 
-
 async def get_edit_sale(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     sid = int(update.callback_query.data.split("_")[-1])
@@ -420,7 +442,6 @@ async def get_edit_sale(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.edit_message_text("Choose field:", reply_markup=kb)
     return S_EDIT_FIELD
 
-
 async def get_edit_field(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     field = update.callback_query.data.split("_")[-1]
@@ -435,21 +456,15 @@ async def get_edit_field(update: Update, context: ContextTypes.DEFAULT_TYPE):
         rows.append([InlineKeyboardButton("🔙 Cancel", callback_data="edit_time_back")])
         await update.callback_query.edit_message_text("Select new store:",
                                                       reply_markup=InlineKeyboardMarkup(rows))
-
     elif field == "itemqty":
         await update.callback_query.edit_message_text("New item_id,quantity (e.g. 5,25):")
-
     elif field == "price":
         await update.callback_query.edit_message_text("New unit price:")
-
     elif field == "fee":
         await update.callback_query.edit_message_text("New handling fee (0 for none):")
-
     elif field == "note":
         await update.callback_query.edit_message_text("New note (or '-' to clear):")
-
     return S_EDIT_NEWVAL
-
 
 async def save_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["new_value"] = update.message.text.strip()
@@ -464,7 +479,6 @@ async def save_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     return S_EDIT_CONFIRM
 
-
 @require_unlock
 async def confirm_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
@@ -476,32 +490,70 @@ async def confirm_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     field = context.user_data["edit_field"]
     new   = context.user_data["new_value"]
 
+    # Fetch sale before editing to get old values for ledger removal
+    sale = secure_db.table("sales").get(doc_id=sid)
+
+    # --- UPDATE DB RECORD ---
     if field == "store":
         secure_db.update("sales", {"store_id": int(new)}, [sid])
-
     elif field == "itemqty":
-        # revised: allow non-numeric item IDs
         item_part, qty_part = new.split(",", 1)
         item_id = item_part.strip()
         qty     = int(qty_part.strip())
         secure_db.update("sales", {"item_id": item_id, "quantity": qty}, [sid])
-
     elif field == "price":
         secure_db.update("sales", {"unit_price": float(new)}, [sid])
-
     elif field == "fee":
         secure_db.update("sales", {"handling_fee": float(new)}, [sid])
-
     elif field == "note":
         secure_db.update("sales", {"note": "" if new == "-" else new}, [sid])
+
+    # --- LEDGER PATCH: Remove old entries ---
+    try:
+        delete_ledger_entries_by_related("customer", sale["customer_id"], sid)
+        if sale["handling_fee"] > 0:
+            delete_ledger_entries_by_related("store", sale["store_id"], sid)
+    except Exception as e:
+        logging.error(f"[sales-edit] Failed to delete previous ledger entries for sale {sid}: {e}")
+
+    # --- LEDGER PATCH: Add new entries for updated sale ---
+    # Fetch updated sale
+    updated_sale = secure_db.table("sales").get(doc_id=sid)
+    if updated_sale:
+        try:
+            # Customer ledger
+            add_ledger_entry(
+                account_type="customer",
+                account_id=updated_sale["customer_id"],
+                entry_type="sale",
+                related_id=sid,
+                amount=-(updated_sale["quantity"] * updated_sale["unit_price"]),
+                currency=updated_sale["currency"],
+                note=updated_sale.get("note", ""),
+                date=datetime.utcnow().strftime("%d%m%Y"),
+                timestamp=updated_sale["timestamp"],
+            )
+            # Store ledger (only if handling fee present and > 0)
+            if updated_sale.get("handling_fee", 0) > 0:
+                add_ledger_entry(
+                    account_type="store",
+                    account_id=updated_sale["store_id"],
+                    entry_type="handling_fee",
+                    related_id=sid,
+                    amount=updated_sale["handling_fee"],
+                    currency=updated_sale["currency"],
+                    note="Handling fee for customer sale (edited)",
+                    date=datetime.utcnow().strftime("%d%m%Y"),
+                    timestamp=updated_sale["timestamp"],
+                )
+        except Exception as e:
+            logging.error(f"[sales-edit] Failed to add new ledger entries for sale {sid}: {e}")
 
     await update.callback_query.edit_message_text(
         "✅ Sale updated.",
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back",
-                                                                 callback_data="sales_menu")]])
-    )
+                                                                 callback_data="sales_menu")]]))
     return ConversationHandler.END
-
 
 # ======================================================================
 #                                DELETE FLOW
@@ -514,8 +566,7 @@ async def delete_sale(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.callback_query.edit_message_text(
             "No customers.",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back",
-                                                                     callback_data="sales_menu")]])
-        )
+                                                                     callback_data="sales_menu")]]))
         return ConversationHandler.END
 
     buttons = [InlineKeyboardButton(f"{c['name']} ({c['currency']})",
@@ -527,7 +578,6 @@ async def delete_sale(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                                   reply_markup=InlineKeyboardMarkup(rows))
     return S_DELETE_SELECT
 
-
 async def get_delete_customer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     cid = int(update.callback_query.data.split("_")[-1])
@@ -538,8 +588,7 @@ async def get_delete_customer(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.callback_query.edit_message_text(
             "No sales.",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back",
-                                                                     callback_data="sales_menu")]])
-        )
+                                                                     callback_data="sales_menu")]]))
         return ConversationHandler.END
 
     lines = [f"{r.doc_id}: Item {r['item_id']} ×{r['quantity']} "
@@ -548,10 +597,8 @@ async def get_delete_customer(update: Update, context: ContextTypes.DEFAULT_TYPE
     await update.callback_query.edit_message_text(
         "Reply with record ID to delete:\n\n" + "\n".join(lines),
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back",
-                                                                 callback_data="sales_menu")]])
-    )
+                                                                 callback_data="sales_menu")]]))
     return S_DELETE_CONFIRM
-
 
 async def select_delete_sale_by_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sid = _extract_doc_id(update.message.text)
@@ -571,14 +618,15 @@ async def select_delete_sale_by_id(update: Update, context: ContextTypes.DEFAULT
     await update.message.reply_text(f"Delete sale #{sid}?", reply_markup=kb)
     return S_DELETE_CONFIRM
 
-
+@require_unlock
 async def perform_delete_sale(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     if update.callback_query.data != "del_conf_yes":
         await show_sales_menu(update, context)
         return ConversationHandler.END
 
-    sale = context.user_data["del_sale"]; sid = context.user_data["del_id"]
+    sale = context.user_data["del_sale"]
+    sid  = context.user_data["del_id"]
 
     # restore inventory
     q = Query()
@@ -590,7 +638,7 @@ async def perform_delete_sale(update: Update, context: ContextTypes.DEFAULT_TYPE
                          {"quantity": rec["quantity"] + sale["quantity"]},
                          [rec.doc_id])
 
-    # reverse fee if any
+    # reverse handling fee if any
     if sale.get("handling_fee", 0) > 0:
         secure_db.insert("store_payments", {
             "store_id": sale["store_id"],
@@ -600,14 +648,21 @@ async def perform_delete_sale(update: Update, context: ContextTypes.DEFAULT_TYPE
             "timestamp":datetime.utcnow().isoformat(),
         })
 
+    # --- LEDGER PATCH: Remove ledger entries ---
+    try:
+        delete_ledger_entries_by_related("customer", sale["customer_id"], sid)
+        if sale.get("handling_fee", 0) > 0:
+            delete_ledger_entries_by_related("store", sale["store_id"], sid)
+    except Exception as e:
+        logging.error(f"[sales-delete] Failed to delete ledger entries for sale {sid}: {e}")
+
+    # remove sale record
     secure_db.remove("sales", [sid])
     await update.callback_query.edit_message_text(
         f"✅ Sale #{sid} deleted.",
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back",
-                                                                 callback_data="sales_menu")]])
-    )
+                                                                 callback_data="sales_menu")]]))
     return ConversationHandler.END
-
 
 # ======================================================================
 #                                VIEW FLOW
@@ -620,8 +675,7 @@ async def view_sales(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.callback_query.edit_message_text(
             "No customers.",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back",
-                                                                     callback_data="sales_menu")]])
-        )
+                                                                     callback_data="sales_menu")]]))
         return ConversationHandler.END
 
     buttons = [InlineKeyboardButton(f"{c['name']} ({c['currency']})",
@@ -632,7 +686,6 @@ async def view_sales(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.edit_message_text("Select customer:",
                                                   reply_markup=InlineKeyboardMarkup(rows))
     return S_VIEW_CUSTOMER
-
 
 async def get_view_customer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
@@ -650,13 +703,11 @@ async def get_view_customer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.edit_message_text("Select period:", reply_markup=kb)
     return S_VIEW_TIME
 
-
 async def get_view_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     context.user_data["view_time_filter"] = update.callback_query.data.split("_")[-1]
     context.user_data["view_page"] = 1
     return await send_sales_page(update, context)
-
 
 async def send_sales_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cid  = context.user_data["view_customer_id"]
@@ -676,8 +727,7 @@ async def send_sales_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.callback_query.edit_message_text(
             "No sales.",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back",
-                                                                     callback_data="view_sales")]])
-        )
+                                                                     callback_data="view_sales")]]))
         return ConversationHandler.END
 
     lines = [f"{r.doc_id}: Item {r['item_id']} ×{r['quantity']} "
@@ -693,7 +743,6 @@ async def send_sales_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup([nav]))
     return S_VIEW_PAGE
 
-
 async def handle_view_pagination(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     if update.callback_query.data == "view_prev":
@@ -703,7 +752,6 @@ async def handle_view_pagination(update: Update, context: ContextTypes.DEFAULT_T
     elif update.callback_query.data == "view_time_back":
         return await get_view_customer(update, context)
     return await send_sales_page(update, context)
-
 
 # ======================================================================
 #                        CONVERSATION HANDLERS
@@ -771,7 +819,6 @@ view_conv = ConversationHandler(
     fallbacks=[CommandHandler("cancel", show_sales_menu)],
     per_message=False,
 )
-
 
 # ======================================================================
 #                     REGISTER HANDLERS TO APP
