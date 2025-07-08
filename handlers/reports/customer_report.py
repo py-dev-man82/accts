@@ -27,17 +27,21 @@ async def _goto_main_menu(update, context):
 
 _PAGE_SIZE = 8
 
+def _is_general_customer(c):
+    # Filter out partners and stores
+    return not c.get('is_partner') and not c.get('is_store')
+
 @require_unlock
 async def show_customer_report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Clear all state on entry for reliability!
     for k in ['customer_id', 'start_date', 'end_date', 'page', 'scope']:
         context.user_data.pop(k, None)
     logging.info("show_customer_report_menu called")
-    customers = secure_db.all("customers")
+    customers = [c for c in secure_db.all("customers") if _is_general_customer(c)]
     if not customers:
         await update.callback_query.answer()
         await update.callback_query.edit_message_text(
-            "⚠️ No customers found.",
+            "⚠️ No general customers found.",
             reply_markup=InlineKeyboardMarkup([
                 [
                     InlineKeyboardButton("🔙 Back", callback_data="customer_report_menu"),
@@ -195,10 +199,13 @@ async def show_customer_report(update: Update, context: ContextTypes.DEFAULT_TYP
         lines.append("🛒 *Sales*")
         if sales_page:
             for s in sales_page:
-                lines.append(
-                    f"• {fmt_date(s['date'])}: {fmt_money(-s['amount'], currency)}"
-                    + (f"  📝 {s['note']}" if s.get('note') else "")
-                )
+                # Do NOT show handling_fee or fee anywhere
+                store = secure_db.table("stores").get(doc_id=s.get("store_id")) if s.get("store_id") else None
+                store_str = f"@{store['name']}" if store else ""
+                line = f"• {fmt_date(s['date'])}: {fmt_money(-s['amount'], currency)} {store_str}"
+                if s.get('note'):
+                    line += f"  📝 {s['note']}"
+                lines.append(line)
         else:
             lines.append("  (No sales on this page)")
         if page == 0:
@@ -208,10 +215,18 @@ async def show_customer_report(update: Update, context: ContextTypes.DEFAULT_TYP
         lines.append("\n💵 *Payments*")
         if payments_page:
             for p in payments_page:
-                lines.append(
-                    f"• {fmt_date(p['date'])}: {fmt_money(p['amount'], currency)}"
-                    + (f"  📝 {p['note']}" if p.get('note') else "")
-                )
+                # Do NOT show fee or net values
+                line = f"• {fmt_date(p['date'])}: {fmt_money(p['amount'], currency)}"
+                # FX/Note shown if present
+                fx = p.get("fx_rate")
+                usd = p.get("usd_amt")
+                if fx is not None:
+                    line += f"  FX {fx:.4f}"
+                if usd is not None:
+                    line += f"  USD {usd:.2f}"
+                if p.get('note'):
+                    line += f"  📝 {p['note']}"
+                lines.append(line)
         else:
             lines.append("  (No payments on this page)")
         if page == 0:
@@ -222,7 +237,9 @@ async def show_customer_report(update: Update, context: ContextTypes.DEFAULT_TYP
     nav = []
     if page > 0:
         nav.append(InlineKeyboardButton("⬅️ Prev", callback_data="page_prev"))
-    if (page + 1) * _PAGE_SIZE < (sales_count if scope in ['full','sales'] else payments_count):
+    # Fix: only show "Next" if there's a next page
+    next_count = sales_count if scope in ['full','sales'] else payments_count
+    if (page + 1) * _PAGE_SIZE < next_count:
         nav.append(InlineKeyboardButton("➡️ Next", callback_data="page_next"))
     nav.append(InlineKeyboardButton("📄 Export PDF", callback_data="export_pdf"))
     nav.append(InlineKeyboardButton("🔙 Back", callback_data="customer_report_menu"))
@@ -284,7 +301,9 @@ async def export_pdf_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
         y -= 20
         pdf.setFont('Helvetica', 10)
         for s in sales:
-            line = f"{fmt_date(s['date'])}: {fmt_money(-s['amount'], currency)}"
+            store = secure_db.table("stores").get(doc_id=s.get("store_id")) if s.get("store_id") else None
+            store_str = f"@{store['name']}" if store else ""
+            line = f"{fmt_date(s['date'])}: {fmt_money(-s['amount'], currency)} {store_str}"
             if s.get('note'):
                 line += f"  Note: {s['note']}"
             pdf.drawString(60, y, line)
@@ -303,6 +322,12 @@ async def export_pdf_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pdf.setFont('Helvetica', 10)
         for p in payments:
             line = f"{fmt_date(p['date'])}: {fmt_money(p['amount'], currency)}"
+            fx = p.get("fx_rate")
+            usd = p.get("usd_amt")
+            if fx is not None:
+                line += f"  FX {fx:.4f}"
+            if usd is not None:
+                line += f"  USD {usd:.2f}"
             if p.get('note'):
                 line += f"  Note: {p['note']}"
             pdf.drawString(60, y, line)
