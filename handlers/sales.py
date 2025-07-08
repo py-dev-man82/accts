@@ -276,7 +276,7 @@ async def confirm_sale(update: Update, context: ContextTypes.DEFAULT_TYPE):
         account_id=d["sale_customer"],
         amount=-total_charge,
         currency=cur,
-        reference="sale:" + str(sale_id),
+        related_id="sale:" + str(sale_id),
         note=f"Sale {d['sale_item']} ×{d['sale_qty']} + handling fee"
     )
 
