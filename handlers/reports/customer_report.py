@@ -11,7 +11,11 @@ from telegram.ext import (
 from secure_db import secure_db
 from handlers.utils import require_unlock, fmt_money, fmt_date
 from handlers.ledger import get_ledger, get_balance
-from bot import start  # Main menu handler
+
+# ---- Main menu jump: local import to avoid circular import ----
+async def _goto_main_menu(update, context):
+    from bot import start
+    return await start(update, context)
 
 (
     CUST_SELECT,
@@ -110,7 +114,6 @@ async def choose_report_scope(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.callback_query.answer()
         data = update.callback_query.data
     elif getattr(update, "message", None):
-        # Coming from save_custom_date (after date entry)
         data = "custom_date_message"
 
     logging.info("choose_report_scope: %s", data)
@@ -131,7 +134,6 @@ async def choose_report_scope(update: Update, context: ContextTypes.DEFAULT_TYPE
             InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu"),
         ],
     ])
-    # Use the appropriate method to reply depending on the update type
     if getattr(update, "callback_query", None):
         await update.callback_query.edit_message_text("Choose report scope:", reply_markup=kb)
     else:
@@ -329,34 +331,34 @@ def register_customer_report_handlers(app):
         entry_points=[
             CallbackQueryHandler(show_customer_report_menu, pattern="^rep_cust$"),
             CallbackQueryHandler(show_customer_report_menu, pattern="^customer_report_menu$"),
-            CallbackQueryHandler(start, pattern="^main_menu$"),
+            CallbackQueryHandler(_goto_main_menu, pattern="^main_menu$"),
         ],
         states={
             CUST_SELECT: [
                 CallbackQueryHandler(select_date_range, pattern="^custrep_"),
                 CallbackQueryHandler(show_customer_report_menu, pattern="^customer_report_menu$"),
-                CallbackQueryHandler(start, pattern="^main_menu$"),
+                CallbackQueryHandler(_goto_main_menu, pattern="^main_menu$"),
             ],
             DATE_RANGE_SELECT: [
                 CallbackQueryHandler(choose_report_scope, pattern="^daterange_"),
                 CallbackQueryHandler(show_customer_report_menu, pattern="^customer_report_menu$"),
-                CallbackQueryHandler(start, pattern="^main_menu$"),
+                CallbackQueryHandler(_goto_main_menu, pattern="^main_menu$"),
             ],
             CUSTOM_DATE_INPUT: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, save_custom_date),
                 CallbackQueryHandler(show_customer_report_menu, pattern="^customer_report_menu$"),
-                CallbackQueryHandler(start, pattern="^main_menu$"),
+                CallbackQueryHandler(_goto_main_menu, pattern="^main_menu$"),
             ],
             REPORT_SCOPE_SELECT: [
                 CallbackQueryHandler(show_customer_report, pattern="^scope_"),
                 CallbackQueryHandler(show_customer_report_menu, pattern="^customer_report_menu$"),
-                CallbackQueryHandler(start, pattern="^main_menu$"),
+                CallbackQueryHandler(_goto_main_menu, pattern="^main_menu$"),
             ],
             REPORT_PAGE: [
                 CallbackQueryHandler(paginate_report, pattern="^page_(prev|next)$"),
                 CallbackQueryHandler(export_pdf_report, pattern="^export_pdf$"),
                 CallbackQueryHandler(show_customer_report_menu, pattern="^customer_report_menu$"),
-                CallbackQueryHandler(start, pattern="^main_menu$"),
+                CallbackQueryHandler(_goto_main_menu, pattern="^main_menu$"),
             ],
         },
         fallbacks=[],
