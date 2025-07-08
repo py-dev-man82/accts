@@ -234,43 +234,6 @@ async def confirm_sale(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cur = secure_db.table("stores").get(doc_id=d["sale_store"])["currency"]
     total_fee = d["sale_fee"] * d["sale_qty"]
     total_sale = d["sale_qty"] * d["sale_price"]
-    sale_type = "customer"  # For now, only customer; update as needed for partners/stores
-
-    # Insert into sales table
-    sale_id = secure_db.insert("sales", {
-        "customer_id": d["sale_customer"],
-        "store_id":    d["sale_store"],
-        "item_id":     d["sale_item"],
-        "quantity":    d["sale_qty"],
-        "unit_price":  d["sale_price"],
-        "handling_fee": total_fee,  # Store total fee for all units
-        "note":        d["sale_note"],
-        "currency":    cur,
-        "timestamp":   datetime.utcnow().isoformat(),
-    })
-
-    # Deduct inventory
-    q = Query()
-    rec = secure_db.table("store_inventory").get(
-        (q.store_id == d["sale_store"]) & (q.item_id == d["sale_item"])
-    )
-    if rec:
-        secure_db.update("store_inventory",
-                         {"quantity": rec["quantity"] - d["sale_qty"]},
-                         [rec.doc_id])
-
-    # Credit handling fee to store (if applicable)
-    if total_fee > 0:
-        secure_db.insert("store_payments", {
-            "store_id": d["sale_store"],
-            "amount":   total_fee,
-            "currency": cur,
-            "note":     "Handling fee for customer sale",
-            "timestamp":datetime.utcnow().isoformat(),
-        })
-
-    # ==== LEDGER LOGIC: Write one "sale" entry for buyer, and a fee entry for store if applicable ====
-    # Get customer object to determine type (customer, partner, store)
     buyer = secure_db.table("customers").get(doc_id=d["sale_customer"])
     if not buyer:
         await update.callback_query.edit_message_text("❌ Customer not found.", reply_markup=None)
@@ -278,36 +241,21 @@ async def confirm_sale(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     buyer_type = buyer.get("type", "customer")  # default to "customer" if not present
 
-    # Record the sale for the buyer (always negative)
-    add_ledger_entry(
-        account_type=buyer_type,
-        account_id=d["sale_customer"],
-        entry_type="sale",
-        related_id=sale_id,
-        amount=-total_sale,
-        currency=cur,
-        note=d["sale_note"],
-        date=datetime.utcnow().strftime("%d%m%Y"),
-        timestamp=datetime.utcnow().isoformat(),
-        item_id=d["sale_item"],
-        quantity=d["sale_qty"],
-        unit_price=d["sale_price"],
-        store_id=d["sale_store"],
-    )
+    # For rollback tracking
+    sale_id = None
+    ledger_entries_written = []
 
-    # Handling fee logic:
-    # - For customer: fee is credited to store
-    # - For partner: fee is credited to store, but also deducted from partner
-    # - For store's own sale: no handling fee
-    if buyer_type == "customer" and total_fee > 0:
+    try:
+        # 1. Insert all needed ledger entries **first**
+        # Sale for buyer
         add_ledger_entry(
-            account_type="store",
-            account_id=d["sale_store"],
-            entry_type="handling_fee",
-            related_id=sale_id,
-            amount=total_fee,
+            account_type=buyer_type,
+            account_id=d["sale_customer"],
+            entry_type="sale",
+            related_id=None,  # will update after sale_id known
+            amount=-total_sale,
             currency=cur,
-            note="",  # NO NOTE for handling fee
+            note=d["sale_note"],
             date=datetime.utcnow().strftime("%d%m%Y"),
             timestamp=datetime.utcnow().isoformat(),
             item_id=d["sale_item"],
@@ -315,32 +263,18 @@ async def confirm_sale(update: Update, context: ContextTypes.DEFAULT_TYPE):
             unit_price=d["sale_price"],
             store_id=d["sale_store"],
         )
-    elif buyer_type == "partner":
-        # Deduct the handling fee from the partner account, credit to store
-        if total_fee > 0:
-            add_ledger_entry(
-                account_type="partner",
-                account_id=d["sale_customer"],
-                entry_type="handling_fee",
-                related_id=sale_id,
-                amount=-total_fee,
-                currency=cur,
-                note="",  # NO NOTE for handling fee
-                date=datetime.utcnow().strftime("%d%m%Y"),
-                timestamp=datetime.utcnow().isoformat(),
-                item_id=d["sale_item"],
-                quantity=d["sale_qty"],
-                unit_price=d["sale_price"],
-                store_id=d["sale_store"],
-            )
+        ledger_entries_written.append((buyer_type, d["sale_customer"], None))  # Track for possible rollback
+
+        # Handling fee entries as needed
+        if buyer_type == "customer" and total_fee > 0:
             add_ledger_entry(
                 account_type="store",
                 account_id=d["sale_store"],
                 entry_type="handling_fee",
-                related_id=sale_id,
+                related_id=None,
                 amount=total_fee,
                 currency=cur,
-                note="",  # NO NOTE for handling fee
+                note="",
                 date=datetime.utcnow().strftime("%d%m%Y"),
                 timestamp=datetime.utcnow().isoformat(),
                 item_id=d["sale_item"],
@@ -348,7 +282,92 @@ async def confirm_sale(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 unit_price=d["sale_price"],
                 store_id=d["sale_store"],
             )
-    # store own sale: do not record handling fee
+            ledger_entries_written.append(("store", d["sale_store"], None))
+        elif buyer_type == "partner" and total_fee > 0:
+            add_ledger_entry(
+                account_type="partner",
+                account_id=d["sale_customer"],
+                entry_type="handling_fee",
+                related_id=None,
+                amount=-total_fee,
+                currency=cur,
+                note="",
+                date=datetime.utcnow().strftime("%d%m%Y"),
+                timestamp=datetime.utcnow().isoformat(),
+                item_id=d["sale_item"],
+                quantity=d["sale_qty"],
+                unit_price=d["sale_price"],
+                store_id=d["sale_store"],
+            )
+            ledger_entries_written.append(("partner", d["sale_customer"], None))
+            add_ledger_entry(
+                account_type="store",
+                account_id=d["sale_store"],
+                entry_type="handling_fee",
+                related_id=None,
+                amount=total_fee,
+                currency=cur,
+                note="",
+                date=datetime.utcnow().strftime("%d%m%Y"),
+                timestamp=datetime.utcnow().isoformat(),
+                item_id=d["sale_item"],
+                quantity=d["sale_qty"],
+                unit_price=d["sale_price"],
+                store_id=d["sale_store"],
+            )
+            ledger_entries_written.append(("store", d["sale_store"], None))
+
+        # 2. Insert to sales table
+        sale_id = secure_db.insert("sales", {
+            "customer_id": d["sale_customer"],
+            "store_id":    d["sale_store"],
+            "item_id":     d["sale_item"],
+            "quantity":    d["sale_qty"],
+            "unit_price":  d["sale_price"],
+            "handling_fee": total_fee,
+            "note":        d["sale_note"],
+            "currency":    cur,
+            "timestamp":   datetime.utcnow().isoformat(),
+        })
+
+        # 3. Deduct inventory
+        q = Query()
+        rec = secure_db.table("store_inventory").get(
+            (q.store_id == d["sale_store"]) & (q.item_id == d["sale_item"])
+        )
+        if rec:
+            secure_db.update("store_inventory",
+                            {"quantity": rec["quantity"] - d["sale_qty"]},
+                            [rec.doc_id])
+
+        # 4. Credit handling fee to store (if applicable)
+        if total_fee > 0:
+            secure_db.insert("store_payments", {
+                "store_id": d["sale_store"],
+                "amount":   total_fee,
+                "currency": cur,
+                "note":     "Handling fee for customer sale",
+                "timestamp":datetime.utcnow().isoformat(),
+            })
+
+        # 5. Optionally, update the related_id in ledger entries if desired
+        # (If you want this linkage, you'd need to update your ledger to support update, or use sale_id from the start)
+
+    except Exception as e:
+        # Rollback: delete any written ledger entries and sales record
+        if sale_id is not None:
+            try:
+                secure_db.remove("sales", [sale_id])
+            except Exception:
+                pass
+        # Remove ledger entries by best guess (without sale_id)
+        for acct_type, acct_id, relid in ledger_entries_written:
+            try:
+                delete_ledger_entries_by_related(acct_type, acct_id, relid)
+            except Exception:
+                pass
+        await update.callback_query.edit_message_text(f"❌ Sale aborted, error: {e}")
+        return ConversationHandler.END
 
     await update.callback_query.edit_message_text(
         "✅ Sale recorded & inventory updated.",
@@ -356,7 +375,6 @@ async def confirm_sale(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                                                  callback_data="sales_menu")]]))
     return ConversationHandler.END
 
-# ...rest of file unchanged, but edit and delete logic should also be updated for consistency if needed...
 
 
 # ======================================================================
