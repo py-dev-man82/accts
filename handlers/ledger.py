@@ -5,6 +5,8 @@ Ledger module for accounting system.
 
 Each entry records a financial or inventory-affecting event, for audit and reporting.
 Ledger is append-only (historical), and all balances/reports are derived from these entries.
+
+Now supports optional: item_id, quantity, unit_price, store_id.
 """
 
 import logging
@@ -23,7 +25,11 @@ def add_ledger_entry(
     currency: str,
     note: str = "",
     date: str | None = None,
-    timestamp: str | None = None
+    timestamp: str | None = None,
+    item_id: str | int | None = None,
+    quantity: int | None = None,
+    unit_price: float | None = None,
+    store_id: int | str | None = None
 ):
     """
     Add a new entry to the ledger.
@@ -38,6 +44,10 @@ def add_ledger_entry(
         note:           Free-form note
         date:           Optional: DDMMYYYY string. Defaults to today.
         timestamp:      Optional: ISO string. Defaults to now.
+        item_id:        Optional: SKU or item code for sales
+        quantity:       Optional: quantity of item
+        unit_price:     Optional: price per unit
+        store_id:       Optional: store account (for multi-store/account systems)
     """
     if date is None:
         date = datetime.now().strftime("%d%m%Y")
@@ -55,6 +65,16 @@ def add_ledger_entry(
         "date":         date,
         "timestamp":    timestamp,
     }
+    # NEW: Add optional sale details if supplied
+    if item_id is not None:
+        entry["item_id"] = item_id
+    if quantity is not None:
+        entry["quantity"] = quantity
+    if unit_price is not None:
+        entry["unit_price"] = unit_price
+    if store_id is not None:
+        entry["store_id"] = store_id
+
     try:
         secure_db.insert(LEDGER_TABLE, entry)
         logger.info(f"Ledger entry added: {entry}")
