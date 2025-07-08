@@ -195,6 +195,7 @@ async def get_sale_fee(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def get_sale_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Determine note from callback or message
     if update.callback_query and update.callback_query.data == "note_skip":
         await update.callback_query.answer()
         note = ""
@@ -202,6 +203,7 @@ async def get_sale_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
         note = update.message.text.strip()
     context.user_data["sale_note"] = note
 
+    # Build the summary
     d = context.user_data
     cust  = secure_db.table("customers").get(doc_id=d["sale_customer"])
     store = secure_db.table("stores").get(doc_id=d["sale_store"])
@@ -222,8 +224,16 @@ async def get_sale_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("✅ Yes", callback_data="sale_yes"),
          InlineKeyboardButton("❌ No",  callback_data="sale_no")]
     ])
-    await update.message.reply_text(summary, reply_markup=kb)
+
+    # **BRANCH** on callback vs message
+    if update.callback_query:
+        # edit the existing prompt
+        await update.callback_query.edit_message_text(summary, reply_markup=kb)
+    else:
+        await update.message.reply_text(summary, reply_markup=kb)
+
     return S_CONFIRM
+
 
 
 @require_unlock
