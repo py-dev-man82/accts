@@ -11,7 +11,7 @@ from telegram.ext import (
 from secure_db import secure_db
 from handlers.utils import require_unlock, fmt_money, fmt_date
 from handlers.ledger import get_ledger, get_balance
-from handlers.bot import start  # Main menu handler
+from bot import start  # Main menu handler
 
 (
     CUST_SELECT,
