@@ -205,7 +205,6 @@ if scope in ["full", "sales"]:
             store = secure_db.table("stores").get(doc_id=s.get("store_id")) if s.get("store_id") else None
             store_str = f"@{store['name']}" if store else ""
             line = f"• {fmt_date(s['date'])}: {fmt_money(-s['amount'], currency)} {store_str}"
-            # Only show the note if it does NOT mention "handling fee" (any case)
             note = s.get('note', '')
             if note and "handling fee" not in note.lower():
                 line += f"  📝 {note}"
@@ -215,10 +214,6 @@ if scope in ["full", "sales"]:
     if page == 0:
         lines.append(f"📊 *Total Sales:* {fmt_money(total_sales, currency)}")
 
-        else:
-            lines.append("  (No sales on this page)")
-        if page == 0:
-            lines.append(f"📊 *Total Sales:* {fmt_money(total_sales, currency)}")
 
     if scope in ["full", "payments"]:
         lines.append("\n💵 *Payments*")
