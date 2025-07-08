@@ -27,15 +27,10 @@ async def _goto_main_menu(update, context):
 _PAGE_SIZE = 8
 
 def _is_general_customer(c):
-    # Exclude any customer who is a partner, a store, or present in the partner/store tables
-    partner_ids = {p.doc_id for p in secure_db.all("partners")}
-    store_ids = {s.doc_id for s in secure_db.all("stores")}
-    return (
-        not c.get('is_partner')
-        and not c.get('is_store')
-        and c.doc_id not in partner_ids
-        and c.doc_id not in store_ids
-    )
+    partner_names = {p['name'] for p in secure_db.all("partners")}
+    store_names = {s['name'] for s in secure_db.all("stores")}
+    return c['name'] not in partner_names and c['name'] not in store_names
+
 
 @require_unlock
 async def show_customer_report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
