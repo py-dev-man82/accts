@@ -194,12 +194,13 @@ async def get_sale_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
         note = update.message.text.strip()
     context.user_data["sale_note"] = note
 
-    # Build the summary
+   # Build the summary
     d = context.user_data
     cust  = secure_db.table("customers").get(doc_id=d["sale_customer"])
     store = secure_db.table("stores").get(doc_id=d["sale_store"])
     cur   = store["currency"]
     total = d["sale_qty"] * d["sale_price"]
+    total_fee = d["sale_fee"] * d["sale_qty"]
 
     summary = (
         f"✅ **Confirm Sale**\n"
@@ -207,8 +208,8 @@ async def get_sale_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Store: {store['name']} ({cur})\n"
         f"Item {d['sale_item']} ×{d['sale_qty']}\n"
         f"Unit:  {fmt_money(d['sale_price'], cur)}\n"
-        f"Total: {fmt_money(total,           cur)}\n"
-        f"Fee:   {fmt_money(d['sale_fee'],   cur)}\n"
+        f"Total: {fmt_money(total, cur)}\n"
+        f"Fee:   {fmt_money(total_fee, cur)}\n"
         f"Note:  {note or '—'}\n\nConfirm?"
     )
     kb = InlineKeyboardMarkup([
@@ -234,60 +235,19 @@ async def confirm_sale(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     d   = context.user_data
     cur = secure_db.table("stores").get(doc_id=d["sale_store"])["currency"]
+    total_fee = d["sale_fee"] * d["sale_qty"]
 
-    sale_data = {
+    sale_id = secure_db.insert("sales", {
         "customer_id": d["sale_customer"],
         "store_id":    d["sale_store"],
-        "item_id":     d["sale_item"],        # stays as str
+        "item_id":     d["sale_item"],
         "quantity":    d["sale_qty"],
         "unit_price":  d["sale_price"],
-        "handling_fee":d["sale_fee"],
+        "handling_fee": total_fee,  # Store total fee
         "note":        d["sale_note"],
         "currency":    cur,
         "timestamp":   datetime.utcnow().isoformat(),
-    }
-
-    secure_db.insert("sales", sale_data)
-
-    # Try to get doc_id of the inserted sale for ledger linkage
-    try:
-        sale_doc_id = secure_db.table("sales")[-1].doc_id
-    except Exception as e:
-        sale_doc_id = None
-        logging.error(f"[sales] Could not retrieve sale doc_id: {e}")
-
-    # LEDGER PATCH - customer ledger (debit full sale value)
-    try:
-        add_ledger_entry(
-            account_type="customer",
-            account_id=d["sale_customer"],
-            entry_type="sale",
-            related_id=sale_doc_id,
-            amount=-(d["sale_qty"] * d["sale_price"]),
-            currency=cur,
-            note=d.get("sale_note", ""),
-            date=datetime.utcnow().strftime("%d%m%Y"),
-            timestamp=sale_data["timestamp"],
-        )
-    except Exception as e:
-        logging.error(f"[sales] Failed to add customer ledger entry: {e}")
-
-    # LEDGER PATCH - store ledger (credit handling fee, if any)
-    if d["sale_fee"] > 0:
-        try:
-            add_ledger_entry(
-                account_type="store",
-                account_id=d["sale_store"],
-                entry_type="handling_fee",
-                related_id=sale_doc_id,
-                amount=d["sale_fee"],
-                currency=cur,
-                note="Handling fee for customer sale",
-                date=datetime.utcnow().strftime("%d%m%Y"),
-                timestamp=sale_data["timestamp"],
-            )
-        except Exception as e:
-            logging.error(f"[sales] Failed to add store ledger entry: {e}")
+    })
 
     # deduct inventory
     q = Query()
@@ -299,15 +259,26 @@ async def confirm_sale(update: Update, context: ContextTypes.DEFAULT_TYPE):
                          {"quantity": rec["quantity"] - d["sale_qty"]},
                          [rec.doc_id])
 
-    # credit handling fee to store_payments table as before
-    if d["sale_fee"] > 0:
+    # credit handling fee
+    if total_fee > 0:
         secure_db.insert("store_payments", {
             "store_id": d["sale_store"],
-            "amount":   d["sale_fee"],
+            "amount":   total_fee,
             "currency": cur,
             "note":     "Handling fee for customer sale",
             "timestamp":datetime.utcnow().isoformat(),
         })
+
+    # If using ledger, also update the customer account here
+    # total_charge = d["sale_qty"] * d["sale_price"] + total_fee
+     add_ledger_entry(
+        entity_type="customer",
+         entity_id=d["sale_customer"],
+         amount=-total_charge,
+         currency=cur,
+         reference="sale:" + str(sale_id),
+         note=f"Sale {d['sale_item']} ×{d['sale_qty']} + handling fee"
+     )
 
     await update.callback_query.edit_message_text(
         "✅ Sale recorded & inventory updated.",
