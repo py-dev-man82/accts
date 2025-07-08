@@ -12,7 +12,6 @@ from secure_db import secure_db
 from handlers.utils import require_unlock, fmt_money, fmt_date
 from handlers.ledger import get_ledger, get_balance
 
-# Utility to reset all report-related state
 def _reset_customer_report_state(context):
     for k in ['customer_id', 'start_date', 'end_date', 'page', 'scope']:
         context.user_data.pop(k, None)
@@ -133,7 +132,6 @@ async def choose_report_scope(update: Update, context: ContextTypes.DEFAULT_TYPE
         context.user_data["end_date"] = datetime.now()
     elif data == "daterange_custom":
         return await get_custom_date(update, context)
-    # If coming from a message after entering custom date, just proceed
 
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("📝 Full Report", callback_data="scope_full")],
@@ -198,22 +196,22 @@ async def show_customer_report(update: Update, context: ContextTypes.DEFAULT_TYP
         f"Currency: {currency}\n"
     ]
 
-if scope in ["full", "sales"]:
-    lines.append("🛒 *Sales*")
-    if sales_page:
-        for s in sales_page:
-            store = secure_db.table("stores").get(doc_id=s.get("store_id")) if s.get("store_id") else None
-            store_str = f"@{store['name']}" if store else ""
-            line = f"• {fmt_date(s['date'])}: {fmt_money(-s['amount'], currency)} {store_str}"
-            note = s.get('note', '')
-            if note and "handling fee" not in note.lower():
-                line += f"  📝 {note}"
-            lines.append(line)
-    else:
-        lines.append("  (No sales on this page)")
-    if page == 0:
-        lines.append(f"📊 *Total Sales:* {fmt_money(total_sales, currency)}")
-
+    if scope in ["full", "sales"]:
+        lines.append("🛒 *Sales*")
+        if sales_page:
+            for s in sales_page:
+                store = secure_db.table("stores").get(doc_id=s.get("store_id")) if s.get("store_id") else None
+                store_str = f"@{store['name']}" if store else ""
+                line = f"• {fmt_date(s['date'])}: {fmt_money(-s['amount'], currency)} {store_str}"
+                note = s.get('note', '')
+                # Only display note if not handling fee/system generated
+                if note and "handling fee" not in note.lower():
+                    line += f"  📝 {note}"
+                lines.append(line)
+        else:
+            lines.append("  (No sales on this page)")
+        if page == 0:
+            lines.append(f"📊 *Total Sales:* {fmt_money(total_sales, currency)}")
 
     if scope in ["full", "payments"]:
         lines.append("\n💵 *Payments*")
@@ -305,8 +303,9 @@ async def export_pdf_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
             store = secure_db.table("stores").get(doc_id=s.get("store_id")) if s.get("store_id") else None
             store_str = f"@{store['name']}" if store else ""
             line = f"{fmt_date(s['date'])}: {fmt_money(-s['amount'], currency)} {store_str}"
-            if s.get('note'):
-                line += f"  Note: {s['note']}"
+            note = s.get('note', '')
+            if note and "handling fee" not in note.lower():
+                line += f"  Note: {note}"
             pdf.drawString(60, y, line)
             y -= 15
             if y<50:
