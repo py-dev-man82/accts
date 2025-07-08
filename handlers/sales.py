@@ -736,7 +736,7 @@ edit_conv = ConversationHandler(
         S_EDIT_PAGE:   [CallbackQueryHandler(handle_edit_pagination, pattern="^edit_(prev|next)$"),
                         CallbackQueryHandler(get_edit_customer,      pattern="^edit_time_back$"),
                         CallbackQueryHandler(get_edit_sale,          pattern="^edit_sale_\\d+$"),
-                        MessageHandler(filters.Regex(r"^\\d+$") & ~filters.COMMAND,
+                        MessageHandler(filters.Regex(r"^\d+$") & ~filters.COMMAND,
                                        select_edit_sale_by_id)],
         S_EDIT_FIELD:  [CallbackQueryHandler(get_edit_field, pattern="^edit_field_")],
         S_EDIT_NEWVAL: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_edit)],
@@ -751,7 +751,7 @@ delete_conv = ConversationHandler(
     states={
         S_DELETE_SELECT:  [CallbackQueryHandler(get_delete_customer, pattern="^del_cust_")],
         S_DELETE_CONFIRM: [CallbackQueryHandler(perform_delete_sale, pattern="^del_conf_"),
-                           MessageHandler(filters.Regex(r"^\\d+$") & ~filters.COMMAND,
+                           MessageHandler(filters.Regex(r"^\d+$") & ~filters.COMMAND,
                                           select_delete_sale_by_id)],
     },
     fallbacks=[CommandHandler("cancel", show_sales_menu)],
