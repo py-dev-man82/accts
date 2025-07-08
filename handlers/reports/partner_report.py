@@ -10,6 +10,7 @@ from telegram.ext import (
 )
 from secure_db import secure_db
 from handlers.utils import require_unlock, fmt_money, fmt_date
+from handlers.ledger import get_ledger, get_balance
 
 (
     PARTNER_SELECT,
@@ -21,34 +22,43 @@ from handlers.utils import require_unlock, fmt_money, fmt_date
 
 _PAGE_SIZE = 8
 
+def _reset_partner_report_state(context):
+    for k in ['partner_id', 'start_date', 'end_date', 'page', 'scope']:
+        context.user_data.pop(k, None)
+
+def _is_partner_entity(p):
+    # Only those in partners table, ignore stores/customers.
+    return True
+
 @require_unlock
 async def show_partner_report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    _reset_partner_report_state(context)
     logging.info("show_partner_report_menu called")
-    await update.callback_query.answer()
     partners = secure_db.all("partners")
     if not partners:
+        await update.callback_query.answer()
         await update.callback_query.edit_message_text(
             "⚠️ No partners found.",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔙 Back", callback_data="partner_report_menu")]
+                [InlineKeyboardButton("🔙 Back", callback_data="partner_report_menu")],
             ])
         )
         return ConversationHandler.END
 
     buttons = [
         InlineKeyboardButton(f"{p['name']} ({p['currency']})", callback_data=f"partrep_{p.doc_id}")
-        for p in partners
+        for p in partners if _is_partner_entity(p)
     ]
     grid = [buttons[i:i+2] for i in range(0, len(buttons), 2)]
     grid.append([InlineKeyboardButton("🔙 Back", callback_data="partner_report_menu")])
 
+    await update.callback_query.answer()
     await update.callback_query.edit_message_text(
         "📄 Select a partner to view report:",
         reply_markup=InlineKeyboardMarkup(grid)
     )
     return PARTNER_SELECT
 
-@require_unlock
 async def select_date_range(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logging.info("select_date_range: %s", update.callback_query.data)
     await update.callback_query.answer()
@@ -58,19 +68,26 @@ async def select_date_range(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("📅 Weekly (Last 7 days)", callback_data="daterange_weekly")],
         [InlineKeyboardButton("📆 Custom Range",          callback_data="daterange_custom")],
-        [InlineKeyboardButton("🔙 Back",                  callback_data="partner_report_menu")],
+        [
+            InlineKeyboardButton("🔙 Back", callback_data="partner_report_menu"),
+        ],
     ])
-    await update.callback_query.edit_message_text("Choose date range:", reply_markup=kb)
+    await update.callback_query.edit_message_text(
+        "Choose date range:", reply_markup=kb
+    )
     return DATE_RANGE_SELECT
 
-@require_unlock
 async def get_custom_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logging.info("get_custom_date")
     await update.callback_query.answer()
-    await update.callback_query.edit_message_text("📅 Enter start date (DDMMYYYY):")
+    await update.callback_query.edit_message_text(
+        "📅 Enter start date (DDMMYYYY):",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔙 Back", callback_data="partner_report_menu")],
+        ])
+    )
     return CUSTOM_DATE_INPUT
 
-@require_unlock
 async def save_custom_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logging.info("save_custom_date: %s", update.message.text)
     text = update.message.text.strip()
@@ -84,11 +101,15 @@ async def save_custom_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["end_date"]   = datetime.now()
     return await choose_report_scope(update, context)
 
-@require_unlock
 async def choose_report_scope(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logging.info("choose_report_scope: %s", update.callback_query.data)
-    await update.callback_query.answer()
-    data = update.callback_query.data
+    data = None
+    if getattr(update, "callback_query", None):
+        await update.callback_query.answer()
+        data = update.callback_query.data
+    elif getattr(update, "message", None):
+        data = "custom_date_message"
+
+    logging.info("choose_report_scope: %s", data)
     if data == "daterange_weekly":
         context.user_data["start_date"] = datetime.now() - timedelta(days=7)
         context.user_data["end_date"]   = datetime.now()
@@ -103,19 +124,31 @@ async def choose_report_scope(update: Update, context: ContextTypes.DEFAULT_TYPE
         [InlineKeyboardButton("📦 Inventory Only", callback_data="scope_inventory")],
         [InlineKeyboardButton("🔙 Back",           callback_data="partner_report_menu")],
     ])
-    await update.callback_query.edit_message_text("Choose report scope:", reply_markup=kb)
+    if getattr(update, "callback_query", None):
+        await update.callback_query.edit_message_text("Choose report scope:", reply_markup=kb)
+    else:
+        await update.message.reply_text("Choose report scope:", reply_markup=kb)
     return REPORT_SCOPE_SELECT
 
-def _paginate(items, page: int):
+def _paginate(items, page):
     start = page * _PAGE_SIZE
     return items[start:start + _PAGE_SIZE], len(items)
 
+def _filter_ledger(entries, start_date, end_date):
+    out = []
+    for e in entries:
+        try:
+            d = datetime.strptime(e["date"], "%d%m%Y")
+        except Exception:
+            continue
+        if start_date <= d <= end_date:
+            out.append(e)
+    return out
+
 @require_unlock
 async def show_partner_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logging.info("show_partner_report: page=%s scope=%s",
-                 context.user_data.get("page"), context.user_data.get("scope"))
+    logging.info("show_partner_report: page=%s scope=%s", context.user_data.get("page"), context.user_data.get("scope"))
     await update.callback_query.answer()
-
     scope = update.callback_query.data.split("_")[-1]
     context.user_data["scope"] = scope
     context.user_data.setdefault("page", 0)
@@ -125,57 +158,52 @@ async def show_partner_report(update: Update, context: ContextTypes.DEFAULT_TYPE
     end_date   = context.user_data["end_date"]
     page       = context.user_data["page"]
     partner    = secure_db.table("partners").get(doc_id=pid)
+    currency   = partner['currency']
 
-    # Fetch data
-    all_sales = [
-        s for s in secure_db.all("partner_sales")
-        if s["partner_id"] == pid and start_date <= datetime.fromisoformat(s["timestamp"]) <= end_date
-    ]
-    all_payments = [
-        p for p in secure_db.all("partner_payouts")
-        if p["partner_id"] == pid and start_date <= datetime.fromisoformat(p["timestamp"]) <= end_date
-    ]
-    all_costs = [
-        c for c in secure_db.all("partner_inventory")
-        if c["partner_id"] == pid and start_date <= datetime.strptime(c["date"], "%d%m%Y") <= end_date
-    ]
+    # Unified ledger logic
+    ledger_entries = get_ledger("partner", pid)
+    filtered_entries = _filter_ledger(ledger_entries, start_date, end_date)
+    sales    = [e for e in filtered_entries if e["entry_type"] == "sale"]
+    payments = [e for e in filtered_entries if e["entry_type"] == "payment"]
+    costs    = [e for e in filtered_entries if e["entry_type"] == "cost"]
+    # inventory comes from last known costs minus sales
+    inventory_map = {}
+    for c in costs:
+        iid = c['item_id']
+        inventory_map.setdefault(iid, 0)
+        inventory_map[iid] += c['quantity']
+    for s in sales:
+        iid = s['item_id']
+        inventory_map.setdefault(iid, 0)
+        inventory_map[iid] -= s['quantity']
 
-    # Inventory & market value lookup (per live DB)
-    inventory = {}
-    for c in all_costs:
-        inventory.setdefault(c["item_id"], 0)
-        inventory[c["item_id"]] += c["quantity"]
-    for s in all_sales:
-        inventory.setdefault(s["item_id"], 0)
-        inventory[s["item_id"]] -= s["quantity"]
-
+    # Live lookup market price and valuation
     inv_values = {}
-    for item_id, qty in inventory.items():
-        # Live lookup from items table (item_id should be doc_id)
+    for item_id, qty in inventory_map.items():
         item_rec = secure_db.table("items").get(doc_id=int(item_id))
         price = item_rec.get("current_price", 0.0) if item_rec else 0.0
         inv_values[item_id] = qty * price
     total_inventory_value = sum(inv_values.values())
 
     # Totals
-    total_sales        = sum(s["quantity"] * s["unit_price"] for s in all_sales)
-    total_fees         = sum(s.get("handling_fee", 0) for s in all_sales)
-    total_payments_loc = sum(p["local_amt"] for p in all_payments)
-    total_payments_usd = sum(p["usd_amt"]   for p in all_payments)
-    total_costs        = sum(c["quantity"] * c["unit_cost"] for c in all_costs)
-    balance            = total_sales - total_costs - total_payments_loc - total_fees
+    total_sales        = sum(s["quantity"] * s["unit_price"] for s in sales)
+    total_fees         = sum(s.get("handling_fee", 0) for s in sales)
+    total_payments_loc = sum(p["amount"] for p in payments)
+    total_payments_usd = sum(p.get("usd_amt", 0) for p in payments)
+    total_costs        = sum(c["quantity"] * c["unit_cost"] for c in costs)
+    balance            = total_sales - total_costs - total_fees - total_payments_loc
     total_cash_position = balance + total_inventory_value
 
-    sales_page,    sales_count    = _paginate(all_sales,    page) if scope in ["full","sales"]     else ([],0)
-    payouts_page,  payouts_count  = _paginate(all_payments, page) if scope in ["full","payments"]  else ([],0)
-    costs_page,    costs_count    = _paginate(all_costs,    page) if scope in ["full","costs"]     else ([],0)
-    inv_items                     = list(inventory.items())
-    inv_page,     inv_count       = _paginate(inv_items,     page) if scope in ["full","inventory"] else ([],0)
+    sales_page,    sales_count    = _paginate(sales,    page) if scope in ["full","sales"]     else ([],0)
+    payouts_page,  payouts_count  = _paginate(payments, page) if scope in ["full","payments"]  else ([],0)
+    costs_page,    costs_count    = _paginate(costs,    page) if scope in ["full","costs"]     else ([],0)
+    inv_items                    = list(inventory_map.items())
+    inv_page,     inv_count      = _paginate(inv_items, page) if scope in ["full","inventory"] else ([],0)
 
     lines = [
         f"📄 *Report — {partner['name']}*",
         f"Period: {fmt_date(start_date.strftime('%d%m%Y'))} → {fmt_date(end_date.strftime('%d%m%Y'))}",
-        f"Currency: {partner['currency']}\n"
+        f"Currency: {currency}\n"
     ]
 
     # SALES
@@ -183,31 +211,39 @@ async def show_partner_report(update: Update, context: ContextTypes.DEFAULT_TYPE
         lines.append("🛒 *Sales*")
         if sales_page:
             for s in sales_page:
-                date = datetime.fromisoformat(s['timestamp']).strftime('%d%m%Y')
-                lines.append(
-                    f"• {fmt_date(date)}: Item {s['item_id']} ×{s['quantity']} @ {fmt_money(s['unit_price'], partner['currency'])} = {fmt_money(s['quantity'] * s['unit_price'], partner['currency'])}"
-                )
+                store = secure_db.table("stores").get(doc_id=s.get("store_id")) if s.get("store_id") else None
+                store_str = f"@{store['name']}" if store else ""
+                line = f"• {fmt_date(s['date'])}: Item {s['item_id']} ×{s['quantity']} @ {fmt_money(s['unit_price'], currency)} = {fmt_money(s['quantity'] * s['unit_price'], currency)} {store_str}"
+                note = s.get('note', '')
+                if note:
+                    line += f"  📝 {note}"
+                lines.append(line)
         else:
             lines.append("  (No sales on this page)")
         if page == 0:
-            lines.append(f"📊 *Total Sales:* {fmt_money(total_sales, partner['currency'])}")
+            lines.append(f"📊 *Total Sales:* {fmt_money(total_sales, currency)}")
             if total_fees:
-                lines.append(f"📊 *Handling Fees Deducted:* {fmt_money(total_fees, partner['currency'])}")
+                lines.append(f"📊 *Handling Fees Deducted:* {fmt_money(total_fees, currency)}")
 
     # PAYMENTS
     if scope in ["full","payments"]:
         lines.append("\n💵 *Payments*")
         if payouts_page:
             for p in payouts_page:
-                date     = datetime.fromisoformat(p['timestamp']).strftime('%d%m%Y')
-                fee_perc = p.get("fee_perc", 0.0)
-                lines.append(
-                    f"• {fmt_date(date)}: {fmt_money(p['local_amt'], partner['currency'])} (Fee: {fee_perc:.1f}% = {fmt_money(p['fee_amt'], partner['currency'])}) → {fmt_money(p['usd_amt'], 'USD')}"
-                )
+                fx = p.get("fx_rate")
+                usd = p.get("usd_amt")
+                line = f"• {fmt_date(p['date'])}: {fmt_money(p['amount'], currency)}"
+                if fx is not None:
+                    line += f"  FX {fx:.4f}"
+                if usd is not None:
+                    line += f"  USD {usd:.2f}"
+                if p.get('note'):
+                    line += f"  📝 {p['note']}"
+                lines.append(line)
         else:
             lines.append("  (No payments on this page)")
         if page == 0:
-            lines.append(f"📊 *Total Payments:* {fmt_money(total_payments_loc, partner['currency'])}")
+            lines.append(f"📊 *Total Payments:* {fmt_money(total_payments_loc, currency)}")
             lines.append(f"📊 *Total USD Paid:* {fmt_money(total_payments_usd, 'USD')}")
 
     # COSTS
@@ -215,14 +251,17 @@ async def show_partner_report(update: Update, context: ContextTypes.DEFAULT_TYPE
         lines.append("\n⚙️ *Costs*")
         if costs_page:
             for c in costs_page:
-                date = fmt_date(c["date"])
-                lines.append(
-                    f"• {date}: Item {c['item_id']} ×{c['quantity']} @ {fmt_money(c['unit_cost'], partner['currency'])} = {fmt_money(c['quantity'] * c['unit_cost'], partner['currency'])}"
-                )
+                store = secure_db.table("stores").get(doc_id=c.get("store_id")) if c.get("store_id") else None
+                store_str = f"@{store['name']}" if store else ""
+                line = f"• {fmt_date(c['date'])}: Item {c['item_id']} ×{c['quantity']} @ {fmt_money(c['unit_cost'], currency)} = {fmt_money(c['quantity'] * c['unit_cost'], currency)} {store_str}"
+                note = c.get('note', '')
+                if note:
+                    line += f"  📝 {note}"
+                lines.append(line)
         else:
             lines.append("  (No costs on this page)")
         if page == 0:
-            lines.append(f"📊 *Total Costs:* {fmt_money(total_costs, partner['currency'])}")
+            lines.append(f"📊 *Total Costs:* {fmt_money(total_costs, currency)}")
 
     # INVENTORY
     if scope in ["full","inventory"]:
@@ -233,16 +272,16 @@ async def show_partner_report(update: Update, context: ContextTypes.DEFAULT_TYPE
                 price = item_rec.get("current_price", 0.0) if item_rec else 0.0
                 value = inv_values.get(item_id, 0.0)
                 lines.append(
-                    f"• Item {item_id}: {qty} units × {fmt_money(price, partner['currency'])} = {fmt_money(value, partner['currency'])}"
+                    f"• Item {item_id}: {qty} units × {fmt_money(price, currency)} = {fmt_money(value, currency)}"
                 )
         else:
             lines.append("  (No inventory on this page)")
         if page == 0:
-            lines.append(f"\n📊 *Total Inventory Value:* {fmt_money(total_inventory_value, partner['currency'])}")
+            lines.append(f"\n📊 *Total Inventory Value:* {fmt_money(total_inventory_value, currency)}")
 
     # BALANCE & TOTAL CASH POSITION
-    lines.append(f"\n📊 *Balance:* {fmt_money(balance, partner['currency'])}")
-    lines.append(f"📊 *Total Cash Position:* {fmt_money(total_cash_position, partner['currency'])}")
+    lines.append(f"\n📊 *Balance:* {fmt_money(balance, currency)}")
+    lines.append(f"📊 *Total Cash Position:* {fmt_money(total_cash_position, currency)}")
 
     total_items_current = {
         "sales":    sales_count,
@@ -256,7 +295,7 @@ async def show_partner_report(update: Update, context: ContextTypes.DEFAULT_TYPE
     if (page + 1) * _PAGE_SIZE < total_items_current:
         nav.append(InlineKeyboardButton("➡️ Next", callback_data="page_next"))
     nav.append(InlineKeyboardButton("📄 Export PDF", callback_data="export_pdf"))
-    nav.append(InlineKeyboardButton("🔙 Back",       callback_data="partner_report_menu"))
+    nav.append(InlineKeyboardButton("🔙 Back", callback_data="partner_report_menu"))
 
     await update.callback_query.edit_message_text(
         "\n".join(lines),
