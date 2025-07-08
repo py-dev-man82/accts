@@ -25,6 +25,9 @@ from secure_db import secure_db
 
 logger = logging.getLogger(__name__)
 
+# ───────────────────────────────────────────────────────────────
+#  Conversation-state constants
+# ───────────────────────────────────────────────────────────────
 (
     P_ADD_CUST,   P_ADD_LOCAL,  P_ADD_FEE,   P_ADD_USD,
     P_ADD_NOTE,   P_ADD_DATE,   P_ADD_CONFIRM,
@@ -40,10 +43,14 @@ logger = logging.getLogger(__name__)
 
 ROWS_PER_PAGE = 20
 
+# ───────────────────────────────────────────────────────────────
+#  Helpers
+# ───────────────────────────────────────────────────────────────
 def _months_filter(rows, months: int):
     if months <= 0:
         return rows
-    cutoff = datetime.utcnow().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    cutoff = datetime.utcnow().replace(day=1, hour=0, minute=0,
+                                       second=0, microsecond=0)
     m = cutoff.month - months
     y = cutoff.year
     if m <= 0:
@@ -59,7 +66,11 @@ def _cust_currency(cid: int) -> str:
     row = secure_db.table("customers").get(doc_id=cid) or {}
     return row.get("currency", "USD")
 
-async def show_payment_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ───────────────────────────────────────────────────────────────
+#  Sub-menu & universal Back handler
+# ───────────────────────────────────────────────────────────────
+async def show_payment_menu(update: Update,
+                            context: ContextTypes.DEFAULT_TYPE):
     if update.callback_query:
         await update.callback_query.answer()
     kb = InlineKeyboardMarkup([
@@ -75,7 +86,9 @@ async def show_payment_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text(msg, reply_markup=kb)
 
-async def payment_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def payment_back(update: Update,
+                       context: ContextTypes.DEFAULT_TYPE):
+    """Abort any conversation, clear temp data, return to Payments menu."""
     context.user_data.clear()
     await show_payment_menu(update, context)
     return ConversationHandler.END
@@ -278,7 +291,106 @@ async def confirm_add_payment(update: Update,
 # ======================================================================
 #                       VIEW FLOW  (Customer → Period → Pages)
 # ======================================================================
-# ... (VIEW FLOW remains unchanged) ...
+@require_unlock
+async def view_payment_start(update: Update,
+                             context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+    customers = secure_db.all("customers")
+    if not customers:
+        await update.callback_query.edit_message_text(
+            "No customers.",
+            reply_markup=InlineKeyboardMarkup(
+                [[InlineKeyboardButton("🔙 Back", callback_data="payment_menu")]]
+            ),
+        )
+        return ConversationHandler.END
+
+    buttons = [InlineKeyboardButton(f"{c['name']} ({c['currency']})",
+                                    callback_data=f"pay_view_cust_{c.doc_id}")
+               for c in customers]
+    buttons.append(InlineKeyboardButton("🔙 Back",
+                                        callback_data="payment_menu"))
+    kb = InlineKeyboardMarkup([buttons[i:i+2]
+                               for i in range(0, len(buttons), 2)])
+    await update.callback_query.edit_message_text("Select customer:",
+                                                  reply_markup=kb)
+    return P_VIEW_CUST
+
+async def view_choose_period(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+    context.user_data["view_cid"] = int(
+        update.callback_query.data.split("_")[-1]
+    )
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📆 Last 3 M", callback_data="pay_view_filt_3m")],
+        [InlineKeyboardButton("📆 Last 6 M", callback_data="pay_view_filt_6m")],
+        [InlineKeyboardButton("🗓️ All",      callback_data="pay_view_filt_all")],
+        [InlineKeyboardButton("🔙 Back",     callback_data="view_payment")],
+    ])
+    await update.callback_query.edit_message_text("Choose period:",
+                                                  reply_markup=kb)
+    return P_VIEW_TIME
+
+async def view_set_filter(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+    context.user_data["view_period"] = update.callback_query.data.split("_")[-1]
+    context.user_data["view_page"]   = 1
+    return await render_view_page(update, context)
+
+async def render_view_page(update: Update,
+                           context: ContextTypes.DEFAULT_TYPE):
+    cid    = context.user_data["view_cid"]
+    period = context.user_data["view_period"]
+    page   = context.user_data["view_page"]
+    cur    = _cust_currency(cid)
+
+    rows = [r for r in secure_db.all("customer_payments")
+            if r["customer_id"] == cid]
+    if period != "all":
+        rows = _months_filter(rows, int(period.rstrip("m")))
+    rows.sort(key=lambda r:
+              datetime.strptime(r.get("date", "01011970"), "%d%m%Y"),
+              reverse=True)
+
+    total = len(rows)
+    start, end = (page-1)*ROWS_PER_PAGE, page*ROWS_PER_PAGE
+    chunk = rows[start:end]
+
+    if not chunk:
+        text = "No payments for that period."
+    else:
+        lines = []
+        for r in chunk:
+            fee_amt = r["local_amt"] * r["fee_perc"] / 100
+            net     = r["local_amt"] - fee_amt
+            fx      = (net / r["usd_amt"]) if r["usd_amt"] else 0
+            lines.append(
+                f"[{r.doc_id}] "
+                f"{fmt_money(r['local_amt'], cur)} ➜ "
+                f"{fmt_money(r['usd_amt'], 'USD')} "
+                f"on {fmt_date(r['date'])} | FX {fx:.4f}"
+            )
+        text = (f"💰 Payments  P{page}/"
+                f"{(total+ROWS_PER_PAGE-1)//ROWS_PER_PAGE}\n\n"
+                + "\n".join(lines))
+
+    nav = []
+    if start > 0:
+        nav.append(InlineKeyboardButton("⬅️ Prev", callback_data="pay_view_prev"))
+    if end < total:
+        nav.append(InlineKeyboardButton("➡️ Next", callback_data="pay_view_next"))
+    kb = InlineKeyboardMarkup([nav,
+                               [InlineKeyboardButton("🔙 Back",
+                                                     callback_data="view_payment")]])
+    await update.callback_query.edit_message_text(text, reply_markup=kb)
+    return P_VIEW_PAGE
+
+async def view_paginate(update: Update,
+                        context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+    context.user_data["view_page"] += \
+        (-1 if update.callback_query.data.endswith("prev") else 1)
+    return await render_view_page(update, context)
 
 # ======================================================================
 #                       EDIT FLOW  (Customer → Period → Pages)
@@ -308,7 +420,75 @@ async def edit_payment_start(update: Update,
                                                   reply_markup=kb)
     return P_EDIT_CUST
 
-# ... (edit_choose_period, edit_set_filter, render_edit_page, edit_page_nav unchanged) ...
+async def edit_choose_period(update: Update,
+                             context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+    context.user_data["edit_cid"] = int(
+        update.callback_query.data.split("_")[-1]
+    )
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📆 Last 3 M", callback_data="pay_edit_filt_3m")],
+        [InlineKeyboardButton("📆 Last 6 M", callback_data="pay_edit_filt_6m")],
+        [InlineKeyboardButton("🗓️ All",      callback_data="pay_edit_filt_all")],
+        [InlineKeyboardButton("🔙 Back",     callback_data="edit_payment")],
+    ])
+    await update.callback_query.edit_message_text("Choose period:",
+                                                  reply_markup=kb)
+    return P_EDIT_TIME
+
+async def edit_set_filter(update: Update,
+                          context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+    context.user_data["edit_period"] = update.callback_query.data.split("_")[-1]
+    context.user_data["edit_page"]   = 1
+    return await render_edit_page(update, context)
+
+async def render_edit_page(update: Update,
+                           context: ContextTypes.DEFAULT_TYPE):
+    cid    = context.user_data["edit_cid"]
+    period = context.user_data["edit_period"]
+    page   = context.user_data["edit_page"]
+    cur    = _cust_currency(cid)
+
+    rows = [r for r in secure_db.all("customer_payments")
+            if r["customer_id"] == cid]
+    if period != "all":
+        rows = _months_filter(rows, int(period.rstrip("m")))
+    rows.sort(key=lambda r:
+              datetime.strptime(r.get("date", "01011970"), "%d%m%Y"),
+              reverse=True)
+
+    total = len(rows)
+    start, end = (page-1)*ROWS_PER_PAGE, page*ROWS_PER_PAGE
+    chunk = rows[start:end]
+
+    if not chunk:
+        text = "No payments."
+    else:
+        lines = [f"[{r.doc_id}] {fmt_money(r['local_amt'], cur)} ➜ "
+                 f"{fmt_money(r['usd_amt'],'USD')}"
+                 for r in chunk]
+        text = (f"✏️ Edit Payments  P{page}/"
+                f"{(total+ROWS_PER_PAGE-1)//ROWS_PER_PAGE}\n\n"
+                + "\n".join(lines)
+                + "\n\nSend DocID to edit:")
+
+    nav = []
+    if start > 0:
+        nav.append(InlineKeyboardButton("⬅️ Prev", callback_data="pay_edit_prev"))
+    if end < total:
+        nav.append(InlineKeyboardButton("➡️ Next", callback_data="pay_edit_next"))
+    kb = InlineKeyboardMarkup([nav,
+                               [InlineKeyboardButton("🔙 Back",
+                                                     callback_data="edit_payment")]])
+    await update.callback_query.edit_message_text(text, reply_markup=kb)
+    return P_EDIT_PAGE
+
+async def edit_page_nav(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+    context.user_data["edit_page"] += \
+        (-1 if update.callback_query.data.endswith("prev") else 1)
+    return await render_edit_page(update, context)
 
 async def edit_pick_doc(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -461,6 +641,118 @@ async def edit_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
 #                       DELETE FLOW  (Customer → Period → Pages)
 # ======================================================================
 @require_unlock
+async def del_payment_start(update: Update,
+                            context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+    customers = secure_db.all("customers")
+    if not customers:
+        await update.callback_query.edit_message_text(
+            "No customers.",
+            reply_markup=InlineKeyboardMarkup(
+                [[InlineKeyboardButton("🔙 Back", callback_data="payment_menu")]]
+            ),
+        )
+        return ConversationHandler.END
+
+    buttons = [InlineKeyboardButton(f"{c['name']} ({c['currency']})",
+                                    callback_data=f"pay_del_cust_{c.doc_id}")
+               for c in customers]
+    buttons.append(InlineKeyboardButton("🔙 Back",
+                                        callback_data="payment_menu"))
+    kb = InlineKeyboardMarkup([buttons[i:i+2]
+                               for i in range(0, len(buttons), 2)])
+    await update.callback_query.edit_message_text("Select customer:",
+                                                  reply_markup=kb)
+    return P_DEL_CUST
+
+async def del_choose_period(update: Update,
+                            context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+    context.user_data["del_cid"] = int(
+        update.callback_query.data.split("_")[-1]
+    )
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📆 Last 3 M", callback_data="pay_del_filt_3m")],
+        [InlineKeyboardButton("📆 Last 6 M", callback_data="pay_del_filt_6m")],
+        [InlineKeyboardButton("🗓️ All",      callback_data="pay_del_filt_all")],
+        [InlineKeyboardButton("🔙 Back",     callback_data="remove_payment")],
+    ])
+    await update.callback_query.edit_message_text("Choose period:",
+                                                  reply_markup=kb)
+    return P_DEL_TIME
+
+async def del_set_filter(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+    context.user_data["del_period"] = update.callback_query.data.split("_")[-1]
+    context.user_data["del_page"]   = 1
+    return await render_del_page(update, context)
+
+async def render_del_page(update: Update,
+                          context: ContextTypes.DEFAULT_TYPE):
+    cid    = context.user_data["del_cid"]
+    period = context.user_data["del_period"]
+    page   = context.user_data["del_page"]
+    cur    = _cust_currency(cid)
+
+    rows = [r for r in secure_db.all("customer_payments")
+            if r["customer_id"] == cid]
+    if period != "all":
+        rows = _months_filter(rows, int(period.rstrip("m")))
+    rows.sort(key=lambda r:
+              datetime.strptime(r.get("date", "01011970"), "%d%m%Y"),
+              reverse=True)
+
+    total = len(rows)
+    start, end = (page-1)*ROWS_PER_PAGE, page*ROWS_PER_PAGE
+    chunk = rows[start:end]
+
+    if not chunk:
+        text = "No payments."
+    else:
+        lines = [f"[{r.doc_id}] {fmt_money(r['local_amt'], cur)} ➜ "
+                 f"{fmt_money(r['usd_amt'],'USD')}"
+                 for r in chunk]
+        text = (f"🗑️ Delete Payments  P{page}/"
+                f"{(total+ROWS_PER_PAGE-1)//ROWS_PER_PAGE}\n\n"
+                + "\n".join(lines)
+                + "\n\nSend DocID to delete:")
+
+    nav = []
+    if start > 0:
+        nav.append(InlineKeyboardButton("⬅️ Prev", callback_data="pay_del_prev"))
+    if end < total:
+        nav.append(InlineKeyboardButton("➡️ Next", callback_data="pay_del_next"))
+    kb = InlineKeyboardMarkup([nav,
+                               [InlineKeyboardButton("🔙 Back",
+                                                     callback_data="remove_payment")]])
+    await update.callback_query.edit_message_text(text, reply_markup=kb)
+    return P_DEL_PAGE
+
+async def del_page_nav(update: Update,
+                       context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+    context.user_data["del_page"] += \
+        (-1 if update.callback_query.data.endswith("prev") else 1)
+    return await render_del_page(update, context)
+
+async def del_pick_doc(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        pid = int(update.message.text.strip())
+        rec = secure_db.table("customer_payments").get(doc_id=pid)
+        assert rec and rec["customer_id"] == context.user_data["del_cid"]
+    except Exception:
+        await update.message.reply_text("❌ Invalid ID; try again:")
+        return P_DEL_PAGE
+    context.user_data["del_rec"] = rec
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Yes", callback_data="pay_del_conf_yes"),
+         InlineKeyboardButton("❌ No",  callback_data="pay_del_conf_no")]
+    ])
+    await update.message.reply_text(f"Delete Payment [{pid}]?",
+                                    reply_markup=kb)
+    return P_DEL_CONFIRM
+
+@require_unlock
 async def del_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     if update.callback_query.data.endswith("_no"):
@@ -491,9 +783,6 @@ async def del_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ),
     )
     return ConversationHandler.END
-
-# ... rest of the file (menus, views, handler registration, etc.) remains unchanged ...
-
 
 # ======================================================================
 #                  REGISTER  ALL HANDLERS  FOR MODULE
