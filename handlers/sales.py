@@ -131,7 +131,7 @@ async def get_sale_item_qty(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return S_ITEM_QTY
 
     item_part, qty_part = text.split(",", 1)
-    item_id = item_part.strip()          # ← keep **as string**
+    item_id = item_part.strip()          # ← always string!
     try:
         qty = int(qty_part.strip())
         assert qty > 0
@@ -143,7 +143,7 @@ async def get_sale_item_qty(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sid = context.user_data["sale_store"]
     q   = Query()
     rec = secure_db.table("store_inventory").get(
-        (q.store_id == sid) & (q.item_id == item_id)   # string-to-string match
+        (q.store_id == sid) & (q.item_id == item_id)
     )
     if not rec or rec["quantity"] < qty:
         avail = rec["quantity"] if rec else 0
@@ -194,7 +194,6 @@ async def get_sale_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
         note = update.message.text.strip()
     context.user_data["sale_note"] = note
 
-   # Build the summary
     d = context.user_data
     cust  = secure_db.table("customers").get(doc_id=d["sale_customer"])
     store = secure_db.table("stores").get(doc_id=d["sale_store"])
@@ -217,9 +216,7 @@ async def get_sale_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
          InlineKeyboardButton("❌ No",  callback_data="sale_no")]
     ])
 
-    # **BRANCH** on callback vs message
     if update.callback_query:
-        # edit the existing prompt
         await update.callback_query.edit_message_text(summary, reply_markup=kb)
     else:
         await update.message.reply_text(summary, reply_markup=kb)
@@ -236,7 +233,10 @@ async def confirm_sale(update: Update, context: ContextTypes.DEFAULT_TYPE):
     d   = context.user_data
     cur = secure_db.table("stores").get(doc_id=d["sale_store"])["currency"]
     total_fee = d["sale_fee"] * d["sale_qty"]
+    total_sale = d["sale_qty"] * d["sale_price"]
+    sale_type = "customer"  # For now, only customer; update as needed for partners/stores
 
+    # Insert into sales table
     sale_id = secure_db.insert("sales", {
         "customer_id": d["sale_customer"],
         "store_id":    d["sale_store"],
@@ -249,7 +249,7 @@ async def confirm_sale(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "timestamp":   datetime.utcnow().isoformat(),
     })
 
-    # deduct inventory
+    # Deduct inventory
     q = Query()
     rec = secure_db.table("store_inventory").get(
         (q.store_id == d["sale_store"]) & (q.item_id == d["sale_item"])
@@ -259,7 +259,7 @@ async def confirm_sale(update: Update, context: ContextTypes.DEFAULT_TYPE):
                          {"quantity": rec["quantity"] - d["sale_qty"]},
                          [rec.doc_id])
 
-    # credit handling fee to store
+    # Credit handling fee to store (if applicable)
     if total_fee > 0:
         secure_db.insert("store_payments", {
             "store_id": d["sale_store"],
@@ -269,21 +269,37 @@ async def confirm_sale(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "timestamp":datetime.utcnow().isoformat(),
         })
 
-    # LEDGER PATCH: record ledger entries with correct API!
-    # Customer ledger entry (sale)
+    # ==== LEDGER LOGIC: Write one "sale" entry for buyer, and a fee entry for store if applicable ====
+    # Get customer object to determine type (customer, partner, store)
+    buyer = secure_db.table("customers").get(doc_id=d["sale_customer"])
+    if not buyer:
+        await update.callback_query.edit_message_text("❌ Customer not found.", reply_markup=None)
+        return ConversationHandler.END
+
+    buyer_type = buyer.get("type", "customer")  # default to "customer" if not present
+
+    # Record the sale for the buyer (always negative)
     add_ledger_entry(
-        account_type="customer",
+        account_type=buyer_type,
         account_id=d["sale_customer"],
         entry_type="sale",
         related_id=sale_id,
-        amount=-(d["sale_qty"] * d["sale_price"] + total_fee),
+        amount=-total_sale,
         currency=cur,
-        note=f"Sale {d['sale_item']} ×{d['sale_qty']}" + (f" + handling fee {total_fee}" if total_fee else ""),
+        note=d["sale_note"],
         date=datetime.utcnow().strftime("%d%m%Y"),
-        timestamp=datetime.utcnow().isoformat()
+        timestamp=datetime.utcnow().isoformat(),
+        item_id=d["sale_item"],
+        quantity=d["sale_qty"],
+        unit_price=d["sale_price"],
+        store_id=d["sale_store"],
     )
-    # Store ledger entry (handling fee, if any)
-    if total_fee > 0:
+
+    # Handling fee logic:
+    # - For customer: fee is credited to store
+    # - For partner: fee is credited to store, but also deducted from partner
+    # - For store's own sale: no handling fee
+    if buyer_type == "customer" and total_fee > 0:
         add_ledger_entry(
             account_type="store",
             account_id=d["sale_store"],
@@ -291,16 +307,57 @@ async def confirm_sale(update: Update, context: ContextTypes.DEFAULT_TYPE):
             related_id=sale_id,
             amount=total_fee,
             currency=cur,
-            note="Handling fee for customer sale",
+            note="",  # NO NOTE for handling fee
             date=datetime.utcnow().strftime("%d%m%Y"),
-            timestamp=datetime.utcnow().isoformat()
+            timestamp=datetime.utcnow().isoformat(),
+            item_id=d["sale_item"],
+            quantity=d["sale_qty"],
+            unit_price=d["sale_price"],
+            store_id=d["sale_store"],
         )
+    elif buyer_type == "partner":
+        # Deduct the handling fee from the partner account, credit to store
+        if total_fee > 0:
+            add_ledger_entry(
+                account_type="partner",
+                account_id=d["sale_customer"],
+                entry_type="handling_fee",
+                related_id=sale_id,
+                amount=-total_fee,
+                currency=cur,
+                note="",  # NO NOTE for handling fee
+                date=datetime.utcnow().strftime("%d%m%Y"),
+                timestamp=datetime.utcnow().isoformat(),
+                item_id=d["sale_item"],
+                quantity=d["sale_qty"],
+                unit_price=d["sale_price"],
+                store_id=d["sale_store"],
+            )
+            add_ledger_entry(
+                account_type="store",
+                account_id=d["sale_store"],
+                entry_type="handling_fee",
+                related_id=sale_id,
+                amount=total_fee,
+                currency=cur,
+                note="",  # NO NOTE for handling fee
+                date=datetime.utcnow().strftime("%d%m%Y"),
+                timestamp=datetime.utcnow().isoformat(),
+                item_id=d["sale_item"],
+                quantity=d["sale_qty"],
+                unit_price=d["sale_price"],
+                store_id=d["sale_store"],
+            )
+    # store own sale: do not record handling fee
 
     await update.callback_query.edit_message_text(
         "✅ Sale recorded & inventory updated.",
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back",
                                                                  callback_data="sales_menu")]]))
     return ConversationHandler.END
+
+# ...rest of file unchanged, but edit and delete logic should also be updated for consistency if needed...
+
 
 # ======================================================================
 #                                EDIT FLOW
