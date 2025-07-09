@@ -1,26 +1,20 @@
-
+# handlers/reports/partner_report.py
 
 import logging
 from datetime import datetime, timedelta
+from typing import List, Dict
+from collections import defaultdict
 from io import BytesIO
-from typing import List
-
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.ext import (
-    CallbackQueryHandler,
-    ConversationHandler,
-    ContextTypes,
-)
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 
-from secure_db import secure_db
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.ext import CallbackQueryHandler, ConversationHandler, ContextTypes
+
 from handlers.utils import require_unlock, fmt_money, fmt_date
 from handlers.ledger import get_ledger
+from secure_db import secure_db
 
-# ────────────────────────────────────────────────────────────────
-#  Conversation-state constants
-# ────────────────────────────────────────────────────────────────
 (
     PARTNER_SELECT,
     DATE_RANGE_SELECT,
@@ -31,44 +25,35 @@ from handlers.ledger import get_ledger
 
 _PAGE_SIZE = 8
 
-
-# ╭──────────────────────────────────────────────────────────────╮
-# │  Small helpers                                              │
-# ╰──────────────────────────────────────────────────────────────╯
 def _reset_state(ctx):
     for k in ("partner_id", "start_date", "end_date", "page", "scope"):
         ctx.user_data.pop(k, None)
 
-
 async def _goto_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Inline jump back to /start without losing encryption guard."""
     _reset_state(context)
     from bot import start
-
     return await start(update, context)
-
 
 def _paginate(lst: List[dict], page: int) -> List[dict]:
     start = page * _PAGE_SIZE
     return lst[start : start + _PAGE_SIZE]
 
-
 def _between(date_str: str, start: datetime, end: datetime) -> bool:
-    """True if ddmmyyyy string is inside the inclusive window."""
     try:
         dt = datetime.strptime(date_str, "%d%m%Y")
     except Exception:
         return False
     return start <= dt <= end
 
+def get_last_sale_price(ledger, item_id):
+    sales = [e for e in ledger if e.get("entry_type") == "sale" and e.get("item_id") == item_id]
+    if sales:
+        latest = sorted(sales, key=lambda x: (x["date"], x["timestamp"]), reverse=True)[0]
+        return latest.get("unit_price")
+    return None
 
-# ╭──────────────────────────────────────────────────────────────╮
-# │  Entry-point                                                │
-# ╰──────────────────────────────────────────────────────────────╯
 @require_unlock
-async def show_partner_report_menu(
-    update: Update, context: ContextTypes.DEFAULT_TYPE
-):
+async def show_partner_report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     _reset_state(context)
     partners = secure_db.all("partners")
     if not partners:
@@ -97,10 +82,6 @@ async def show_partner_report_menu(
     )
     return PARTNER_SELECT
 
-
-# ╭──────────────────────────────────────────────────────────────╮
-# │  Date-range selection                                       │
-# ╰──────────────────────────────────────────────────────────────╯
 async def select_date_range(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pid = int(update.callback_query.data.split("_")[-1])
     context.user_data["partner_id"] = pid
@@ -116,7 +97,6 @@ async def select_date_range(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.edit_message_text("Choose period:", reply_markup=kb)
     return DATE_RANGE_SELECT
 
-
 async def ask_custom_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     await update.callback_query.edit_message_text(
@@ -126,7 +106,6 @@ async def ask_custom_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ),
     )
     return CUSTOM_DATE_INPUT
-
 
 async def save_custom_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     txt = update.message.text.strip()
@@ -140,9 +119,7 @@ async def save_custom_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["end_date"] = datetime.now()
     return await choose_scope(update, context)
 
-
 async def choose_scope(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # triggered by callback OR after custom date input
     if getattr(update, "callback_query", None):
         await update.callback_query.answer()
         choice = update.callback_query.data
@@ -172,10 +149,6 @@ async def choose_scope(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Choose report scope:", reply_markup=kb)
     return REPORT_SCOPE_SELECT
 
-
-# ╭──────────────────────────────────────────────────────────────╮
-# │  Core report view                                           │
-# ╰──────────────────────────────────────────────────────────────╯
 @require_unlock
 async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
@@ -188,167 +161,157 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cur = partner["currency"]
     start, end = ctx["start_date"], ctx["end_date"]
 
-    # ── SALES (customer ledger: customer name == partner name) ────────────────
-    sales: List[dict] = []
+    # SALES
+    sales = []
     for c in secure_db.all("customers"):
         if c["name"] == partner["name"]:
             sales += [
-                e
-                for e in get_ledger("customer", c.doc_id)
+                e for e in get_ledger("customer", c.doc_id)
                 if e["entry_type"] == "sale" and _between(e["date"], start, end)
             ]
+    sales += [
+        e for e in get_ledger("partner", pid)
+        if e["entry_type"] == "sale" and _between(e["date"], start, end)
+    ]
+    sale_items = defaultdict(list)
+    for s in sales:
+        sale_items[s.get("item_id", "?")].append(s)
 
-    # ── PAYMENTS & EXPENSES (partner ledger) ──────────────────────────────────
-    pledger = get_ledger("partner", pid)
-    payments = [
-        e
-        for e in pledger
+    # PAYMENTS
+    payments = []
+    for c in secure_db.all("customers"):
+        if c["name"] == partner["name"]:
+            payments += [
+                e for e in get_ledger("customer", c.doc_id)
+                if e["entry_type"] == "payment" and _between(e["date"], start, end)
+            ]
+    payments += [
+        e for e in get_ledger("partner", pid)
         if e["entry_type"] == "payment" and _between(e["date"], start, end)
     ]
-    handling_fees = [
-        e
-        for e in pledger
-        if e["entry_type"] == "handling_fee" and _between(e["date"], start, end)
+
+    # EXPENSES
+    pledger = get_ledger("partner", pid)
+    handling_fees = [e for e in pledger if e["entry_type"] == "handling_fee" and _between(e["date"], start, end)]
+    other_expenses = [e for e in pledger if e["entry_type"] == "expense" and _between(e["date"], start, end)]
+
+    # STOCK-INS
+    stockins = [
+        e for e in pledger if e["entry_type"] == "stockin" and _between(e["date"], start, end)
     ]
-    other_expenses = [
-        e
-        for e in pledger
-        if e["entry_type"] == "expense" and _between(e["date"], start, end)
-    ]
 
-    # ── INVENTORY (partner_inventory) ─────────────────────────────────────────
-    inv_rows = [r for r in secure_db.all("partner_inventory") if r["partner_id"] == pid]
-    stockins = [r for r in inv_rows if _between(r["date"], start, end)]
-    current_stock = [r for r in inv_rows if r["quantity"] > 0]
+    # CURRENT STOCK @ MARKET
+    stock_balance = defaultdict(int)
+    for s in stockins:
+        stock_balance[s.get("item_id")] += s.get("quantity", 0)
+    for item, sales_list in sale_items.items():
+        for s in sales_list:
+            stock_balance[item] -= abs(s.get("quantity", 0))
+    market_prices = {}
+    for item in stock_balance:
+        price = get_last_sale_price(sales, item)
+        if price is None:
+            stk = [e for e in stockins if e.get("item_id") == item]
+            if stk:
+                price = sorted(stk, key=lambda x: (x["date"], x["timestamp"]), reverse=True)[0].get("unit_price", 0)
+        market_prices[item] = price or 0
 
-    # ── Totals ────────────────────────────────────────────────────────────────
-    total_sales = sum(-s["amount"] for s in sales)
-    total_pay_local = sum(p["amount"] for p in payments)
-    total_pay_usd = sum(p.get("usd_amt", 0) for p in payments)
-    total_handling = sum(-h["amount"] for h in handling_fees)
-    total_other_exp = sum(-e["amount"] for e in other_expenses)
+    sales_lines = []
+    for item_id, entries in sale_items.items():
+        for s in sorted(entries, key=lambda x: (x["date"], x["timestamp"]), reverse=True):
+            sales_lines.append(
+                f"• {fmt_date(s['date'])}: [{item_id}] {s.get('quantity', 0)} × {fmt_money(s.get('unit_price', 0), cur)} = {fmt_money(abs(s['quantity'] * s.get('unit_price', 0)), cur)}"
+            )
+    unit_summary = []
+    for item_id, entries in sale_items.items():
+        units = sum(abs(s.get('quantity', 0)) for s in entries)
+        value = sum(abs(s.get('quantity', 0) * s.get('unit_price', 0)) for s in entries)
+        unit_summary.append(f"- [{item_id}] : {units} units, {fmt_money(value, cur)}")
+    total_sales = sum(abs(s.get('quantity', 0) * s.get('unit_price', 0)) for s in sales)
 
-    stock_value = sum(
-        r.get("market_price", r["unit_cost"]) * r["quantity"] for r in current_stock
-    )
-    inv_cur = current_stock[0]["currency"] if current_stock else cur
+    payment_lines = []
+    for p in sorted(payments, key=lambda x: (x["date"], x["timestamp"]), reverse=True):
+        fee = p.get('fee_amt') or (p.get('amount', 0) * (p.get('fee_perc', 0)/100)) if p.get('fee_perc') else 0
+        usd_amt = p.get("usd_amt", 0)
+        payment_lines.append(
+            f"• {fmt_date(p['date'])}: {fmt_money(p['amount'], cur)}  |  Fee: {fmt_money(fee, cur)}  |  {fmt_money(usd_amt, 'USD')}"
+        )
+    total_pay_local = sum(p.get('amount', 0) for p in payments)
+    total_pay_usd = sum(p.get('usd_amt', 0) for p in payments)
 
+    expense_lines = []
+    if handling_fees:
+        expense_lines.append("• 💳 Handling Fees")
+        for h in handling_fees:
+            expense_lines.append(f"   - {fmt_date(h['date'])}: {fmt_money(abs(h['amount']), cur)}")
+        expense_lines.append(f"📊 Total Handling Fees: {fmt_money(sum(abs(h['amount']) for h in handling_fees), cur)}")
+    if other_expenses:
+        expense_lines.append("• 🧾 Other Expenses")
+        for e in other_expenses:
+            expense_lines.append(f"   - {fmt_date(e['date'])}: {fmt_money(abs(e['amount']), cur)}")
+        expense_lines.append(f"📊 Total Other Expenses: {fmt_money(sum(abs(e['amount']) for e in other_expenses), cur)}")
+
+    stockin_lines = []
+    for s in sorted(stockins, key=lambda x: (x["date"], x["timestamp"]), reverse=True):
+        total = s.get("quantity", 0) * s.get("unit_price", 0)
+        stockin_lines.append(f"   - {fmt_date(s['date'])}: [{s.get('item_id')}] {s.get('quantity', 0)} @ {fmt_money(s.get('unit_price', 0), cur)} = {fmt_money(total, cur)}")
+
+    current_stock_lines = []
+    stock_value = 0
+    for item, qty in stock_balance.items():
+        if qty > 0:
+            mp = market_prices[item]
+            val = qty * mp
+            current_stock_lines.append(f"   - [{item}] {qty} × {fmt_money(mp, cur)} = {fmt_money(val, cur)}")
+            stock_value += val
+
+    total_handling = sum(abs(h["amount"]) for h in handling_fees)
+    total_other_exp = sum(abs(e["amount"]) for e in other_expenses)
     balance = total_sales - total_pay_local - total_handling - total_other_exp
 
-    # ── Pagination list to display (sales OR payments) ───────────────────────
-    page = ctx["page"]
-    paged_sales = _paginate(sales, page) if ctx["scope"] in ("full", "sales") else []
-    paged_pay = _paginate(payments, page) if ctx["scope"] in ("full", "payments") else []
-
-    # ── Build Telegram message ───────────────────────────────────────────────
-    lines: List[str] = [
-        f"📄 *Partner Report — {partner['name']}*",
-        f"Period: {fmt_date(start.strftime('%d%m%Y'))} → {fmt_date(end.strftime('%d%m%Y'))}",
-        f"Currency: {cur}\n",
-    ]
-
+    lines = []
     if ctx["scope"] in ("full", "sales"):
-        lines.append("🛒 *Sales*")
-        if paged_sales:
-            for s in paged_sales:
-                lines.append(f"• {fmt_date(s['date'])}: {fmt_money(-s['amount'], cur)}")
-        else:
-            lines.append("  (No sales on this page)")
-        if page == 0:
-            lines.append(f"📊 Total Sales: {fmt_money(total_sales, cur)}")
-
+        lines.append("🛒 Sales")
+        lines += sales_lines
+        lines.append("")
+        lines.append("📦 Units Sold (by item):")
+        lines += unit_summary
+        lines.append(f"\n📊 Total Sales: {fmt_money(total_sales, cur)}\n")
     if ctx["scope"] in ("full", "payments"):
-        lines.append("\n💵 *Payments*")
-        if paged_pay:
-            for p in paged_pay:
-                usd = fmt_money(p.get("usd_amt", 0), "USD")
-                fx = p.get("fx_rate", 0)
-                lines.append(
-                    f"• {fmt_date(p['date'])}: {fmt_money(p['amount'], cur)} → {usd} (FX {fx:.4f})"
-                )
-        else:
-            lines.append("  (No payments on this page)")
-        if page == 0:
-            lines.append(
-                f"📊 Total Payments: {fmt_money(total_pay_local, cur)} → {fmt_money(total_pay_usd, 'USD')}"
-            )
-
+        lines.append("💵 Payments")
+        lines += payment_lines
+        lines.append(f"\n📊 Total Payments: {fmt_money(total_pay_local, cur)} → {fmt_money(total_pay_usd, 'USD')}\n")
     if ctx["scope"] == "full":
-        # Expenses
-        lines.append("\n🧾 *Expenses*")
-        if handling_fees:
-            lines.append("• 💳 Handling Fees")
-            for h in handling_fees:
-                lines.append(f"   - {fmt_date(h['date'])}: {fmt_money(-h['amount'], cur)}")
-            lines.append(f"📊 Total Handling Fees: {fmt_money(total_handling, cur)}")
-        if other_expenses:
-            lines.append("• 🧾 Other Expenses")
-            for e in other_expenses:
-                lines.append(f"   - {fmt_date(e['date'])}: {fmt_money(-e['amount'], cur)}")
-            lines.append(f"📊 Total Other Expenses: {fmt_money(total_other_exp, cur)}")
-        if not handling_fees and not other_expenses:
-            lines.append("  (No expenses in this period)")
-
-        # Inventory
-        lines.append("\n📦 *Inventory*")
-        if stockins:
+        lines.append("🧾 Expenses")
+        lines += expense_lines
+        lines.append("")
+        lines.append("📦 Inventory")
+        if stockin_lines:
             lines.append("• Stock-Ins:")
-            for i in stockins:
-                tot = i["unit_cost"] * i["quantity"]
-                lines.append(
-                    f"   - {fmt_date(i['date'])}: {i['quantity']} @ {fmt_money(i['unit_cost'], i['currency'])} "
-                    f"= {fmt_money(tot, i['currency'])}"
-                )
-        else:
-            lines.append("  (No stock-ins in this period)")
-
-        if current_stock:
+            lines += stockin_lines
+        if current_stock_lines:
             lines.append("• Current Stock @ market:")
-            for c in current_stock:
-                mp = c.get("market_price", c["unit_cost"])
-                lines.append(
-                    f"   - {c['quantity']} × {fmt_money(mp, c['currency'])} = "
-                    f"{fmt_money(mp * c['quantity'], c['currency'])}"
-                )
-            lines.append(f"📊 Stock Value: {fmt_money(stock_value, inv_cur)}")
-        else:
-            lines.append("  (No current stock)")
-
-        # Summary
-        lines.append("\n📊 *Financial Position*")
+            lines += current_stock_lines
+        lines.append(f"\n📊 Stock Value: {fmt_money(stock_value, cur)}\n")
+        lines.append("📊 Financial Position")
         lines.append(f"Balance (S − P − E): {fmt_money(balance, cur)}")
-        lines.append(f"Inventory Value:     {fmt_money(stock_value, inv_cur)}")
-        lines.append("─" * 36)
+        lines.append(f"Inventory Value:     {fmt_money(stock_value, cur)}")
+        lines.append("────────────────────────────────────")
         lines.append(f"Total Position:      {fmt_money(balance + stock_value, cur)}")
 
-    # ── Navigation buttons ───────────────────────────────────────────────────
-    nav: List[InlineKeyboardButton] = []
-    if page > 0:
+    nav = []
+    if ctx["page"] > 0:
         nav.append(InlineKeyboardButton("⬅️ Prev", callback_data="page_prev"))
-    # Only show Next if there *might* be more records of the current list
-    show_next = (
-        (ctx["scope"] in ("full", "sales") and len(sales) > (page + 1) * _PAGE_SIZE)
-        or (
-            ctx["scope"] in ("full", "payments")
-            and len(payments) > (page + 1) * _PAGE_SIZE
-        )
-    )
-    if show_next:
-        nav.append(InlineKeyboardButton("➡️ Next", callback_data="page_next"))
     nav.append(InlineKeyboardButton("📄 Export PDF", callback_data="export_pdf"))
     nav.append(InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu"))
 
     await update.callback_query.edit_message_text(
         "\n".join(lines),
         reply_markup=InlineKeyboardMarkup([nav]),
-        parse_mode="Markdown",
+        parse_mode="Markdown"
     )
     return REPORT_PAGE
 
-
-# ╭──────────────────────────────────────────────────────────────╮
-# │  Pagination & PDF export                                    │
-# ╰──────────────────────────────────────────────────────────────╯
 @require_unlock
 async def paginate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.callback_query.data == "page_next":
@@ -356,7 +319,6 @@ async def paginate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif update.callback_query.data == "page_prev":
         context.user_data["page"] = max(0, context.user_data["page"] - 1)
     return await show_report(update, context)
-
 
 @require_unlock
 async def export_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -368,51 +330,74 @@ async def export_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
     start, end = ctx["start_date"], ctx["end_date"]
     scope = ctx["scope"]
 
-    # Re-run the same data query (simpler than passing around lists)
-    sales, payments, handling, other_exp, stockins, current_stock = [], [], [], [], [], []
+    pledger = get_ledger("partner", pid)
+    sales = []
     for c in secure_db.all("customers"):
         if c["name"] == partner["name"]:
             sales += [
-                e
-                for e in get_ledger("customer", c.doc_id)
+                e for e in get_ledger("customer", c.doc_id)
                 if e["entry_type"] == "sale" and _between(e["date"], start, end)
             ]
-    pledger = get_ledger("partner", pid)
-    payments = [
-        e
-        for e in pledger
+    sales += [
+        e for e in pledger
+        if e["entry_type"] == "sale" and _between(e["date"], start, end)
+    ]
+    sale_items = defaultdict(list)
+    for s in sales:
+        sale_items[s.get("item_id", "?")].append(s)
+    total_sales = sum(abs(s.get('quantity', 0) * s.get('unit_price', 0)) for s in sales)
+
+    payments = []
+    for c in secure_db.all("customers"):
+        if c["name"] == partner["name"]:
+            payments += [
+                e for e in get_ledger("customer", c.doc_id)
+                if e["entry_type"] == "payment" and _between(e["date"], start, end)
+            ]
+    payments += [
+        e for e in pledger
         if e["entry_type"] == "payment" and _between(e["date"], start, end)
     ]
-    handling = [
-        e
-        for e in pledger
-        if e["entry_type"] == "handling_fee" and _between(e["date"], start, end)
-    ]
-    other_exp = [
-        e
-        for e in pledger
-        if e["entry_type"] == "expense" and _between(e["date"], start, end)
-    ]
-    inv_rows = [r for r in secure_db.all("partner_inventory") if r["partner_id"] == pid]
-    stockins = [r for r in inv_rows if _between(r["date"], start, end)]
-    current_stock = [r for r in inv_rows if r["quantity"] > 0]
-    inv_cur = current_stock[0]["currency"] if current_stock else cur
-    stock_value = sum(
-        r.get("market_price", r["unit_cost"]) * r["quantity"] for r in current_stock
-    )
+    total_pay_local = sum(p.get('amount', 0) for p in payments)
+    total_pay_usd = sum(p.get('usd_amt', 0) for p in payments)
 
-    # ── PDF build ────────────────────────────────────────────────────────────
+    handling_fees = [e for e in pledger if e["entry_type"] == "handling_fee" and _between(e["date"], start, end)]
+    other_expenses = [e for e in pledger if e["entry_type"] == "expense" and _between(e["date"], start, end)]
+    total_handling = sum(abs(h["amount"]) for h in handling_fees)
+    total_other_exp = sum(abs(e["amount"]) for e in other_expenses)
+
+    stockins = [e for e in pledger if e["entry_type"] == "stockin" and _between(e["date"], start, end)]
+    stock_balance = defaultdict(int)
+    for s in stockins:
+        stock_balance[s.get("item_id")] += s.get("quantity", 0)
+    for item, entries in sale_items.items():
+        for s in entries:
+            stock_balance[item] -= abs(s.get("quantity", 0))
+    def get_last_sale_price(ledger, item_id):
+        sales = [e for e in ledger if e.get("entry_type") == "sale" and e.get("item_id") == item_id]
+        if sales:
+            latest = sorted(sales, key=lambda x: (x["date"], x["timestamp"]), reverse=True)[0]
+            return latest.get("unit_price")
+        return None
+    market_prices = {}
+    for item in stock_balance:
+        price = get_last_sale_price(sales, item)
+        if price is None:
+            stk = [e for e in stockins if e.get("item_id") == item]
+            if stk:
+                price = sorted(stk, key=lambda x: (x["date"], x["timestamp"]), reverse=True)[0].get("unit_price", 0)
+        market_prices[item] = price or 0
+    stock_value = sum(qty * market_prices[item] for item, qty in stock_balance.items() if qty > 0)
+
+    balance = total_sales - total_pay_local - total_handling - total_other_exp
+
     buf = BytesIO()
     pdf = canvas.Canvas(buf, pagesize=letter)
     width, height = letter
     y = height - 40
-
     def line(txt: str, bold: bool = False):
         nonlocal y
-        if bold:
-            pdf.setFont("Helvetica-Bold", 11)
-        else:
-            pdf.setFont("Helvetica", 10)
+        pdf.setFont("Helvetica-Bold", 11) if bold else pdf.setFont("Helvetica", 10)
         pdf.drawString(50, y, txt)
         y -= 14
         if y < 50:
@@ -429,102 +414,72 @@ async def export_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if scope in ("full", "sales"):
         line("Sales", bold=True)
-        for s in sales:
-            line(f"{fmt_date(s['date'])}: {fmt_money(-s['amount'], cur)}")
-        if not sales:
-            line("(none)")
-        y -= 6
+        for item_id, entries in sale_items.items():
+            for s in sorted(entries, key=lambda x: (x["date"], x["timestamp"]), reverse=True):
+                line(f"{fmt_date(s['date'])}: [{item_id}] {s.get('quantity', 0)} × {fmt_money(s.get('unit_price', 0), cur)} = {fmt_money(abs(s['quantity'] * s.get('unit_price', 0)), cur)}")
+        line("")
+        line("Units Sold (by item):")
+        for item_id, entries in sale_items.items():
+            units = sum(abs(s.get('quantity', 0)) for s in entries)
+            value = sum(abs(s.get('quantity', 0) * s.get('unit_price', 0)) for s in entries)
+            line(f"- [{item_id}] : {units} units, {fmt_money(value, cur)}")
+        line(f"Total Sales: {fmt_money(total_sales, cur)}")
+        y -= 10
 
     if scope in ("full", "payments"):
         line("Payments", bold=True)
-        for p in payments:
-            usd = fmt_money(p.get('usd_amt', 0), 'USD')
-            fx = p.get('fx_rate', 0)
-            line(f"{fmt_date(p['date'])}: {fmt_money(p['amount'], cur)} → {usd} (FX {fx:.4f})")
-        if not payments:
-            line("(none)")
-        y -= 6
+        for p in sorted(payments, key=lambda x: (x["date"], x["timestamp"]), reverse=True):
+            fee = p.get('fee_amt') or (p.get('amount', 0) * (p.get('fee_perc', 0)/100)) if p.get('fee_perc') else 0
+            usd_amt = p.get("usd_amt", 0)
+            line(f"{fmt_date(p['date'])}: {fmt_money(p['amount'], cur)}  |  Fee: {fmt_money(fee, cur)}  |  {fmt_money(usd_amt, 'USD')}")
+        line(f"Total Payments: {fmt_money(total_pay_local, cur)} → {fmt_money(total_pay_usd, 'USD')}")
+        y -= 10
 
     if scope == "full":
-        # Expenses
-        line("Expenses", bold=True)
-        if handling:
-            line("Handling Fees:")
-            for h in handling:
-                line(f"  {fmt_date(h['date'])}: {fmt_money(-h['amount'], cur)}")
-        if other_exp:
-            line("Other Expenses:")
-            for e in other_exp:
-                line(f"  {fmt_date(e['date'])}: {fmt_money(-e['amount'], cur)}")
-        if not handling and not other_exp:
-            line("(none)")
-        y -= 6
-
-        # Inventory
-        line("Inventory", bold=True)
-        if stockins:
-            line("Stock-Ins:")
-            for i in stockins:
-                tot = i['unit_cost'] * i['quantity']
-                line(f"  {fmt_date(i['date'])}: {i['quantity']} × {fmt_money(i['unit_cost'], i['currency'])} = {fmt_money(tot, i['currency'])}")
-        if current_stock:
-            line("Current Stock @ market:")
-            for c in current_stock:
-                mp = c.get('market_price', c['unit_cost'])
-                line(f"  {c['quantity']} × {fmt_money(mp, c['currency'])} = {fmt_money(mp*c['quantity'], c['currency'])}")
-            line(f"Stock Value: {fmt_money(stock_value, inv_cur)}")
-        if not stockins and not current_stock:
-            line("(no inventory)")
-        y -= 6
+        if handling_fees:
+            line("Handling Fees", bold=True)
+            for h in handling_fees:
+                line(f"   - {fmt_date(h['date'])}: {fmt_money(abs(h['amount']), cur)}")
+            line(f"Total Handling Fees: {fmt_money(total_handling, cur)}")
+        if other_expenses:
+            line("Other Expenses", bold=True)
+            for e in other_expenses:
+                line(f"   - {fmt_date(e['date'])}: {fmt_money(abs(e['amount']), cur)}")
+            line(f"Total Other Expenses: {fmt_money(total_other_exp, cur)}")
+        y -= 10
+        line("Stock-Ins", bold=True)
+        for s in sorted(stockins, key=lambda x: (x["date"], x["timestamp"]), reverse=True):
+            total = s.get("quantity", 0) * s.get("unit_price", 0)
+            line(f"   - {fmt_date(s['date'])}: [{s.get('item_id')}] {s.get('quantity', 0)} @ {fmt_money(s.get('unit_price', 0), cur)} = {fmt_money(total, cur)}")
+        line("Current Stock @ market:", bold=True)
+        for item, qty in stock_balance.items():
+            if qty > 0:
+                mp = market_prices[item]
+                val = qty * mp
+                line(f"   - [{item}] {qty} × {fmt_money(mp, cur)} = {fmt_money(val, cur)}")
+        line(f"Stock Value: {fmt_money(stock_value, cur)}")
+        y -= 10
+        line("Financial Position", bold=True)
+        line(f"Balance (S − P − E): {fmt_money(balance, cur)}")
+        line(f"Inventory Value:     {fmt_money(stock_value, cur)}")
+        line("────────────────────────────────────")
+        line(f"Total Position:      {fmt_money(balance + stock_value, cur)}")
 
     pdf.showPage()
     pdf.save()
     buf.seek(0)
-
-    await update.callback_query.message.reply_document(
+    await update.effective_message.reply_document(
         document=buf,
-        filename=f"partner_report_{partner['name']}_{start.strftime('%Y%m%d')}.pdf",
+        filename=f"Partner_Report_{partner['name'].replace(' ', '_')}_{start.strftime('%d%m%Y')}_{end.strftime('%d%m%Y')}.pdf",
+        caption=f"Partner report for {partner['name']} ({fmt_date(start.strftime('%d%m%Y'))} → {fmt_date(end.strftime('%d%m%Y'))})"
     )
-
     return REPORT_PAGE
 
-
-# ╭──────────────────────────────────────────────────────────────╮
-# │  Conversation-handler setup                                 │
-# ╰──────────────────────────────────────────────────────────────╯
 def register_partner_report_handlers(app):
-    logging.info("▶ Register partner_report handlers")
-    conv = ConversationHandler(
-        entry_points=[
-            CallbackQueryHandler(show_partner_report_menu, pattern="^rep_part$"),
-            CallbackQueryHandler(show_partner_report_menu, pattern="^partner_report_menu$"),
-        ],
-        states={
-            PARTNER_SELECT: [
-                CallbackQueryHandler(select_date_range, pattern="^preport_"),
-                CallbackQueryHandler(_goto_main_menu, pattern="^main_menu$"),
-            ],
-            DATE_RANGE_SELECT: [
-                CallbackQueryHandler(choose_scope, pattern="^range_"),
-                CallbackQueryHandler(_goto_main_menu, pattern="^main_menu$"),
-            ],
-            CUSTOM_DATE_INPUT: [
-                CallbackQueryHandler(_goto_main_menu, pattern="^main_menu$"),
-                # message with date
-                CallbackQueryHandler(lambda u, c: None, pattern="^$"),  # dummy
-            ],
-            REPORT_SCOPE_SELECT: [
-                CallbackQueryHandler(show_report, pattern="^scope_"),
-                CallbackQueryHandler(_goto_main_menu, pattern="^main_menu$"),
-            ],
-            REPORT_PAGE: [
-                CallbackQueryHandler(paginate, pattern="^page_(prev|next)$"),
-                CallbackQueryHandler(export_pdf, pattern="^export_pdf$"),
-                CallbackQueryHandler(show_partner_report_menu, pattern="^partner_report_menu$"),
-                CallbackQueryHandler(_goto_main_menu, pattern="^main_menu$"),
-            ],
-        },
-        fallbacks=[],
-        per_message=False,
-    )
-    app.add_handler(conv)
+    app.add_handler(CallbackQueryHandler(show_partner_report_menu, pattern="^rep_part$"))
+    app.add_handler(CallbackQueryHandler(select_date_range, pattern="^preport_\\d+$"))
+    app.add_handler(CallbackQueryHandler(choose_scope, pattern="^range_(week|custom)$"))
+    app.add_handler(CallbackQueryHandler(show_report, pattern="^scope_(full|sales|payments)$"))
+    app.add_handler(CallbackQueryHandler(paginate, pattern="^page_(next|prev)$"))
+    app.add_handler(CallbackQueryHandler(export_pdf, pattern="^export_pdf$"))
+    app.add_handler(CallbackQueryHandler(_goto_main_menu, pattern="^main_menu$"))
