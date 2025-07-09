@@ -189,10 +189,7 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 e for e in get_ledger("customer", c.doc_id)
                 if e.get("entry_type") == "payment" and _between(e.get("date", ""), start, end)
             ]
-    payments = payouts + customer_payments
-
-    # --- PAYMENTS: show fee percent only, per schema ---
-    payment_lines = []
+payment_lines = []
 for p in sorted(payments, key=lambda x: (x.get("date", ""), x.get("timestamp", "")), reverse=True):
     amount = p.get('amount', 0)
     fee_perc = p.get('fee_perc', 0)
@@ -201,8 +198,9 @@ for p in sorted(payments, key=lambda x: (x.get("date", ""), x.get("timestamp", "
     payment_lines.append(
         f"• {fmt_date(p.get('date', ''))}: {fmt_money(amount, cur)}  |  {fee_perc:g}%  |  {fx_rate:.4f}  |  {fmt_money(usd_amt, 'USD')}"
     )
-    total_pay_local = sum(p.get('amount', 0) for p in payments)
-    total_pay_usd = sum(p.get('usd_amt', 0) for p in payments)
+total_pay_local = sum(p.get('amount', 0) for p in payments)
+total_pay_usd = sum(p.get('usd_amt', 0) for p in payments)
+
 
     # EXPENSES
     pledger = get_ledger("partner", pid)
