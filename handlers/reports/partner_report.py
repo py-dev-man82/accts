@@ -193,13 +193,14 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # --- PAYMENTS: show fee percent only, per schema ---
     payment_lines = []
-    for p in sorted(payments, key=lambda x: (x.get("date", ""), x.get("timestamp", "")), reverse=True):
-        amount = p.get('amount', 0)
-        fee_perc = p.get('fee_perc', 0)
-        usd_amt = p.get('usd_amt', 0)
-        payment_lines.append(
-            f"• {fmt_date(p.get('date', ''))}: {fmt_money(amount, cur)}  |  Fee: {fee_perc:.2f}%  |  {fmt_money(usd_amt, 'USD')}"
-        )
+for p in sorted(payments, key=lambda x: (x.get("date", ""), x.get("timestamp", "")), reverse=True):
+    amount = p.get('amount', 0)
+    fee_perc = p.get('fee_perc', 0)
+    fx_rate = p.get('fx_rate', 0)
+    usd_amt = p.get('usd_amt', 0)
+    payment_lines.append(
+        f"• {fmt_date(p.get('date', ''))}: {fmt_money(amount, cur)}  |  {fee_perc:g}%  |  {fx_rate:.4f}  |  {fmt_money(usd_amt, 'USD')}"
+    )
     total_pay_local = sum(p.get('amount', 0) for p in payments)
     total_pay_usd = sum(p.get('usd_amt', 0) for p in payments)
 
