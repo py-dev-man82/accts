@@ -31,8 +31,11 @@ def random_currency():
 def reset_database():
     """Wipe all tables in TinyDB"""
     print("⚠️ Clearing all existing database tables...")
-    for tbl in ['customers', 'partners', 'stores', 'sales', 'customer_payments',
-                'partner_inventory', 'store_inventory', 'partner_sales', 'partner_payouts']:
+    for tbl in [
+        'customers', 'partners', 'stores', 'sales', 'customer_payments',
+        'partner_inventory', 'store_inventory', 'partner_sales', 'partner_payouts',
+        'ledger', 'ledger_entries'
+    ]:
         secure_db.table(tbl).truncate()
     print("✅ Database reset complete.")
 
