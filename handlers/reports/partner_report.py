@@ -234,7 +234,7 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     payment_lines = []
     for p in sorted(payments, key=lambda x: (x.get("date", ""), x.get("timestamp", "")), reverse=True):
-        fee = p.get('fee_amt', 0)
+        fee_perc = p.get('fee_perc', 0)
         usd_amt = p.get("usd_amt", 0)
         payment_lines.append(
             f"• {fmt_date(p.get('date', ''))}: {fmt_money(p.get('amount', 0), cur)}  |  Fee: {fmt_money(fee, cur)}  |  {fmt_money(usd_amt, 'USD')}"
