@@ -698,13 +698,23 @@ add_conv = ConversationHandler(
 view_conv = ConversationHandler(
     entry_points=[CallbackQueryHandler(view_psale_start, pattern="^view_psale$")],
     states={
-        PS_VIEW_PARTNER: [CallbackQueryHandler(view_psale_period,     pattern="^ps_view_part_\\d+$")],
-        PS_VIEW_TIME:    [CallbackQueryHandler(view_psale_set_filter, pattern="^ps_view_time_")],
-        PS_VIEW_PAGE:    [CallbackQueryHandler(handle_psale_view_nav, pattern="^ps_view_(prev|next)$")],
+        PS_VIEW_PARTNER: [
+            CallbackQueryHandler(view_psale_period,     pattern="^ps_view_part_\\d+$"),
+            CallbackQueryHandler(show_partner_sales_menu, pattern="^view_psale$")
+        ],
+        PS_VIEW_TIME: [
+            CallbackQueryHandler(view_psale_set_filter, pattern="^ps_view_time_"),
+            CallbackQueryHandler(view_psale_start,      pattern="^view_psale$")
+        ],
+        PS_VIEW_PAGE: [
+            CallbackQueryHandler(handle_psale_view_nav, pattern="^ps_view_(prev|next)$"),
+            CallbackQueryHandler(view_psale_start,      pattern="^view_psale$")
+        ],
     },
     fallbacks=[CommandHandler("cancel", show_partner_sales_menu)],
     per_message=False,
 )
+
 
 edit_conv = ConversationHandler(
     entry_points=[CallbackQueryHandler(edit_psale_start, pattern="^edit_psale$")],
