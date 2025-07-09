@@ -48,9 +48,9 @@ def _between(date_str: str, start: datetime, end: datetime) -> bool:
 def get_last_sale_price(ledger, item_id):
     sales = [e for e in ledger if e.get("entry_type") == "sale" and e.get("item_id") == item_id]
     if sales:
-        latest = sorted(sales, key=lambda x: (x["date"], x["timestamp"]), reverse=True)[0]
-        return latest.get("unit_price")
-    return None
+        latest = sorted(sales, key=lambda x: (x.get("date", ""), x.get("timestamp", "")), reverse=True)[0]
+        return latest.get("unit_price", latest.get("unit_cost", 0))
+    return 0
 
 @require_unlock
 async def show_partner_report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -167,11 +167,11 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if c["name"] == partner["name"]:
             sales += [
                 e for e in get_ledger("customer", c.doc_id)
-                if e["entry_type"] == "sale" and _between(e["date"], start, end)
+                if e.get("entry_type") == "sale" and _between(e.get("date", ""), start, end)
             ]
     sales += [
         e for e in get_ledger("partner", pid)
-        if e["entry_type"] == "sale" and _between(e["date"], start, end)
+        if e.get("entry_type") == "sale" and _between(e.get("date", ""), start, end)
     ]
     sale_items = defaultdict(list)
     for s in sales:
@@ -183,21 +183,21 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if c["name"] == partner["name"]:
             payments += [
                 e for e in get_ledger("customer", c.doc_id)
-                if e["entry_type"] == "payment" and _between(e["date"], start, end)
+                if e.get("entry_type") == "payment" and _between(e.get("date", ""), start, end)
             ]
     payments += [
         e for e in get_ledger("partner", pid)
-        if e["entry_type"] == "payment" and _between(e["date"], start, end)
+        if e.get("entry_type") == "payment" and _between(e.get("date", ""), start, end)
     ]
 
     # EXPENSES
     pledger = get_ledger("partner", pid)
-    handling_fees = [e for e in pledger if e["entry_type"] == "handling_fee" and _between(e["date"], start, end)]
-    other_expenses = [e for e in pledger if e["entry_type"] == "expense" and _between(e["date"], start, end)]
+    handling_fees = [e for e in pledger if e.get("entry_type") == "handling_fee" and _between(e.get("date", ""), start, end)]
+    other_expenses = [e for e in pledger if e.get("entry_type") == "expense" and _between(e.get("date", ""), start, end)]
 
     # STOCK-INS
     stockins = [
-        e for e in pledger if e["entry_type"] == "stockin" and _between(e["date"], start, end)
+        e for e in pledger if e.get("entry_type") == "stockin" and _between(e.get("date", ""), start, end)
     ]
 
     # CURRENT STOCK @ MARKET
@@ -210,31 +210,37 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     market_prices = {}
     for item in stock_balance:
         price = get_last_sale_price(sales, item)
-        if price is None:
+        if price == 0:
             stk = [e for e in stockins if e.get("item_id") == item]
             if stk:
-                price = sorted(stk, key=lambda x: (x["date"], x["timestamp"]), reverse=True)[0].get("unit_price", 0)
+                price = sorted(stk, key=lambda x: (x.get("date", ""), x.get("timestamp", "")), reverse=True)[0].get("unit_price", stk[-1].get("unit_cost", 0))
         market_prices[item] = price or 0
 
     sales_lines = []
     for item_id, entries in sale_items.items():
-        for s in sorted(entries, key=lambda x: (x["date"], x["timestamp"]), reverse=True):
+        for s in sorted(entries, key=lambda x: (x.get("date", ""), x.get("timestamp", "")), reverse=True):
+            qty = s.get('quantity', 0)
+            price = s.get('unit_price', s.get('unit_cost', 0))
             sales_lines.append(
-                f"• {fmt_date(s['date'])}: [{item_id}] {s.get('quantity', 0)} × {fmt_money(s.get('unit_price', 0), cur)} = {fmt_money(abs(s['quantity'] * s.get('unit_price', 0)), cur)}"
+                f"• {fmt_date(s.get('date', ''))}: [{item_id}] {qty} × {fmt_money(price, cur)} = {fmt_money(abs(qty * price), cur)}"
             )
     unit_summary = []
     for item_id, entries in sale_items.items():
         units = sum(abs(s.get('quantity', 0)) for s in entries)
-        value = sum(abs(s.get('quantity', 0) * s.get('unit_price', 0)) for s in entries)
+        value = sum(abs(s.get('quantity', 0) * s.get('unit_price', s.get('unit_cost', 0))) for s in entries)
         unit_summary.append(f"- [{item_id}] : {units} units, {fmt_money(value, cur)}")
-    total_sales = sum(abs(s.get('quantity', 0) * s.get('unit_price', 0)) for s in sales)
+    total_sales = sum(abs(s.get('quantity', 0) * s.get('unit_price', s.get('unit_cost', 0))) for s in sales)
 
     payment_lines = []
-    for p in sorted(payments, key=lambda x: (x["date"], x["timestamp"]), reverse=True):
-        fee = p.get('fee_amt') or (p.get('amount', 0) * (p.get('fee_perc', 0)/100)) if p.get('fee_perc') else 0
+    for p in sorted(payments, key=lambda x: (x.get("date", ""), x.get("timestamp", "")), reverse=True):
+        fee = p.get('fee_amt')
+        if fee is None and p.get('fee_perc') is not None:
+            fee = p.get('amount', 0) * (p.get('fee_perc', 0)/100)
+        if fee is None:
+            fee = 0
         usd_amt = p.get("usd_amt", 0)
         payment_lines.append(
-            f"• {fmt_date(p['date'])}: {fmt_money(p['amount'], cur)}  |  Fee: {fmt_money(fee, cur)}  |  {fmt_money(usd_amt, 'USD')}"
+            f"• {fmt_date(p.get('date', ''))}: {fmt_money(p.get('amount', 0), cur)}  |  Fee: {fmt_money(fee, cur)}  |  {fmt_money(usd_amt, 'USD')}"
         )
     total_pay_local = sum(p.get('amount', 0) for p in payments)
     total_pay_usd = sum(p.get('usd_amt', 0) for p in payments)
@@ -243,18 +249,20 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if handling_fees:
         expense_lines.append("• 💳 Handling Fees")
         for h in handling_fees:
-            expense_lines.append(f"   - {fmt_date(h['date'])}: {fmt_money(abs(h['amount']), cur)}")
-        expense_lines.append(f"📊 Total Handling Fees: {fmt_money(sum(abs(h['amount']) for h in handling_fees), cur)}")
+            expense_lines.append(f"   - {fmt_date(h.get('date', ''))}: {fmt_money(abs(h.get('amount', 0)), cur)}")
+        expense_lines.append(f"📊 Total Handling Fees: {fmt_money(sum(abs(h.get('amount', 0)) for h in handling_fees), cur)}")
     if other_expenses:
         expense_lines.append("• 🧾 Other Expenses")
         for e in other_expenses:
-            expense_lines.append(f"   - {fmt_date(e['date'])}: {fmt_money(abs(e['amount']), cur)}")
-        expense_lines.append(f"📊 Total Other Expenses: {fmt_money(sum(abs(e['amount']) for e in other_expenses), cur)}")
+            expense_lines.append(f"   - {fmt_date(e.get('date', ''))}: {fmt_money(abs(e.get('amount', 0)), cur)}")
+        expense_lines.append(f"📊 Total Other Expenses: {fmt_money(sum(abs(e.get('amount', 0)) for e in other_expenses), cur)}")
 
     stockin_lines = []
-    for s in sorted(stockins, key=lambda x: (x["date"], x["timestamp"]), reverse=True):
-        total = s.get("quantity", 0) * s.get("unit_price", 0)
-        stockin_lines.append(f"   - {fmt_date(s['date'])}: [{s.get('item_id')}] {s.get('quantity', 0)} @ {fmt_money(s.get('unit_price', 0), cur)} = {fmt_money(total, cur)}")
+    for s in sorted(stockins, key=lambda x: (x.get("date", ""), x.get("timestamp", "")), reverse=True):
+        qty = s.get('quantity', 0)
+        price = s.get('unit_price', s.get('unit_cost', 0))
+        total = qty * price
+        stockin_lines.append(f"   - {fmt_date(s.get('date', ''))}: [{s.get('item_id')}] {qty} @ {fmt_money(price, cur)} = {fmt_money(total, cur)}")
 
     current_stock_lines = []
     stock_value = 0
@@ -265,8 +273,8 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
             current_stock_lines.append(f"   - [{item}] {qty} × {fmt_money(mp, cur)} = {fmt_money(val, cur)}")
             stock_value += val
 
-    total_handling = sum(abs(h["amount"]) for h in handling_fees)
-    total_other_exp = sum(abs(e["amount"]) for e in other_expenses)
+    total_handling = sum(abs(h.get("amount", 0)) for h in handling_fees)
+    total_other_exp = sum(abs(e.get("amount", 0)) for e in other_expenses)
     balance = total_sales - total_pay_local - total_handling - total_other_exp
 
     lines = []
@@ -336,37 +344,37 @@ async def export_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if c["name"] == partner["name"]:
             sales += [
                 e for e in get_ledger("customer", c.doc_id)
-                if e["entry_type"] == "sale" and _between(e["date"], start, end)
+                if e.get("entry_type") == "sale" and _between(e.get("date", ""), start, end)
             ]
     sales += [
         e for e in pledger
-        if e["entry_type"] == "sale" and _between(e["date"], start, end)
+        if e.get("entry_type") == "sale" and _between(e.get("date", ""), start, end)
     ]
     sale_items = defaultdict(list)
     for s in sales:
         sale_items[s.get("item_id", "?")].append(s)
-    total_sales = sum(abs(s.get('quantity', 0) * s.get('unit_price', 0)) for s in sales)
+    total_sales = sum(abs(s.get('quantity', 0) * s.get('unit_price', s.get('unit_cost', 0))) for s in sales)
 
     payments = []
     for c in secure_db.all("customers"):
         if c["name"] == partner["name"]:
             payments += [
                 e for e in get_ledger("customer", c.doc_id)
-                if e["entry_type"] == "payment" and _between(e["date"], start, end)
+                if e.get("entry_type") == "payment" and _between(e.get("date", ""), start, end)
             ]
     payments += [
         e for e in pledger
-        if e["entry_type"] == "payment" and _between(e["date"], start, end)
+        if e.get("entry_type") == "payment" and _between(e.get("date", ""), start, end)
     ]
     total_pay_local = sum(p.get('amount', 0) for p in payments)
     total_pay_usd = sum(p.get('usd_amt', 0) for p in payments)
 
-    handling_fees = [e for e in pledger if e["entry_type"] == "handling_fee" and _between(e["date"], start, end)]
-    other_expenses = [e for e in pledger if e["entry_type"] == "expense" and _between(e["date"], start, end)]
-    total_handling = sum(abs(h["amount"]) for h in handling_fees)
-    total_other_exp = sum(abs(e["amount"]) for e in other_expenses)
+    handling_fees = [e for e in pledger if e.get("entry_type") == "handling_fee" and _between(e.get("date", ""), start, end)]
+    other_expenses = [e for e in pledger if e.get("entry_type") == "expense" and _between(e.get("date", ""), start, end)]
+    total_handling = sum(abs(h.get("amount", 0)) for h in handling_fees)
+    total_other_exp = sum(abs(e.get("amount", 0)) for e in other_expenses)
 
-    stockins = [e for e in pledger if e["entry_type"] == "stockin" and _between(e["date"], start, end)]
+    stockins = [e for e in pledger if e.get("entry_type") == "stockin" and _between(e.get("date", ""), start, end)]
     stock_balance = defaultdict(int)
     for s in stockins:
         stock_balance[s.get("item_id")] += s.get("quantity", 0)
@@ -376,16 +384,16 @@ async def export_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
     def get_last_sale_price(ledger, item_id):
         sales = [e for e in ledger if e.get("entry_type") == "sale" and e.get("item_id") == item_id]
         if sales:
-            latest = sorted(sales, key=lambda x: (x["date"], x["timestamp"]), reverse=True)[0]
-            return latest.get("unit_price")
-        return None
+            latest = sorted(sales, key=lambda x: (x.get("date", ""), x.get("timestamp", "")), reverse=True)[0]
+            return latest.get("unit_price", latest.get("unit_cost", 0))
+        return 0
     market_prices = {}
     for item in stock_balance:
         price = get_last_sale_price(sales, item)
-        if price is None:
+        if price == 0:
             stk = [e for e in stockins if e.get("item_id") == item]
             if stk:
-                price = sorted(stk, key=lambda x: (x["date"], x["timestamp"]), reverse=True)[0].get("unit_price", 0)
+                price = sorted(stk, key=lambda x: (x.get("date", ""), x.get("timestamp", "")), reverse=True)[0].get("unit_price", stk[-1].get("unit_cost", 0))
         market_prices[item] = price or 0
     stock_value = sum(qty * market_prices[item] for item, qty in stock_balance.items() if qty > 0)
 
@@ -415,23 +423,29 @@ async def export_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if scope in ("full", "sales"):
         line("Sales", bold=True)
         for item_id, entries in sale_items.items():
-            for s in sorted(entries, key=lambda x: (x["date"], x["timestamp"]), reverse=True):
-                line(f"{fmt_date(s['date'])}: [{item_id}] {s.get('quantity', 0)} × {fmt_money(s.get('unit_price', 0), cur)} = {fmt_money(abs(s['quantity'] * s.get('unit_price', 0)), cur)}")
+            for s in sorted(entries, key=lambda x: (x.get("date", ""), x.get("timestamp", "")), reverse=True):
+                qty = s.get('quantity', 0)
+                price = s.get('unit_price', s.get('unit_cost', 0))
+                line(f"{fmt_date(s.get('date', ''))}: [{item_id}] {qty} × {fmt_money(price, cur)} = {fmt_money(abs(qty * price), cur)}")
         line("")
         line("Units Sold (by item):")
         for item_id, entries in sale_items.items():
             units = sum(abs(s.get('quantity', 0)) for s in entries)
-            value = sum(abs(s.get('quantity', 0) * s.get('unit_price', 0)) for s in entries)
+            value = sum(abs(s.get('quantity', 0) * s.get('unit_price', s.get('unit_cost', 0))) for s in entries)
             line(f"- [{item_id}] : {units} units, {fmt_money(value, cur)}")
         line(f"Total Sales: {fmt_money(total_sales, cur)}")
         y -= 10
 
     if scope in ("full", "payments"):
         line("Payments", bold=True)
-        for p in sorted(payments, key=lambda x: (x["date"], x["timestamp"]), reverse=True):
-            fee = p.get('fee_amt') or (p.get('amount', 0) * (p.get('fee_perc', 0)/100)) if p.get('fee_perc') else 0
+        for p in sorted(payments, key=lambda x: (x.get("date", ""), x.get("timestamp", "")), reverse=True):
+            fee = p.get('fee_amt')
+            if fee is None and p.get('fee_perc') is not None:
+                fee = p.get('amount', 0) * (p.get('fee_perc', 0)/100)
+            if fee is None:
+                fee = 0
             usd_amt = p.get("usd_amt", 0)
-            line(f"{fmt_date(p['date'])}: {fmt_money(p['amount'], cur)}  |  Fee: {fmt_money(fee, cur)}  |  {fmt_money(usd_amt, 'USD')}")
+            line(f"{fmt_date(p.get('date', ''))}: {fmt_money(p.get('amount', 0), cur)}  |  Fee: {fmt_money(fee, cur)}  |  {fmt_money(usd_amt, 'USD')}")
         line(f"Total Payments: {fmt_money(total_pay_local, cur)} → {fmt_money(total_pay_usd, 'USD')}")
         y -= 10
 
@@ -439,18 +453,20 @@ async def export_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if handling_fees:
             line("Handling Fees", bold=True)
             for h in handling_fees:
-                line(f"   - {fmt_date(h['date'])}: {fmt_money(abs(h['amount']), cur)}")
+                line(f"   - {fmt_date(h.get('date', ''))}: {fmt_money(abs(h.get('amount', 0)), cur)}")
             line(f"Total Handling Fees: {fmt_money(total_handling, cur)}")
         if other_expenses:
             line("Other Expenses", bold=True)
             for e in other_expenses:
-                line(f"   - {fmt_date(e['date'])}: {fmt_money(abs(e['amount']), cur)}")
+                line(f"   - {fmt_date(e.get('date', ''))}: {fmt_money(abs(e.get('amount', 0)), cur)}")
             line(f"Total Other Expenses: {fmt_money(total_other_exp, cur)}")
         y -= 10
         line("Stock-Ins", bold=True)
-        for s in sorted(stockins, key=lambda x: (x["date"], x["timestamp"]), reverse=True):
-            total = s.get("quantity", 0) * s.get("unit_price", 0)
-            line(f"   - {fmt_date(s['date'])}: [{s.get('item_id')}] {s.get('quantity', 0)} @ {fmt_money(s.get('unit_price', 0), cur)} = {fmt_money(total, cur)}")
+        for s in sorted(stockins, key=lambda x: (x.get("date", ""), x.get("timestamp", "")), reverse=True):
+            qty = s.get('quantity', 0)
+            price = s.get('unit_price', s.get('unit_cost', 0))
+            total = qty * price
+            line(f"   - {fmt_date(s.get('date', ''))}: [{s.get('item_id')}] {qty} @ {fmt_money(price, cur)} = {fmt_money(total, cur)}")
         line("Current Stock @ market:", bold=True)
         for item, qty in stock_balance.items():
             if qty > 0:
