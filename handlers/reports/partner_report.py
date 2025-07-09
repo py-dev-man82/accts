@@ -177,10 +177,10 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for s in sales:
         sale_items[s.get("item_id", "?")].append(s)
 
-    # PAYMENTS: payouts (from partner ledger, "payout") + partner-as-customer ("payment" from customer ledger, name match)
+    # PAYMENTS (combine payouts and partner-as-customer payments)
     payouts = [
         e for e in get_ledger("partner", pid)
-        if e.get("entry_type") == "payout" and _between(e.get("date", ""), start, end)
+        if e.get("entry_type") == "payment" and _between(e.get("date", ""), start, end)
     ]
     customer_payments = []
     for c in secure_db.all("customers"):
@@ -190,6 +190,18 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if e.get("entry_type") == "payment" and _between(e.get("date", ""), start, end)
             ]
     payments = payouts + customer_payments
+
+    # --- PAYMENTS: show fee percent only, per schema ---
+    payment_lines = []
+    for p in sorted(payments, key=lambda x: (x.get("date", ""), x.get("timestamp", "")), reverse=True):
+        amount = p.get('amount', 0)
+        fee_perc = p.get('fee_perc', 0)
+        usd_amt = p.get('usd_amt', 0)
+        payment_lines.append(
+            f"• {fmt_date(p.get('date', ''))}: {fmt_money(amount, cur)}  |  Fee: {fee_perc:.2f}%  |  {fmt_money(usd_amt, 'USD')}"
+        )
+    total_pay_local = sum(p.get('amount', 0) for p in payments)
+    total_pay_usd = sum(p.get('usd_amt', 0) for p in payments)
 
     # EXPENSES
     pledger = get_ledger("partner", pid)
@@ -231,16 +243,6 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
         value = sum(abs(s.get('quantity', 0) * s.get('unit_price', s.get('unit_cost', 0))) for s in entries)
         unit_summary.append(f"- [{item_id}] : {units} units, {fmt_money(value, cur)}")
     total_sales = sum(abs(s.get('quantity', 0) * s.get('unit_price', s.get('unit_cost', 0))) for s in sales)
-
-    payment_lines = []
-    for p in sorted(payments, key=lambda x: (x.get("date", ""), x.get("timestamp", "")), reverse=True):
-        fee_perc = p.get('fee_perc', 0)
-        usd_amt = p.get("usd_amt", 0)
-        payment_lines.append(
-            f"• {fmt_date(p.get('date', ''))}: {fmt_money(p.get('amount', 0), cur)}  |  Fee: {fmt_money(fee, cur)}  |  {fmt_money(usd_amt, 'USD')}"
-        )
-    total_pay_local = sum(p.get('amount', 0) for p in payments)
-    total_pay_usd = sum(p.get('usd_amt', 0) for p in payments)
 
     expense_lines = []
     if handling_fees:
@@ -324,6 +326,9 @@ async def paginate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif update.callback_query.data == "page_prev":
         context.user_data["page"] = max(0, context.user_data["page"] - 1)
     return await show_report(update, context)
+
+# ...PDF export handler and register_partner_report_handlers (unchanged)...
+
 
 @require_unlock
 async def export_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
