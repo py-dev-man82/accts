@@ -177,18 +177,19 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for s in sales:
         sale_items[s.get("item_id", "?")].append(s)
 
-    # PAYMENTS
-    payments = []
+    # PAYMENTS: payouts (from partner ledger, "payout") + partner-as-customer ("payment" from customer ledger, name match)
+    payouts = [
+        e for e in get_ledger("partner", pid)
+        if e.get("entry_type") == "payout" and _between(e.get("date", ""), start, end)
+    ]
+    customer_payments = []
     for c in secure_db.all("customers"):
         if c["name"] == partner["name"]:
-            payments += [
+            customer_payments += [
                 e for e in get_ledger("customer", c.doc_id)
                 if e.get("entry_type") == "payment" and _between(e.get("date", ""), start, end)
             ]
-    payments += [
-        e for e in get_ledger("partner", pid)
-        if e.get("entry_type") == "payment" and _between(e.get("date", ""), start, end)
-    ]
+    payments = payouts + customer_payments
 
     # EXPENSES
     pledger = get_ledger("partner", pid)
@@ -233,11 +234,7 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     payment_lines = []
     for p in sorted(payments, key=lambda x: (x.get("date", ""), x.get("timestamp", "")), reverse=True):
-        fee = p.get('fee_amt')
-        if fee is None and p.get('fee_perc') is not None:
-            fee = p.get('amount', 0) * (p.get('fee_perc', 0)/100)
-        if fee is None:
-            fee = 0
+        fee = p.get('fee_amt', 0)
         usd_amt = p.get("usd_amt", 0)
         payment_lines.append(
             f"• {fmt_date(p.get('date', ''))}: {fmt_money(p.get('amount', 0), cur)}  |  Fee: {fmt_money(fee, cur)}  |  {fmt_money(usd_amt, 'USD')}"
@@ -355,17 +352,19 @@ async def export_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
         sale_items[s.get("item_id", "?")].append(s)
     total_sales = sum(abs(s.get('quantity', 0) * s.get('unit_price', s.get('unit_cost', 0))) for s in sales)
 
-    payments = []
+    # Payments for PDF: payouts + customer payments
+    payouts = [
+        e for e in pledger
+        if e.get("entry_type") == "payout" and _between(e.get("date", ""), start, end)
+    ]
+    customer_payments = []
     for c in secure_db.all("customers"):
         if c["name"] == partner["name"]:
-            payments += [
+            customer_payments += [
                 e for e in get_ledger("customer", c.doc_id)
                 if e.get("entry_type") == "payment" and _between(e.get("date", ""), start, end)
             ]
-    payments += [
-        e for e in pledger
-        if e.get("entry_type") == "payment" and _between(e.get("date", ""), start, end)
-    ]
+    payments = payouts + customer_payments
     total_pay_local = sum(p.get('amount', 0) for p in payments)
     total_pay_usd = sum(p.get('usd_amt', 0) for p in payments)
 
@@ -439,11 +438,7 @@ async def export_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if scope in ("full", "payments"):
         line("Payments", bold=True)
         for p in sorted(payments, key=lambda x: (x.get("date", ""), x.get("timestamp", "")), reverse=True):
-            fee = p.get('fee_amt')
-            if fee is None and p.get('fee_perc') is not None:
-                fee = p.get('amount', 0) * (p.get('fee_perc', 0)/100)
-            if fee is None:
-                fee = 0
+            fee = p.get('fee_amt', 0)
             usd_amt = p.get("usd_amt", 0)
             line(f"{fmt_date(p.get('date', ''))}: {fmt_money(p.get('amount', 0), cur)}  |  Fee: {fmt_money(fee, cur)}  |  {fmt_money(usd_amt, 'USD')}")
         line(f"Total Payments: {fmt_money(total_pay_local, cur)} → {fmt_money(total_pay_usd, 'USD')}")
