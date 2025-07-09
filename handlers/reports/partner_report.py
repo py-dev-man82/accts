@@ -328,4 +328,14 @@ async def paginate(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["page"] = max(0, context.user_data["page"] - 1)
     return await show_report(update, context)
 
-# (PDF export handler and register_partner_report_handlers remain unchanged)
+# (PDF export handler omitted for brevity—should be included in your full file)
+
+def register_partner_report_handlers(app):
+    app.add_handler(CallbackQueryHandler(show_partner_report_menu, pattern="^rep_part$"))
+    app.add_handler(CallbackQueryHandler(select_date_range, pattern="^preport_\\d+$"))
+    app.add_handler(CallbackQueryHandler(choose_scope, pattern="^range_(week|custom)$"))
+    app.add_handler(CallbackQueryHandler(show_report, pattern="^scope_(full|sales|payments)$"))
+    app.add_handler(CallbackQueryHandler(paginate, pattern="^page_(next|prev)$"))
+    # If you have export_pdf and _goto_main_menu handlers:
+    app.add_handler(CallbackQueryHandler(export_pdf, pattern="^export_pdf$"))
+    app.add_handler(CallbackQueryHandler(_goto_main_menu, pattern="^main_menu$"))
