@@ -6,7 +6,7 @@ Ledger module for accounting system.
 Each entry records a financial or inventory-affecting event, for audit and reporting.
 Ledger is append-only (historical), and all balances/reports are derived from these entries.
 
-Now supports optional: item_id, quantity, unit_price, store_id.
+Now supports optional: item_id, quantity, unit_price, store_id, fee_perc, fee_amt, fx_rate, usd_amt.
 """
 
 import logging
@@ -29,7 +29,11 @@ def add_ledger_entry(
     item_id: str | int | None = None,
     quantity: int | None = None,
     unit_price: float | None = None,
-    store_id: int | str | None = None
+    store_id: int | str | None = None,
+    fee_perc: float | None = None,
+    fee_amt: float | None = None,
+    fx_rate: float | None = None,
+    usd_amt: float | None = None,
 ):
     """
     Add a new entry to the ledger.
@@ -48,6 +52,10 @@ def add_ledger_entry(
         quantity:       Optional: quantity of item
         unit_price:     Optional: price per unit
         store_id:       Optional: store account (for multi-store/account systems)
+        fee_perc:       Optional: fee percentage, if applicable
+        fee_amt:        Optional: fee amount, if applicable
+        fx_rate:        Optional: FX rate applied, if applicable
+        usd_amt:        Optional: USD amount, if applicable
     """
     if date is None:
         date = datetime.now().strftime("%d%m%Y")
@@ -65,7 +73,7 @@ def add_ledger_entry(
         "date":         date,
         "timestamp":    timestamp,
     }
-    # NEW: Add optional sale details if supplied
+    # Add expanded optional fields if supplied
     if item_id is not None:
         entry["item_id"] = item_id
     if quantity is not None:
@@ -74,6 +82,14 @@ def add_ledger_entry(
         entry["unit_price"] = unit_price
     if store_id is not None:
         entry["store_id"] = store_id
+    if fee_perc is not None:
+        entry["fee_perc"] = fee_perc
+    if fee_amt is not None:
+        entry["fee_amt"] = fee_amt
+    if fx_rate is not None:
+        entry["fx_rate"] = fx_rate
+    if usd_amt is not None:
+        entry["usd_amt"] = usd_amt
 
     try:
         secure_db.insert(LEDGER_TABLE, entry)
