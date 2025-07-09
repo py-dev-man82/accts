@@ -328,7 +328,18 @@ async def paginate(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["page"] = max(0, context.user_data["page"] - 1)
     return await show_report(update, context)
 
-# (PDF export handler omitted for brevity—should be included in your full file)
+@require_unlock
+async def export_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # (Add your actual PDF generation code here.)
+    await update.callback_query.answer("Generating PDF …")
+    # ... PDF logic ...
+    await update.effective_message.reply_document(
+        document=b'somefile.pdf',  # Replace with your BytesIO object/filename
+        filename="Partner_Report.pdf",
+        caption="Partner PDF report"
+    )
+    return REPORT_PAGE
+
 
 def register_partner_report_handlers(app):
     app.add_handler(CallbackQueryHandler(show_partner_report_menu, pattern="^rep_part$"))
