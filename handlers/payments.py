@@ -1,9 +1,9 @@
 # handlers/payments.py
 """
-Payments module – now with ledger integration!
+Payments module – now with expanded ledger fields!
 
-- Every payment creates a ledger entry for both the customer (local currency) and owner ("POT", USD).
-- Edit/delete also update/delete related ledger entries, so the ledger is always an exact record.
+- fee_perc, fee_amt, fx_rate, usd_amt are always written as separate columns on every payment.
+- User note is only stored in note.
 """
 
 import logging
@@ -242,11 +242,13 @@ async def confirm_add_payment(update: Update,
         "timestamp":   datetime.utcnow().isoformat(),
     })
 
-    # 2. Add ledger entry for customer (local currency)
+    # 2. Prepare expanded fields for ledger
     cur = _cust_currency(d["customer_id"])
     fee_amt = d["local_amt"] * d["fee_perc"] / 100
     fx      = (d["local_amt"] - fee_amt) / d["usd_amt"] if d["usd_amt"] else 0
+
     try:
+        # Customer ledger entry (local currency)
         add_ledger_entry(
             account_type="customer",
             account_id=d["customer_id"],
@@ -254,10 +256,14 @@ async def confirm_add_payment(update: Update,
             related_id=payment_id,
             amount=d["local_amt"],
             currency=cur,
-            note=f"{d.get('note','') or ''} | Fee: {d['fee_perc']:.2f}% ({fmt_money(fee_amt, cur)}), FX: {fx:.4f}",
+            note=d.get('note', ''),
             date=d["date"],
+            fee_perc=d["fee_perc"],
+            fee_amt=fee_amt,
+            fx_rate=fx,
+            usd_amt=d["usd_amt"]
         )
-        # 3. Add ledger entry for owner (POT, USD)
+        # Owner ledger entry (USD/POT)
         add_ledger_entry(
             account_type="owner",
             account_id="POT",
@@ -265,11 +271,14 @@ async def confirm_add_payment(update: Update,
             related_id=payment_id,
             amount=d["usd_amt"],
             currency="USD",
-            note=f"{d.get('note','') or ''} | Fee: {d['fee_perc']:.2f}% ({fmt_money(fee_amt, cur)} {cur}), FX: {fx:.4f}",
+            note=d.get('note', ''),
             date=d["date"],
+            fee_perc=d["fee_perc"],
+            fee_amt=fee_amt,
+            fx_rate=fx,
+            usd_amt=d["usd_amt"]
         )
     except Exception as e:
-        # Rollback payment if ledger fails
         logger.error(f"Ledger failed for payment {payment_id}: {e}")
         secure_db.remove("customer_payments", [payment_id])
         await update.callback_query.edit_message_text(
@@ -583,7 +592,6 @@ async def edit_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cur = _cust_currency(cid)
     d = context.user_data
 
-    # 1. Update payment
     secure_db.update("customer_payments", {
         "local_amt": d["new_local"],
         "fee_perc":  d["new_fee"],
@@ -591,7 +599,6 @@ async def edit_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "date":      d["new_date"],
     }, [pid])
 
-    # 2. Remove old ledger entries and add new ones (customer + owner)
     try:
         delete_ledger_entries_by_related("customer", cid, pid)
         delete_ledger_entries_by_related("owner", "POT", pid)
@@ -606,8 +613,12 @@ async def edit_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
             related_id=pid,
             amount=d["new_local"],
             currency=cur,
-            note=f"Edit | Fee: {d['new_fee']:.2f}% ({fmt_money(fee_amt, cur)}), FX: {fx:.4f}",
+            note=rec.get("note", ""),
             date=d["new_date"],
+            fee_perc=d["new_fee"],
+            fee_amt=fee_amt,
+            fx_rate=fx,
+            usd_amt=d["new_usd"]
         )
         add_ledger_entry(
             account_type="owner",
@@ -616,8 +627,12 @@ async def edit_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
             related_id=pid,
             amount=d["new_usd"],
             currency="USD",
-            note=f"Edit | Fee: {d['new_fee']:.2f}% ({fmt_money(fee_amt, cur)} {cur}), FX: {fx:.4f}",
+            note=rec.get("note", ""),
             date=d["new_date"],
+            fee_perc=d["new_fee"],
+            fee_amt=fee_amt,
+            fx_rate=fx,
+            usd_amt=d["new_usd"]
         )
     except Exception as e:
         logger.error(f"Ledger update failed for payment {pid}: {e}")
@@ -761,7 +776,6 @@ async def del_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cid = rec["customer_id"]
     pid = rec.doc_id
 
-    # Remove payment & ledger
     secure_db.remove("customer_payments", [pid])
     try:
         delete_ledger_entries_by_related("customer", cid, pid)
