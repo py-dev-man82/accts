@@ -1,4 +1,5 @@
 # handlers/payouts.py
+
 """
 Payouts module – now with:
 • Universal Back-button re-entry
@@ -69,10 +70,8 @@ def _months_filter(rows, months: int):
     cutoff = cutoff.replace(year=y, month=m)
     return [r for r in rows if datetime.strptime(r["date"], "%d%m%Y") >= cutoff]
 
-
 def _calc_fx(local_amt: float, fee_amt: float, usd: float) -> float:
     return (local_amt - fee_amt) / usd if usd else 0.0
-
 
 def _partner_currency(pid: int) -> str:
     row = secure_db.table("partners").get(doc_id=pid) or {}
@@ -84,17 +83,22 @@ def _ledger_delete_payout(partner_id, payout_id):
     delete_ledger_entries_by_related("partner", partner_id, payout_id)
     delete_ledger_entries_by_related("owner", OWNER_ACCOUNT_ID, payout_id)
 
-def _ledger_add_payout(partner_id, payout_id, local_amt, usd_amt, cur, fee_amt, fx, note, date):
+def _ledger_add_payout(partner_id, payout_id, local_amt, usd_amt, cur, fee_perc, fee_amt, fx, note, date, timestamp):
     # Partner ledger: payout received (credit)
     add_ledger_entry(
         account_type="partner",
         account_id=partner_id,
-        entry_type="payout",
+        entry_type="payment",  # <--- so it shows in partner report
         related_id=payout_id,
-        amount=local_amt - fee_amt,
+        amount=local_amt,
         currency=cur,
-        note=f"{note} | Fee: {fmt_money(fee_amt, cur)}, FX: {fx:.4f}",
+        note=note,
         date=date,
+        timestamp=timestamp,
+        fee_perc=fee_perc,
+        fee_amt=fee_amt,
+        fx_rate=fx,
+        usd_amt=usd_amt,
     )
     # Owner ledger: payout paid (debit in USD)
     add_ledger_entry(
@@ -104,8 +108,13 @@ def _ledger_add_payout(partner_id, payout_id, local_amt, usd_amt, cur, fee_amt, 
         related_id=payout_id,
         amount=-usd_amt,
         currency="USD",
-        note=f"{note} | Partner payout. FX: {fx:.4f}",
+        note=f"Payout to partner {partner_id}. {note}",
         date=date,
+        timestamp=timestamp,
+        fee_perc=fee_perc,
+        fee_amt=fee_amt,
+        fx_rate=fx,
+        usd_amt=usd_amt,
     )
 
 # ────────────────────────────────────────────────────────────
@@ -243,11 +252,11 @@ async def confirm_add_payout(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await payout_back(update, context); return ConversationHandler.END
     d = context.user_data
     cur = _partner_currency(d["partner_id"])
-    net = d["local_amt"] - d["fee_amt"]
     fx  = _calc_fx(d["local_amt"], d["fee_amt"], d["usd_amt"])
-    logger.info(f"Adding payout: partner_id={d['partner_id']} local_amt={d['local_amt']} usd_amt={d['usd_amt']}")
+    timestamp = datetime.utcnow().isoformat()
     payout_id = None
     try:
+        # Insert payout record
         payout_id = secure_db.insert("partner_payouts", {
             "partner_id": d["partner_id"],
             "local_amt":  d["local_amt"],
@@ -257,14 +266,27 @@ async def confirm_add_payout(update: Update, context: ContextTypes.DEFAULT_TYPE)
             "fx_rate":    fx,
             "note":       d.get("note", ""),
             "date":       d["date"],
-            "timestamp":  datetime.utcnow().isoformat(),
+            "timestamp":  timestamp,
         })
-        # --- LEDGER ---
-        _ledger_add_payout(d["partner_id"], payout_id, d["local_amt"], d["usd_amt"], cur, d["fee_amt"], fx, d.get("note", ""), d["date"])
+        # Add to ledger (partner and owner)
+        _ledger_add_payout(
+            partner_id=d["partner_id"],
+            payout_id=payout_id,
+            local_amt=d["local_amt"],
+            usd_amt=d["usd_amt"],
+            cur=cur,
+            fee_perc=d["fee_perc"],
+            fee_amt=d["fee_amt"],
+            fx=fx,
+            note=d.get("note", ""),
+            date=d["date"],
+            timestamp=timestamp,
+        )
     except Exception as e:
         logger.error(f"Payout ledger write failed: {e}", exc_info=True)
         if payout_id is not None:
             secure_db.remove("partner_payouts", [payout_id])
+            _ledger_delete_payout(d["partner_id"], payout_id)
         await update.callback_query.edit_message_text(
             "❌ Error: Failed to write payout or ledger. Nothing recorded.",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="payout_menu")]])
