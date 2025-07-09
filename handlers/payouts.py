@@ -1,16 +1,20 @@
 # handlers/payouts.py
 """
 Payouts module – now with:
-• Universal Back-button re-entry (already present)
+• Universal Back-button re-entry
 • Thousands-separated money with currency symbol (fmt_money)
 • Readable dates DD/MM/YYYY (fmt_date)
+• FULL LEDGER INTEGRATION (partner + owner, safe rollback, rollback on ledger error)
 
 Prereqs
 ───────
-`handlers/utils.py` must provide
-
+handlers/utils.py must provide:
     fmt_money(amount: float, code:str='USD') -> str
     fmt_date (ddmmyyyy:str)                 -> str
+
+handlers/ledger.py must provide:
+    add_ledger_entry(...)
+    delete_ledger_entries_by_related(...)
 """
 
 import logging
@@ -27,9 +31,10 @@ from telegram.ext import (
 )
 from tinydb import Query
 from handlers.utils import require_unlock, fmt_money, fmt_date  # ← helpers
+from handlers.ledger import add_ledger_entry, delete_ledger_entries_by_related
 from secure_db import secure_db
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("payouts")
 
 # ────────────────────────────────────────────────────────────
 #  Conversation-state constants
@@ -73,10 +78,41 @@ def _partner_currency(pid: int) -> str:
     row = secure_db.table("partners").get(doc_id=pid) or {}
     return row.get("currency", "USD")
 
+OWNER_ACCOUNT_ID = "POT"
+
+def _ledger_delete_payout(partner_id, payout_id):
+    delete_ledger_entries_by_related("partner", partner_id, payout_id)
+    delete_ledger_entries_by_related("owner", OWNER_ACCOUNT_ID, payout_id)
+
+def _ledger_add_payout(partner_id, payout_id, local_amt, usd_amt, cur, fee_amt, fx, note, date):
+    # Partner ledger: payout received (credit)
+    add_ledger_entry(
+        account_type="partner",
+        account_id=partner_id,
+        entry_type="payout",
+        related_id=payout_id,
+        amount=local_amt - fee_amt,
+        currency=cur,
+        note=f"{note} | Fee: {fmt_money(fee_amt, cur)}, FX: {fx:.4f}",
+        date=date,
+    )
+    # Owner ledger: payout paid (debit in USD)
+    add_ledger_entry(
+        account_type="owner",
+        account_id=OWNER_ACCOUNT_ID,
+        entry_type="payout_sent",
+        related_id=payout_id,
+        amount=-usd_amt,
+        currency="USD",
+        note=f"{note} | Partner payout. FX: {fx:.4f}",
+        date=date,
+    )
+
 # ────────────────────────────────────────────────────────────
 #  Sub-menu  +  universal Back handler
 # ────────────────────────────────────────────────────────────
 async def show_payout_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.info("Show payout menu")
     if update.callback_query:
         await update.callback_query.answer()
     kb = InlineKeyboardMarkup([
@@ -92,9 +128,8 @@ async def show_payout_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text(msg, reply_markup=kb)
 
-
 async def payout_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show Payout menu *and* end the active conversation."""
+    logger.info("Back to payout menu")
     context.user_data.clear()
     await show_payout_menu(update, context)
     return ConversationHandler.END
@@ -104,7 +139,7 @@ async def payout_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ======================================================================
 @require_unlock
 async def add_payout(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Entry-point: choose partner."""
+    logger.info("Add payout - select partner")
     await update.callback_query.answer()
     partners = secure_db.all("partners")
     if not partners:
@@ -117,13 +152,11 @@ async def add_payout(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.edit_message_text("Select partner:", reply_markup=kb)
     return PO_ADD_PARTNER
 
-
 async def get_add_partner(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     context.user_data["partner_id"] = int(update.callback_query.data.split("_")[-1])
     await update.callback_query.edit_message_text("Enter local amount to pay:")
     return PO_ADD_LOCAL
-
 
 async def get_add_local(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -133,7 +166,6 @@ async def get_add_local(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["local_amt"] = amt
     await update.message.reply_text("Enter handling fee % (e.g. 2.5) or 0 if none:")
     return PO_ADD_FEE
-
 
 async def get_add_fee(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -146,7 +178,6 @@ async def get_add_fee(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Enter USD paid:")
     return PO_ADD_USD
 
-
 async def get_add_usd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         usd = float(update.message.text)
@@ -156,7 +187,6 @@ async def get_add_usd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kb = InlineKeyboardMarkup([[InlineKeyboardButton("➖ Skip note", callback_data="po_add_note_skip")]])
     await update.message.reply_text("Enter optional note or Skip:", reply_markup=kb)
     return PO_ADD_NOTE
-
 
 async def get_add_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
     note = "" if (update.callback_query and update.callback_query.data.endswith("skip")) else update.message.text.strip()
@@ -172,7 +202,6 @@ async def get_add_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(prompt, reply_markup=kb)
     return PO_ADD_DATE
 
-
 async def get_add_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.callback_query:
         await update.callback_query.answer()
@@ -185,7 +214,6 @@ async def get_add_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Format DDMMYYYY."); return PO_ADD_DATE
     context.user_data["date"] = date
     return await confirm_add_prompt(update, context)
-
 
 async def confirm_add_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
     d = context.user_data
@@ -208,26 +236,42 @@ async def confirm_add_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await update.message.reply_text(summary, reply_markup=kb)
     return PO_ADD_CONFIRM
 
-
 @require_unlock
 async def confirm_add_payout(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     if update.callback_query.data.endswith("no"):
         await payout_back(update, context); return ConversationHandler.END
     d = context.user_data
-    secure_db.insert("partner_payouts", {
-        "partner_id": d["partner_id"],
-        "local_amt":  d["local_amt"],
-        "fee_perc":   d["fee_perc"],
-        "fee_amt":    d["fee_amt"],
-        "usd_amt":    d["usd_amt"],
-        "fx_rate":    _calc_fx(d["local_amt"], d["fee_amt"], d["usd_amt"]),
-        "note":       d.get("note", ""),
-        "date":       d["date"],
-        "timestamp":  datetime.utcnow().isoformat(),
-    })
+    cur = _partner_currency(d["partner_id"])
+    net = d["local_amt"] - d["fee_amt"]
+    fx  = _calc_fx(d["local_amt"], d["fee_amt"], d["usd_amt"])
+    logger.info(f"Adding payout: partner_id={d['partner_id']} local_amt={d['local_amt']} usd_amt={d['usd_amt']}")
+    payout_id = None
+    try:
+        payout_id = secure_db.insert("partner_payouts", {
+            "partner_id": d["partner_id"],
+            "local_amt":  d["local_amt"],
+            "fee_perc":   d["fee_perc"],
+            "fee_amt":    d["fee_amt"],
+            "usd_amt":    d["usd_amt"],
+            "fx_rate":    fx,
+            "note":       d.get("note", ""),
+            "date":       d["date"],
+            "timestamp":  datetime.utcnow().isoformat(),
+        })
+        # --- LEDGER ---
+        _ledger_add_payout(d["partner_id"], payout_id, d["local_amt"], d["usd_amt"], cur, d["fee_amt"], fx, d.get("note", ""), d["date"])
+    except Exception as e:
+        logger.error(f"Payout ledger write failed: {e}", exc_info=True)
+        if payout_id is not None:
+            secure_db.remove("partner_payouts", [payout_id])
+        await update.callback_query.edit_message_text(
+            "❌ Error: Failed to write payout or ledger. Nothing recorded.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="payout_menu")]])
+        )
+        return ConversationHandler.END
     await update.callback_query.edit_message_text(
-        "✅ Payout recorded.",
+        "✅ Payout recorded (ledger updated).",
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="payout_menu")]]))
     return ConversationHandler.END
 
@@ -249,7 +293,6 @@ async def view_payout_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.edit_message_text("Select partner:", reply_markup=kb)
     return PO_VIEW_PARTNER
 
-
 async def view_choose_period(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     context.user_data["view_pid"] = int(update.callback_query.data.split("_")[-1])
@@ -262,13 +305,11 @@ async def view_choose_period(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await update.callback_query.edit_message_text("Choose period:", reply_markup=kb)
     return PO_VIEW_TIME
 
-
 async def view_set_filter(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     context.user_data["view_period"] = update.callback_query.data.split("_")[-1]   # 3m / 6m / all
     context.user_data["view_page"]   = 1
     return await render_view_page(update, context)
-
 
 async def render_view_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pid   = context.user_data["view_pid"]
@@ -306,7 +347,6 @@ async def render_view_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.edit_message_text(text, reply_markup=kb)
     return PO_VIEW_PAGE
 
-
 async def view_paginate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     context.user_data["view_page"] += (-1 if update.callback_query.data.endswith("prev") else 1)
@@ -330,7 +370,6 @@ async def edit_payout_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.edit_message_text("Select partner:", reply_markup=kb)
     return PO_EDIT_PARTNER
 
-
 async def edit_choose_period(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     context.user_data["edit_pid"]=int(update.callback_query.data.split("_")[-1])
@@ -342,13 +381,11 @@ async def edit_choose_period(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await update.callback_query.edit_message_text("Choose period:",reply_markup=kb)
     return PO_EDIT_TIME
 
-
 async def edit_set_filter(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     context.user_data["edit_period"]=update.callback_query.data.split("_")[-1]
     context.user_data["edit_page"]=1
     return await render_edit_page(update,context)
-
 
 async def render_edit_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pid=context.user_data["edit_pid"]; period=context.user_data["edit_period"]; page=context.user_data["edit_page"]
@@ -371,12 +408,10 @@ async def render_edit_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.edit_message_text(text,reply_markup=kb)
     return PO_EDIT_PAGE
 
-
 async def edit_page_nav(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     context.user_data["edit_page"] += (-1 if update.callback_query.data.endswith("prev") else 1)
     return await render_edit_page(update,context)
-
 
 async def edit_pick_doc(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -397,7 +432,6 @@ async def edit_pick_doc(update: Update, context: ContextTypes.DEFAULT_TYPE):
     })
     await update.message.reply_text("New local amount:"); return PO_EDIT_LOCAL
 
-
 async def edit_new_local(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         amt = float(update.message.text); assert amt > 0
@@ -405,7 +439,6 @@ async def edit_new_local(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Positive number please."); return PO_EDIT_LOCAL
     context.user_data["local_amt"] = amt
     await update.message.reply_text("New handling fee % (0–99):"); return PO_EDIT_FEE
-
 
 async def edit_new_fee(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -417,7 +450,6 @@ async def edit_new_fee(update: Update, context: ContextTypes.DEFAULT_TYPE):
     d["fee_amt"]  = d["local_amt"] * pct / 100
     await update.message.reply_text("New USD paid:"); return PO_EDIT_USD
 
-
 async def edit_new_usd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         usd = float(update.message.text)
@@ -428,7 +460,6 @@ async def edit_new_usd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("New note or Skip:", reply_markup=kb)
     return PO_EDIT_NOTE
 
-
 async def edit_new_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
     note = "" if (update.callback_query and update.callback_query.data.endswith("skip")) else update.message.text.strip()
     if update.callback_query:
@@ -438,7 +469,6 @@ async def edit_new_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kb = InlineKeyboardMarkup([[InlineKeyboardButton("📅 Skip", callback_data="po_edit_date_skip")]])
     await update.message.reply_text(f"New date DDMMYYYY or Skip ({fmt_date(today)}):", reply_markup=kb)
     return PO_EDIT_DATE
-
 
 async def edit_new_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.callback_query:
@@ -466,24 +496,39 @@ async def edit_new_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
         summary,reply_markup=kb)
     return PO_EDIT_CONFIRM
 
-
 @require_unlock
 async def edit_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     if update.callback_query.data.endswith("_no"):
         await payout_back(update, context); return ConversationHandler.END
     rec=context.user_data["edit_rec"]; d=context.user_data
-    secure_db.update("partner_payouts",{
-        "local_amt": d["local_amt"],
-        "fee_perc":  d["fee_perc"],
-        "fee_amt":   d["fee_amt"],
-        "usd_amt":   d["usd_amt"],
-        "fx_rate":   _calc_fx(d["local_amt"], d["fee_amt"], d["usd_amt"]),
-        "note":      d.get("note", ""),
-        "date":      d["date"],
-    }, [rec.doc_id])
+    cur = _partner_currency(rec["partner_id"])
+    net = d["local_amt"] - d["fee_amt"]
+    fx  = _calc_fx(d["local_amt"], d["fee_amt"], d["usd_amt"])
+    try:
+        # --- LEDGER REMOVE old entries ---
+        _ledger_delete_payout(rec["partner_id"], rec.doc_id)
+        # --- Update payout record ---
+        secure_db.update("partner_payouts",{
+            "local_amt": d["local_amt"],
+            "fee_perc":  d["fee_perc"],
+            "fee_amt":   d["fee_amt"],
+            "usd_amt":   d["usd_amt"],
+            "fx_rate":   fx,
+            "note":      d.get("note", ""),
+            "date":      d["date"],
+        }, [rec.doc_id])
+        # --- LEDGER ADD new ---
+        _ledger_add_payout(rec["partner_id"], rec.doc_id, d["local_amt"], d["usd_amt"], cur, d["fee_amt"], fx, d.get("note", ""), d["date"])
+    except Exception as e:
+        logger.error(f"Edit payout failed, rolling back: {e}", exc_info=True)
+        await update.callback_query.edit_message_text(
+            "❌ Edit failed: ledger/database error.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back",callback_data="payout_menu")]])
+        )
+        return ConversationHandler.END
     await update.callback_query.edit_message_text(
-        "✅ Payout updated.",
+        "✅ Payout updated (ledger synced).",
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back",callback_data="payout_menu")]]))
     return ConversationHandler.END
 
@@ -505,7 +550,6 @@ async def del_payout_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.edit_message_text("Select partner:", reply_markup=kb)
     return PO_DEL_PARTNER
 
-
 async def del_choose_period(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     context.user_data["del_pid"]=int(update.callback_query.data.split("_")[-1])
@@ -517,13 +561,11 @@ async def del_choose_period(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.edit_message_text("Choose period:",reply_markup=kb)
     return PO_DEL_TIME
 
-
 async def del_set_filter(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     context.user_data["del_period"]=update.callback_query.data.split("_")[-1]
     context.user_data["del_page"]=1
     return await render_del_page(update,context)
-
 
 async def render_del_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pid=context.user_data["del_pid"]; period=context.user_data["del_period"]; page=context.user_data["del_page"]
@@ -546,12 +588,10 @@ async def render_del_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.edit_message_text(text,reply_markup=kb)
     return PO_DEL_PAGE
 
-
 async def del_page_nav(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     context.user_data["del_page"] += (-1 if update.callback_query.data.endswith("prev") else 1)
     return await render_del_page(update,context)
-
 
 async def del_pick_doc(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -567,16 +607,26 @@ async def del_pick_doc(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Delete Payout [{did}]?",reply_markup=kb)
     return PO_DEL_CONFIRM
 
-
 @require_unlock
 async def del_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     if update.callback_query.data.endswith("_no"):
         await payout_back(update, context); return ConversationHandler.END
     rec=context.user_data["del_rec"]
-    secure_db.remove("partner_payouts",[rec.doc_id])
+    try:
+        # --- LEDGER REMOVE entries ---
+        _ledger_delete_payout(rec["partner_id"], rec.doc_id)
+        # Remove payout record
+        secure_db.remove("partner_payouts",[rec.doc_id])
+    except Exception as e:
+        logger.error(f"Payout delete failed: {e}", exc_info=True)
+        await update.callback_query.edit_message_text(
+            "❌ Payout delete failed: ledger/database error.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back",callback_data="payout_menu")]])
+        )
+        return ConversationHandler.END
     await update.callback_query.edit_message_text(
-        "✅ Payout deleted.",
+        "✅ Payout deleted (ledger updated).",
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back",callback_data="payout_menu")]]))
     return ConversationHandler.END
 
@@ -586,7 +636,6 @@ async def del_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def register_payout_handlers(app: Application):
     """Attach Payout submenu + all conversations to the Telegram app."""
 
-    # ── Sub-menu ───────────────────────────────────────────────
     app.add_handler(CallbackQueryHandler(show_payout_menu, pattern="^payout_menu$"))
 
     # ─────────────────────────── View conversation ───────────────────────────
