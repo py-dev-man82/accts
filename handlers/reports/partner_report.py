@@ -493,7 +493,7 @@ async def export_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
             y = height - 40
 
     pdf.setFont("Helvetica-Bold", 14)
-    pdf.drawString(50, y, f"Partner Report — {partner['name']}")
+    pdf.drawString(50, y, f"Report — {partner['name']}")
     y -= 20
     pdf.setFont("Helvetica", 10)
     line(f"Period: {fmt_date(start.strftime('%d%m%Y'))} → {fmt_date(end.strftime('%d%m%Y'))}")
