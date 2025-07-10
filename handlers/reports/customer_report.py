@@ -12,12 +12,7 @@ from secure_db import secure_db
 from handlers.utils import require_unlock, fmt_money, fmt_date
 from handlers.ledger import get_ledger, get_balance
 
-def _reset_customer_report_state(context):
-    for k in ['customer_id', 'start_date', 'end_date', 'page', 'scope']:
-        context.user_data.pop(k, None)
-
 async def _goto_main_menu(update, context):
-    _reset_customer_report_state(context)
     from bot import start
     return await start(update, context)
 
@@ -31,20 +26,16 @@ async def _goto_main_menu(update, context):
 
 _PAGE_SIZE = 8
 
-def _is_general_customer(c):
-    partner_names = {p['name'] for p in secure_db.all("partners")}
-    store_names = {s['name'] for s in secure_db.all("stores")}
-    return c['name'] not in partner_names and c['name'] not in store_names
-
 @require_unlock
 async def show_customer_report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    _reset_customer_report_state(context)
+    for k in ['customer_id', 'start_date', 'end_date', 'page', 'scope']:
+        context.user_data.pop(k, None)
     logging.info("show_customer_report_menu called")
-    customers = [c for c in secure_db.all("customers") if _is_general_customer(c)]
+    customers = secure_db.all("customers")
     if not customers:
         await update.callback_query.answer()
         await update.callback_query.edit_message_text(
-            "⚠️ No general customers found.",
+            "⚠️ No customers found.",
             reply_markup=InlineKeyboardMarkup([
                 [
                     InlineKeyboardButton("🔙 Back", callback_data="customer_report_menu"),
@@ -178,7 +169,8 @@ async def show_customer_report(update: Update, context: ContextTypes.DEFAULT_TYP
     customer = secure_db.table("customers").get(doc_id=cid)
     currency = customer['currency']
 
-    ledger_entries = get_ledger("customer", cid)
+    # --- PATCH: Pull from both customer and general account_types ---
+    ledger_entries = get_ledger("customer", cid) + get_ledger("general", cid)
     filtered_entries = _filter_ledger(ledger_entries, start_date, end_date)
     sales = [e for e in filtered_entries if e["entry_type"] == "sale"]
     payments = [e for e in filtered_entries if e["entry_type"] == "payment"]
@@ -200,14 +192,12 @@ async def show_customer_report(update: Update, context: ContextTypes.DEFAULT_TYP
         lines.append("🛒 *Sales*")
         if sales_page:
             for s in sales_page:
-                store = secure_db.table("stores").get(doc_id=s.get("store_id")) if s.get("store_id") else None
-                store_str = f"@{store['name']}" if store else ""
-                line = f"• {fmt_date(s['date'])}: {fmt_money(-s['amount'], currency)} {store_str}"
-                note = s.get('note', '')
-                # Only display note if not handling fee/system generated
-                if note and "handling fee" not in note.lower():
-                    line += f"  📝 {note}"
-                lines.append(line)
+                qty = s.get("quantity", 1)
+                price = s.get("unit_price", 0)
+                total_val = qty * price
+                lines.append(
+                    f"• {fmt_date(s['date'])}: {qty} × {fmt_money(price, currency)} = {fmt_money(total_val, currency)}"
+                )
         else:
             lines.append("  (No sales on this page)")
         if page == 0:
@@ -218,12 +208,6 @@ async def show_customer_report(update: Update, context: ContextTypes.DEFAULT_TYP
         if payments_page:
             for p in payments_page:
                 line = f"• {fmt_date(p['date'])}: {fmt_money(p['amount'], currency)}"
-                fx = p.get("fx_rate")
-                usd = p.get("usd_amt")
-                if fx is not None:
-                    line += f"  FX {fx:.4f}"
-                if usd is not None:
-                    line += f"  USD {usd:.2f}"
                 if p.get('note'):
                     line += f"  📝 {p['note']}"
                 lines.append(line)
@@ -237,11 +221,10 @@ async def show_customer_report(update: Update, context: ContextTypes.DEFAULT_TYP
     nav = []
     if page > 0:
         nav.append(InlineKeyboardButton("⬅️ Prev", callback_data="page_prev"))
-    next_count = sales_count if scope in ['full','sales'] else payments_count
-    if (page + 1) * _PAGE_SIZE < next_count:
+    if (page + 1) * _PAGE_SIZE < (sales_count if scope in ['full','sales'] else payments_count):
         nav.append(InlineKeyboardButton("➡️ Next", callback_data="page_next"))
     nav.append(InlineKeyboardButton("📄 Export PDF", callback_data="export_pdf"))
-    nav.append(InlineKeyboardButton("👤 Select Another Customer", callback_data="customer_report_menu"))
+    nav.append(InlineKeyboardButton("🔙 Back", callback_data="customer_report_menu"))
     nav.append(InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu"))
 
     await update.callback_query.edit_message_text(
@@ -271,7 +254,7 @@ async def export_pdf_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     scope = context.user_data.get('scope')
     currency = customer['currency']
 
-    ledger_entries = get_ledger("customer", cid)
+    ledger_entries = get_ledger("customer", cid) + get_ledger("general", cid)
     filtered_entries = _filter_ledger(ledger_entries, start, end)
     sales = [e for e in filtered_entries if e["entry_type"] == "sale"]
     payments = [e for e in filtered_entries if e["entry_type"] == "payment"]
@@ -300,12 +283,10 @@ async def export_pdf_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
         y -= 20
         pdf.setFont('Helvetica', 10)
         for s in sales:
-            store = secure_db.table("stores").get(doc_id=s.get("store_id")) if s.get("store_id") else None
-            store_str = f"@{store['name']}" if store else ""
-            line = f"{fmt_date(s['date'])}: {fmt_money(-s['amount'], currency)} {store_str}"
-            note = s.get('note', '')
-            if note and "handling fee" not in note.lower():
-                line += f"  Note: {note}"
+            qty = s.get("quantity", 1)
+            price = s.get("unit_price", 0)
+            total_val = qty * price
+            line = f"{fmt_date(s['date'])}: {qty} × {fmt_money(price, currency)} = {fmt_money(total_val, currency)}"
             pdf.drawString(60, y, line)
             y -= 15
             if y<50:
@@ -322,12 +303,6 @@ async def export_pdf_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pdf.setFont('Helvetica', 10)
         for p in payments:
             line = f"{fmt_date(p['date'])}: {fmt_money(p['amount'], currency)}"
-            fx = p.get("fx_rate")
-            usd = p.get("usd_amt")
-            if fx is not None:
-                line += f"  FX {fx:.4f}"
-            if usd is not None:
-                line += f"  USD {usd:.2f}"
             if p.get('note'):
                 line += f"  Note: {p['note']}"
             pdf.drawString(60, y, line)
@@ -351,7 +326,6 @@ async def export_pdf_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
         document=buffer,
         filename=f"report_{customer['name']}_{start.strftime('%Y%m%d')}.pdf"
     )
-    _reset_customer_report_state(context)
     return REPORT_PAGE
 
 def register_customer_report_handlers(app):
