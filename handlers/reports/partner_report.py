@@ -205,10 +205,23 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     total_pay_local = sum(p.get('amount', 0) for p in payments)
     total_pay_usd = sum(p.get('usd_amt', 0) for p in payments)
 
-    # EXPENSES
+    # EXPENSES - handling fees by item and date
     pledger = get_ledger("partner", pid)
     handling_fees = [e for e in pledger if e.get("entry_type") == "handling_fee" and _between(e.get("date", ""), start, end)]
     other_expenses = [e for e in pledger if e.get("entry_type") == "expense" and _between(e.get("date", ""), start, end)]
+
+    expense_lines = []
+    if handling_fees:
+        expense_lines.append("• 💳 Handling Fees")
+        for h in handling_fees:
+            item = h.get('item_id', '?')
+            expense_lines.append(f"   - {fmt_date(h.get('date', ''))}: [{item}] {fmt_money(abs(h.get('amount', 0)), cur)}")
+        expense_lines.append(f"📊 Total Handling Fees: {fmt_money(sum(abs(h.get('amount', 0)) for h in handling_fees), cur)}")
+    if other_expenses:
+        expense_lines.append("• 🧾 Other Expenses")
+        for e in other_expenses:
+            expense_lines.append(f"   - {fmt_date(e.get('date', ''))}: {fmt_money(abs(e.get('amount', 0)), cur)}")
+        expense_lines.append(f"📊 Total Other Expenses: {fmt_money(sum(abs(e.get('amount', 0)) for e in other_expenses), cur)}")
 
     # STOCK-INS
     stockins = [
@@ -245,18 +258,6 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
         value = sum(abs(s.get('quantity', 0) * s.get('unit_price', s.get('unit_cost', 0))) for s in entries)
         unit_summary.append(f"- [{item_id}] : {units} units, {fmt_money(value, cur)}")
     total_sales = sum(abs(s.get('quantity', 0) * s.get('unit_price', s.get('unit_cost', 0))) for s in sales)
-
-    expense_lines = []
-    if handling_fees:
-        expense_lines.append("• 💳 Handling Fees")
-        for h in handling_fees:
-            expense_lines.append(f"   - {fmt_date(h.get('date', ''))}: {fmt_money(abs(h.get('amount', 0)), cur)}")
-        expense_lines.append(f"📊 Total Handling Fees: {fmt_money(sum(abs(h.get('amount', 0)) for h in handling_fees), cur)}")
-    if other_expenses:
-        expense_lines.append("• 🧾 Other Expenses")
-        for e in other_expenses:
-            expense_lines.append(f"   - {fmt_date(e.get('date', ''))}: {fmt_money(abs(e.get('amount', 0)), cur)}")
-        expense_lines.append(f"📊 Total Other Expenses: {fmt_money(sum(abs(e.get('amount', 0)) for e in other_expenses), cur)}")
 
     stockin_lines = []
     for s in sorted(stockins, key=lambda x: (x.get("date", ""), x.get("timestamp", "")), reverse=True):
@@ -329,7 +330,6 @@ async def paginate(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["page"] = max(0, context.user_data["page"] - 1)
     return await show_report(update, context)
 
-# You must define export_pdf for PDF export functionality!
 @require_unlock
 async def export_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer("Generating PDF …")
@@ -357,7 +357,6 @@ async def export_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
         sale_items[s.get("item_id", "?")].append(s)
     total_sales = sum(abs(s.get('quantity', 0) * s.get('unit_price', s.get('unit_cost', 0))) for s in sales)
 
-    # Payments for PDF: payouts + customer payments
     payouts = [
         e for e in pledger
         if e.get("entry_type") == "payment" and _between(e.get("date", ""), start, end)
@@ -457,8 +456,9 @@ async def export_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if handling_fees:
             line("Handling Fees", bold=True)
             for h in handling_fees:
-                line(f"   - {fmt_date(h.get('date', ''))}: {fmt_money(abs(h.get('amount', 0)), cur)}")
-            line(f"Total Handling Fees: {fmt_money(total_handling, cur)}")
+                item = h.get('item_id', '?')
+                line(f"   - {fmt_date(h.get('date', ''))}: [{item}] {fmt_money(abs(h.get('amount', 0)), cur)}")
+            line(f"Total Handling Fees: {fmt_money(sum(abs(h.get('amount', 0)) for h in handling_fees), cur)}")
         if other_expenses:
             line("Other Expenses", bold=True)
             for e in other_expenses:
@@ -494,7 +494,6 @@ async def export_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
         caption=f"Partner report for {partner['name']} ({fmt_date(start.strftime('%d%m%Y'))} → {fmt_date(end.strftime('%d%m%Y'))})"
     )
     return REPORT_PAGE
-
 
 def register_partner_report_handlers(app):
     app.add_handler(CallbackQueryHandler(show_partner_report_menu, pattern="^rep_part$"))
