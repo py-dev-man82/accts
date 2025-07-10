@@ -552,8 +552,8 @@ async def export_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
     buf.seek(0)
     await update.effective_message.reply_document(
         document=buf,
-        filename=f"Partner_Report_{partner['name'].replace(' ', '_')}_{start.strftime('%d%m%Y')}_{end.strftime('%d%m%Y')}.pdf",
-        caption=f"Partner report for {partner['name']} ({fmt_date(start.strftime('%d%m%Y'))} → {fmt_date(end.strftime('%d%m%Y'))})"
+        filename=f"Report_{partner['name'].replace(' ', '_')}_{start.strftime('%d%m%Y')}_{end.strftime('%d%m%Y')}.pdf",
+        caption=f"Report for {partner['name']} ({fmt_date(start.strftime('%d%m%Y'))} → {fmt_date(end.strftime('%d%m%Y'))})"
     )
     return REPORT_PAGE
 
