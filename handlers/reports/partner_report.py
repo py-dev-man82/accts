@@ -460,10 +460,9 @@ async def export_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
         line(f"Total Payments: {fmt_money(total_pay_local, cur)} → {fmt_money(total_pay_usd, 'USD')}")
         y -= 10
 
-    if scope == "full":
         if handling_fees:
-    line("Handling Fees", bold=True)
-    for h in handling_fees:
+            line("Handling Fees", bold=True)
+            for h in handling_fees:
         item = h.get('item_id', '?')
         qty = h.get('quantity', 1)
         amt = abs(h.get('amount', 0))
