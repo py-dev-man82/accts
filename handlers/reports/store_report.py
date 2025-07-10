@@ -210,6 +210,27 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sledger = get_ledger("store", sid)
     handling_fees = [e for e in sledger if e.get("entry_type") == "handling_fee" and _between(e.get("date", ""), start, end)]
 
+    # PAYMENTS: all customer/store_customer payments for this store
+    store_payments = []
+    for cust in secure_db.all("customers"):
+        for acct_type in ["customer", "store_customer"]:
+            cust_ledger = get_ledger(acct_type, cust.doc_id)
+            for p in cust_ledger:
+                if p.get("entry_type") == "payment" and p.get("store_id") == sid and _between(p.get("date", ""), start, end):
+                    store_payments.append(p)
+
+    payment_lines = []
+    for p in sorted(store_payments, key=lambda x: (x.get("date", ""), x.get("timestamp", "")), reverse=True):
+        amount = p.get('amount', 0)
+        fee_perc = p.get('fee_perc', 0)
+        fx_rate = p.get('fx_rate', 0)
+        usd_amt = p.get('usd_amt', 0)
+        payment_lines.append(
+            f"• {fmt_date(p.get('date', ''))}: {fmt_money(amount, cur)}  |  Fee: {fee_perc:g}%  |  FX: {fx_rate:.4f}  |  USD: {fmt_money(usd_amt, 'USD')}"
+        )
+    total_pay_local = sum(p.get('amount', 0) for p in store_payments)
+    total_pay_usd = sum(p.get('usd_amt', 0) for p in store_payments)
+
     # Sort and format sales and fees as separate sections
     sales_sorted = sorted(store_sales, key=lambda x: (x.get("date", ""), x.get("timestamp", "")), reverse=True)
     fees_sorted  = sorted(handling_fees, key=lambda x: (x.get("date", ""), x.get("timestamp", "")), reverse=True)
@@ -248,23 +269,6 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     total_sales_only = sum(abs(s.get('quantity', 0) * s.get('unit_price', s.get('unit_cost', 0))) for s in store_sales)
     total_fees_only = sum(abs(f.get('amount', 0)) for f in handling_fees)
     grand_total = total_sales_only + total_fees_only
-
-    # ----- PAYMENTS -----
-    payments = [
-        e for e in sledger if e.get("entry_type") in ("payment", "payment_recv") and _between(e.get("date", ""), start, end)
-    ]
-    payment_lines = []
-    for p in sorted(payments, key=lambda x: (x.get("date", ""), x.get("timestamp", "")), reverse=True):
-        amount = p.get('amount', 0)
-        fee_perc = p.get('fee_perc', 0)
-        fx_rate = p.get('fx_rate', 0)
-        inv_fx = 1 / fx_rate if fx_rate else 0
-        usd_amt = p.get('usd_amt', 0)
-        payment_lines.append(
-            f"• {fmt_date(p.get('date', ''))}: {fmt_money(amount, cur)}  |  {fee_perc:g}%  |  {inv_fx:.4f}  |  {fmt_money(usd_amt, 'USD')}"
-        )
-    total_pay_local = sum(p.get('amount', 0) for p in payments)
-    total_pay_usd = sum(p.get('usd_amt', 0) for p in payments)
 
     # ----- EXPENSES -----
     expenses = [e for e in sledger if e.get("entry_type") == "expense" and _between(e.get("date", ""), start, end)]
