@@ -1,5 +1,3 @@
-# handlers/reports/owner_report.py
-
 import logging
 from datetime import datetime, timedelta
 from collections import defaultdict
@@ -14,7 +12,6 @@ from handlers.utils import require_unlock, fmt_money, fmt_date
 from handlers.ledger import get_ledger
 from secure_db import secure_db
 
-# Conversation-state constants
 (
     OWNER_DATE_RANGE_SELECT,
     OWNER_CUSTOM_DATE_INPUT,
@@ -23,8 +20,6 @@ from secure_db import secure_db
 ) = range(4)
 
 _PAGE_SIZE = 2
-logger = logging.getLogger("owner_report")
-
 
 def _between(date_str, start, end):
     try:
@@ -33,33 +28,23 @@ def _between(date_str, start, end):
         return False
     return start <= dt <= end
 
-
 def get_last_sale_price_any(sales, stockins, item_id):
     relevant_sales = [e for e in sales if e.get("item_id") == item_id]
     if relevant_sales:
-        latest = sorted(
-            relevant_sales,
-            key=lambda x: (x.get("date", ""), x.get("timestamp", "")),
-            reverse=True,
-        )[0]
+        latest = sorted(relevant_sales, key=lambda x: (x.get("date", ""), x.get("timestamp", "")), reverse=True)[0]
         return latest.get("unit_price", latest.get("unit_cost", 0))
     else:
         relevant_stockins = [e for e in stockins if e.get("item_id") == item_id]
         if relevant_stockins:
-            latest = sorted(
-                relevant_stockins,
-                key=lambda x: (x.get("date", ""), x.get("timestamp", "")),
-                reverse=True,
-            )[0]
+            latest = sorted(relevant_stockins, key=lambda x: (x.get("date", ""), x.get("timestamp", "")), reverse=True)[0]
             return latest.get("unit_cost", 0)
     return 0
-
 
 def compute_inventory(secure_db, get_ledger, start=None, end=None):
     inventory_by_item = defaultdict(lambda: {"units": 0, "market": 0.0})
     all_sales = []
     all_stockins = []
-    # Stock-ins from stores
+    # Stockins from stores
     for store in secure_db.all("stores"):
         sledger = get_ledger("store", store.doc_id)
         for e in sledger:
@@ -68,7 +53,7 @@ def compute_inventory(secure_db, get_ledger, start=None, end=None):
                 qty = e.get("quantity", 0)
                 inventory_by_item[item_id]["units"] += qty
                 all_stockins.append(e)
-    # Stock-ins from partners
+    # Stockins from partners
     for partner in secure_db.all("partners"):
         pledger = get_ledger("partner", partner.doc_id)
         for e in pledger:
@@ -77,16 +62,16 @@ def compute_inventory(secure_db, get_ledger, start=None, end=None):
                 qty = e.get("quantity", 0)
                 inventory_by_item[item_id]["units"] += qty
                 all_stockins.append(e)
-    # Sales from customers and customer-specific general ledger
+    # Sales from customers
     for c in secure_db.all("customers"):
-        cust_ledger = get_ledger("customer", c.doc_id) + get_ledger("general", c.doc_id)
+        cust_ledger = get_ledger("customer", c.doc_id)
         for e in cust_ledger:
             if e.get("entry_type") == "sale" and ((not start) or _between(e.get("date", ""), start, end)):
                 item_id = e.get("item_id")
                 qty = abs(e.get("quantity", 0))
                 inventory_by_item[item_id]["units"] -= qty
                 all_sales.append(e)
-    # Sales from global general ledger
+    # Sales from general ledger
     general_ledger = get_ledger("general", None)
     for e in general_ledger:
         if e.get("entry_type") == "sale" and ((not start) or _between(e.get("date", ""), start, end)):
@@ -100,14 +85,12 @@ def compute_inventory(secure_db, get_ledger, start=None, end=None):
         inventory_by_item[item_id]["market"] = inventory_by_item[item_id]["units"] * price
     return inventory_by_item, all_sales, all_stockins
 
-
 def compute_store_and_owner_inventory(secure_db, get_ledger):
     store_inventory = defaultdict(lambda: defaultdict(lambda: {"units": 0, "market": 0.0}))
     owner_totals = defaultdict(lambda: {"units": 0, "market": 0.0})
     all_sales = []
     all_stockins = []
 
-    # Build per-store stock levels
     for store in secure_db.all("stores"):
         sledger = get_ledger("store", store.doc_id)
         for e in sledger:
@@ -117,10 +100,9 @@ def compute_store_and_owner_inventory(secure_db, get_ledger):
                 store_inventory[store.doc_id][item_id]["units"] += qty
                 all_stockins.append(e)
 
-    # Subtract sales by store (customer + general)
     for customer in secure_db.all("customers"):
-        cust_ledger = get_ledger("customer", customer.doc_id) + get_ledger("general", customer.doc_id)
-        for e in cust_ledger:
+        cledger = get_ledger("customer", customer.doc_id)
+        for e in cledger:
             if e.get("entry_type") == "sale":
                 store_id = e.get("store_id")
                 item_id = e.get("item_id")
@@ -128,7 +110,8 @@ def compute_store_and_owner_inventory(secure_db, get_ledger):
                 store_inventory[store_id][item_id]["units"] -= qty
                 all_sales.append(e)
 
-    for e in get_ledger("general", None):
+    general_ledger = get_ledger("general", None)
+    for e in general_ledger:
         if e.get("entry_type") == "sale":
             store_id = e.get("store_id")
             item_id = e.get("item_id")
@@ -147,7 +130,6 @@ def compute_store_and_owner_inventory(secure_db, get_ledger):
             return latest.get("unit_cost", 0)
         return 0
 
-    # Compute store market values and accumulate owner totals
     for store_id, items in store_inventory.items():
         for item_id, v in items.items():
             price = get_last_price(item_id)
@@ -156,7 +138,6 @@ def compute_store_and_owner_inventory(secure_db, get_ledger):
             owner_totals[item_id]["market"] += v["market"]
 
     return store_inventory, owner_totals
-
 
 def debug_dump_payouts(secure_db, get_ledger, start, end):
     print("\n[DEBUG] OWNER POT LEDGER PAYOUT ENTRIES:")
@@ -183,7 +164,6 @@ def debug_dump_payouts(secure_db, get_ledger, start, end):
                       f"PartnerName: {partner.get('name')}, Raw: {e}")
     print("---- END OF DEBUG DUMP ----")
 
-
 def cross_check_payouts(secure_db, get_ledger, start, end):
     pot_ledger = get_ledger("owner", "POT")
     payout_entries = [
@@ -202,6 +182,7 @@ def cross_check_payouts(secure_db, get_ledger, start, end):
                 partner = None
             if partner:
                 partner_name = partner.get("name")
+                # Search partner's ledger for a matching payout-in
                 pledger = get_ledger("partner", int(partner_id))
                 match = [
                     e for e in pledger
@@ -217,7 +198,6 @@ def cross_check_payouts(secure_db, get_ledger, start, end):
                 print(f"  ⚠️ Payout related_id {partner_id} not found in partners table.")
         else:
             print(f"  ⚠️ Payout entry without related_id: {payout}")
-
 
 def owner_report_diagnostic(start, end, secure_db, get_ledger):
     debug_dump_payouts(secure_db, get_ledger, start, end)
@@ -243,7 +223,7 @@ def owner_report_diagnostic(start, end, secure_db, get_ledger):
     print(f"\nPayouts ({len(payouts)} entries):")
     print(f"  > Total USD Paid Out: {sum(abs(e.get('usd_amt', e.get('amount', 0.0))) for e in payouts)}")
 
-    expenses = [e for e in pot_ledger if e.get("entry_type") in ("expense", "fee") and _between(e["date"], start, end)]
+    expenses = [e for e in pot_ledger if e.get("entry_type") in ("expense", "fee") and _between(e.get("date"), start, end)]
     print(f"\nExpenses ({len(expenses)} entries):")
     print(f"  > Total Expenses: {sum(abs(e.get('amount', 0)) for e in expenses)}")
 
@@ -253,7 +233,8 @@ def owner_report_diagnostic(start, end, secure_db, get_ledger):
         for e in cust_ledger:
             if e.get("entry_type") == "sale" and _between(e.get("date", ""), start, end):
                 all_sales.append(e)
-    for e in get_ledger("general", None):
+    general_ledger = get_ledger("general", None)
+    for e in general_ledger:
         if e.get("entry_type") == "sale" and _between(e.get("date", ""), start, end):
             all_sales.append(e)
     print(f"\nSales entries in range: {len(all_sales)}")
@@ -270,31 +251,20 @@ def owner_report_diagnostic(start, end, secure_db, get_ledger):
     cross_check_payouts(secure_db, get_ledger, start, end)
     print("==== END OWNER REPORT DIAGNOSTIC ====\n")
 
-
 def _reset_state(ctx):
     for k in ("start_date", "end_date", "page", "scope", "report_data"):
         ctx.user_data.pop(k, None)
-
 
 def _paginate(lst, page):
     start = page * _PAGE_SIZE
     return lst[start : start + _PAGE_SIZE]
 
-
 def _collect_report_data(start, end):
     data = {}
     pot_ledger = get_ledger("owner", "POT")
 
-    pot_in = sum(
-        e["amount"]
-        for e in pot_ledger
-        if e.get("entry_type") == "payment_recv" and _between(e["date"], start, end)
-    )
-    pot_out = sum(
-        e["amount"]
-        for e in pot_ledger
-        if e.get("entry_type") in ("payout", "payment_sent") and _between(e["date"], start, end)
-    )
+    pot_in = sum(e["amount"] for e in pot_ledger if e.get("entry_type") == "payment_recv" and _between(e["date"], start, end))
+    pot_out = sum(e["amount"] for e in pot_ledger if e.get("entry_type") in ("payout", "payment_sent") and _between(e["date"], start, end))
     pot_balance = sum(e["amount"] for e in pot_ledger)
     net_change = pot_in + pot_out
 
@@ -305,11 +275,10 @@ def _collect_report_data(start, end):
         "net": net_change,
     }
 
-    # --- SALES: aggregate like customer report ---
+    # --- SALES: all customers and general ledger ---
     sales_by_store_item = defaultdict(lambda: defaultdict(lambda: {"units": 0, "value": 0.0}))
-    # Customer sales and customer-specific general sales
     for customer in secure_db.all("customers"):
-        cust_ledger = get_ledger("customer", customer.doc_id) + get_ledger("general", customer.doc_id)
+        cust_ledger = get_ledger("customer", customer.doc_id)
         for entry in cust_ledger:
             if entry.get("entry_type") == "sale" and _between(entry.get("date", ""), start, end):
                 store_id = entry.get("store_id")
@@ -318,8 +287,8 @@ def _collect_report_data(start, end):
                 value = abs(qty * entry.get("unit_price", entry.get("unit_cost", 0)))
                 sales_by_store_item[store_id][item_id]["units"] += qty
                 sales_by_store_item[store_id][item_id]["value"] += value
-    # Global general sales
-    for entry in get_ledger("general", None):
+    general_ledger = get_ledger("general", None)
+    for entry in general_ledger:
         if entry.get("entry_type") == "sale" and _between(entry.get("date", ""), start, end):
             store_id = entry.get("store_id")
             item_id = entry.get("item_id")
@@ -345,11 +314,7 @@ def _collect_report_data(start, end):
     data["payments_by_currency"] = payments_by_currency
     data["total_usd_received"] = total_usd_received
 
-    payouts = [
-        e
-        for e in pot_ledger
-        if e.get("entry_type") in ("payout", "payment_sent") and _between(e["date"], start, end)
-    ]
+    payouts = [e for e in pot_ledger if e.get("entry_type") in ("payout", "payment_sent") and _between(e["date"], start, end)]
     total_usd_paid = sum(abs(e.get("usd_amt", e.get("amount", 0.0))) for e in payouts)
     data["total_usd_paid"] = total_usd_paid
 
@@ -367,76 +332,275 @@ def _collect_report_data(start, end):
     store_inventory_table = secure_db.table("store_inventory").all()
     inv_actual_by_item = defaultdict(float)
     for item in store_inventory_table:
-        inv_actual_by_item[item["item_id"]] += item["quantity"]
+        inv_actual_by_item[item['item_id']] += item['quantity']
     for item_id in set(list(inv_actual_by_item.keys()) + list(inventory_by_item.keys())):
         actual = inv_actual_by_item.get(item_id, 0)
         expected = inventory_by_item.get(item_id, {}).get("units", 0)
         if abs(actual - expected) > 0.01:
             unreconciled[item_id] = {
                 "units": actual - expected,
-                "market": (actual - expected) * get_last_sale_price_any([], [], item_id),
+                "market": (actual - expected) * get_last_sale_price_any([], [], item_id)
             }
     data["unreconciled"] = unreconciled
 
-    all_expenses = [
-        e
-        for e in pot_ledger
-        if e.get("entry_type") in ("expense", "fee") and _between(e["date"], start, end)
-    ]
+    all_expenses = [e for e in pot_ledger if e.get("entry_type") in ("expense", "fee") and _between(e.get("date"), start, end)]
     total_expenses = sum(abs(e.get("amount", 0)) for e in all_expenses)
     data["expenses"] = all_expenses
     data["total_expenses"] = total_expenses
 
-    # ─── CUSTOMER FIGURES ──────────────────────────────────────────
-    cust_sales = 0.0
-    cust_payments = 0.0
-    for customer in secure_db.all("customers"):
-        cust_ledger = get_ledger("customer", customer.doc_id) + get_ledger("general", customer.doc_id)
-        for e in cust_ledger:
-            if e.get("entry_type") == "sale" and _between(e.get("date", ""), start, end):
-                qty = abs(e.get("quantity", 0))
-                price = e.get("unit_price", e.get("unit_cost", 0))
-                cust_sales += qty * price
-            if e.get("entry_type") == "payment" and _between(e.get("date", ""), start, end):
-                cust_payments += abs(e.get("usd_amt", e.get("amount", 0)))
-    data["customer_sales"] = cust_sales
-    data["customer_payments"] = cust_payments
-
-    # Compute final net position including customer payments
-    net_position = (
-        pot_balance
-        + sum(i["market"] for i in inventory_by_item_all.values())
-        + cust_payments
-    )
+    net_position = pot_balance + sum(i["market"] for i in inventory_by_item_all.values())
     data["net_position"] = net_position
 
     owner_report_diagnostic(start, end, secure_db, get_ledger)
+
     return data
 
+# (Leave the rest of your file unchanged: _render_page, _build_pdf, handlers, etc.)
+def _render_page(ctx):
+    data = ctx["report_data"]
+    page = ctx.get("page", 0)
+    pages = []
+
+    if page == 0:
+        lines = []
+        lines.append("👑 OWNER SUMMARY OVERVIEW")
+        lines.append(f"Date Range: {fmt_date(ctx['start_date'].strftime('%d%m%Y'))} – {fmt_date(ctx['end_date'].strftime('%d%m%Y'))}\n")
+        pot = data["pot"]
+        lines.append("─────────────────────────────\n💲 POT (USD Account)")
+        lines.append(f"  Balance: {fmt_money(pot['balance'], 'USD')}")
+        lines.append(f"  Inflows: {fmt_money(pot['inflows'], 'USD')}")
+        lines.append(f"  Outflows: {fmt_money(pot['outflows'], 'USD')}")
+        lines.append(f"  Net Change: {fmt_money(pot['net'], 'USD')}\n")
+        lines.append("🛒 SALES (by item)")
+        if any(data["sales_by_store_item"].values()):
+            for store_id, items in data["sales_by_store_item"].items():
+                store = secure_db.table("stores").get(doc_id=store_id) or {"name": f"Store {store_id}"}
+                for item_id, v in items.items():
+                    lines.append(f"  - {store['name']}: {v['units']} units [item {item_id}] | {fmt_money(v['value'], 'USD')}")
+        else:
+            lines.append("  No sales in this period.")
+        pages.append("\n".join(lines))
+
+    if page == 1:
+        lines = []
+        lines.append("─────────────────────────────\n💰 PAYMENTS RECEIVED")
+        if data["payments_by_currency"]:
+            for cur, group in data["payments_by_currency"].items():
+                lines.append(f"{cur}: {fmt_money(group['local'], cur)} | {fmt_money(group['usd'], 'USD')}")
+            lines.append(f"\nTotal USD Received (all currencies): {fmt_money(data['total_usd_received'], 'USD')}")
+        else:
+            lines.append("No payments received in this period.")
+            lines.append(f"\nTotal USD Received (all currencies): $0.00")
+        pages.append("\n".join(lines))
+    if page == 2:
+        lines = []
+        lines.append("─────────────────────────────\n💸 PAYOUTS TO PARTNERS")
+        lines.append(f"  Total USD Paid Out: {fmt_money(data['total_usd_paid'], 'USD')}")
+        if data["total_usd_paid"] == 0:
+            lines.append("  (No payouts this period.)")
+        else:
+            lines.append("  (Payouts are cross-checked in diagnostics log.)")
+        pages.append("\n".join(lines))
+    if page == 3:
+        lines = []
+        lines.append("─────────────────────────────\n📦 INVENTORY (for period)")
+        if data["inventory_by_item"]:
+            for item_id, v in data["inventory_by_item"].items():
+                lines.append(f"  {item_id}: {v['units']} units = {fmt_money(v['market'], 'USD')}")
+            lines.append(f"  Total Inventory Value: {fmt_money(sum(v['market'] for v in data['inventory_by_item'].values()), 'USD')}")
+        else:
+            lines.append("  No inventory movements in this period.")
+            lines.append("  Total Inventory Value: $0.00")
+        if data["unreconciled"]:
+            lines.append("\n⚠️ UNRECONCILED INVENTORY")
+            for item_id, v in data["unreconciled"].items():
+                lines.append(f"  - {item_id}: {v['units']} units ({fmt_money(v['market'], 'USD')})")
+        lines.append("\n📦 CURRENT INVENTORY (ALL TIME)")
+        if data["current_inventory_all_time"]:
+            for item_id, v in data["current_inventory_all_time"].items():
+                lines.append(f"  {item_id}: {v['units']} units = {fmt_money(v['market'], 'USD')}")
+            lines.append(f"  Total Inventory Value (all time): {fmt_money(sum(v['market'] for v in data['current_inventory_all_time'].values()), 'USD')}")
+        else:
+            lines.append("  No inventory on hand (all time).")
+            lines.append("  Total Inventory Value (all time): $0.00")
+        pages.append("\n".join(lines))
+    if page == 4:
+        lines = []
+        lines.append("─────────────────────────────\n📉 EXPENSES")
+        if data["expenses"]:
+            for e in data["expenses"]:
+                lines.append(f"  {fmt_date(e['date'])}: {fmt_money(abs(e['amount']), e['currency'])}")
+            lines.append(f"  Total Expenses: {fmt_money(data['total_expenses'], 'USD')}")
+        else:
+            lines.append("No expenses in this period.")
+            lines.append(f"  Total Expenses: $0.00")
+        pages.append("\n".join(lines))
+    if page == 5:
+        lines = []
+        lines.append("─────────────────────────────\n🏁 FINANCIAL POSITION (USD)")
+        pot = data["pot"]
+        inventory_value = sum(v["market"] for v in data["current_inventory_all_time"].values())
+        lines.append(f"  POT Balance: {fmt_money(pot['balance'], 'USD')}")
+        lines.append(f"  + Inventory: {fmt_money(inventory_value, 'USD')}")
+        lines.append(f"  = NET POSITION: {fmt_money(data['net_position'], 'USD')}")
+        pages.append("\n".join(lines))
+
+    # NEW INVENTORY BY STORE AND TYPE PAGE
+    if page == 6:
+        lines = []
+        lines.append("─────────────────────────────\n📦 INVENTORY ON HAND (by Store and Type)")
+        store_inventory = data.get("store_inventory_by_item", {})
+        owner_totals = data.get("owner_inventory_totals", {})
+        if store_inventory:
+            for store_id, items in store_inventory.items():
+                store = secure_db.table("stores").get(doc_id=store_id) or {"name": f"Store {store_id}"}
+                for item_id, v in items.items():
+                    lines.append(f"{store['name']} | Item {item_id}: {v['units']} units = {fmt_money(v['market'], 'USD')}")
+        else:
+            lines.append("No inventory on hand in any store.")
+        lines.append("\nOWNER TOTALS BY ITEM:")
+        if owner_totals:
+            for item_id, v in owner_totals.items():
+                lines.append(f"Item {item_id}: {v['units']} units = {fmt_money(v['market'], 'USD')}")
+        else:
+            lines.append("No inventory on hand for any item.")
+        pages.append("\n".join(lines))
+
+    return pages
+
+def _build_pdf(ctx):
+    buffer = BytesIO()
+    p = canvas.Canvas(buffer, pagesize=letter)
+    width, height = letter
+    y = height - 36
+    p.setFont("Helvetica", 12)
+
+    data = ctx["report_data"]
+
+    def write(line, y):
+        p.drawString(40, y, line)
+        return y - 18
+
+    y = write("👑 OWNER SUMMARY OVERVIEW", y)
+    y = write(f"Date Range: {fmt_date(ctx['start_date'].strftime('%d%m%Y'))} – {fmt_date(ctx['end_date'].strftime('%d%m%Y'))}", y)
+    y -= 10
+
+    pot = data["pot"]
+    y = write("💲 POT (USD Account)", y)
+    y = write(f"  Balance: {fmt_money(pot['balance'], 'USD')}", y)
+    y = write(f"  Inflows: {fmt_money(pot['inflows'], 'USD')}", y)
+    y = write(f"  Outflows: {fmt_money(pot['outflows'], 'USD')}", y)
+    y = write(f"  Net Change: {fmt_money(pot['net'], 'USD')}", y)
+    y -= 10
+
+    y = write("🛒 SALES (by item)", y)
+    if any(data["sales_by_store_item"].values()):
+        for store_id, items in data["sales_by_store_item"].items():
+            store = secure_db.table("stores").get(doc_id=store_id) or {"name": f"Store {store_id}"}
+            for item_id, v in items.items():
+                y = write(f"  - {store['name']}: {v['units']} units [item {item_id}] | {fmt_money(v['value'], 'USD')}", y)
+    else:
+        y = write("  No sales in this period.", y)
+    y -= 10
+
+    y = write("💰 PAYMENTS RECEIVED", y)
+    if data["payments_by_currency"]:
+        for cur, group in data["payments_by_currency"].items():
+            y = write(f"{cur}: {fmt_money(group['local'], cur)} | {fmt_money(group['usd'], 'USD')}", y)
+        y = write(f"\nTotal USD Received (all currencies): {fmt_money(data['total_usd_received'], 'USD')}", y)
+    else:
+        y = write("No payments received in this period.", y)
+        y = write(f"\nTotal USD Received (all currencies): $0.00", y)
+    y -= 10
+
+    y = write("💸 PAYOUTS TO PARTNERS", y)
+    y = write(f"  Total USD Paid Out: {fmt_money(data['total_usd_paid'], 'USD')}", y)
+    if data["total_usd_paid"] == 0:
+        y = write("  (No payouts this period.)", y)
+    else:
+        y = write("  (Payouts are cross-checked in diagnostics log.)", y)
+    y -= 10
+
+    y = write("📦 INVENTORY (for period)", y)
+    if data["inventory_by_item"]:
+        for item_id, v in data["inventory_by_item"].items():
+            y = write(f"  {item_id}: {v['units']} units = {fmt_money(v['market'], 'USD')}", y)
+        y = write(f"  Total Inventory Value: {fmt_money(sum(v['market'] for v in data['inventory_by_item'].values()), 'USD')}", y)
+    else:
+        y = write("  No inventory movements in this period.", y)
+        y = write("  Total Inventory Value: $0.00", y)
+    if data["unreconciled"]:
+        y -= 10
+        y = write("⚠️ UNRECONCILED INVENTORY", y)
+        for item_id, v in data["unreconciled"].items():
+            y = write(f"  - {item_id}: {v['units']} units ({fmt_money(v['market'], 'USD')})", y)
+    y = write("📦 CURRENT INVENTORY (ALL TIME)", y)
+    if data["current_inventory_all_time"]:
+        for item_id, v in data["current_inventory_all_time"].items():
+            y = write(f"  {item_id}: {v['units']} units = {fmt_money(v['market'], 'USD')}", y)
+        y = write(f"  Total Inventory Value (all time): {fmt_money(sum(v['market'] for v in data['current_inventory_all_time'].values()), 'USD')}", y)
+    else:
+        y = write("  No inventory on hand (all time).", y)
+        y = write("  Total Inventory Value (all time): $0.00", y)
+    y -= 10
+
+    y = write("📦 INVENTORY ON HAND (by Store and Type)", y)
+    store_inventory = data.get("store_inventory_by_item", {})
+    owner_totals = data.get("owner_inventory_totals", {})
+    if store_inventory:
+        for store_id, items in store_inventory.items():
+            store = secure_db.table("stores").get(doc_id=store_id) or {"name": f"Store {store_id}"}
+            for item_id, v in items.items():
+                y = write(f"{store['name']} | Item {item_id}: {v['units']} units = {fmt_money(v['market'], 'USD')}", y)
+    else:
+        y = write("No inventory on hand in any store.", y)
+    y = write("OWNER TOTALS BY ITEM:", y)
+    if owner_totals:
+        for item_id, v in owner_totals.items():
+            y = write(f"Item {item_id}: {v['units']} units = {fmt_money(v['market'], 'USD')}", y)
+    else:
+        y = write("No inventory on hand for any item.", y)
+    y -= 10
+
+    y = write("📉 EXPENSES", y)
+    if data["expenses"]:
+        for e in data["expenses"]:
+            y = write(f"  {fmt_date(e['date'])}: {fmt_money(abs(e['amount']), e['currency'])}", y)
+        y = write(f"  Total Expenses: {fmt_money(data['total_expenses'], 'USD')}", y)
+    else:
+        y = write("No expenses in this period.", y)
+        y = write(f"  Total Expenses: $0.00", y)
+    y -= 10
+
+    y = write("🏁 FINANCIAL POSITION (USD)", y)
+    inventory_value = sum(v["market"] for v in data["current_inventory_all_time"].values())
+    y = write(f"  POT Balance: {fmt_money(pot['balance'], 'USD')}", y)
+    y = write(f"  + Inventory: {fmt_money(inventory_value, 'USD')}", y)
+    y = write(f"  = NET POSITION: {fmt_money(data['net_position'], 'USD')}", y)
+    p.showPage()
+    p.save()
+    buffer.seek(0)
+    return buffer
 
 @require_unlock
 async def show_owner_report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     _reset_state(context)
-    kb = InlineKeyboardMarkup(
-        [
-            [InlineKeyboardButton("📅 Last 7 days", callback_data="owner_range_week")],
-            [InlineKeyboardButton("📆 Custom Range", callback_data="owner_range_custom")],
-            [InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu")],
-        ]
-    )
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📅 Last 7 days", callback_data="owner_range_week")],
+        [InlineKeyboardButton("📆 Custom Range", callback_data="owner_range_custom")],
+        [InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu")],
+    ])
     await update.callback_query.answer()
     await update.callback_query.edit_message_text("Choose period:", reply_markup=kb)
     return OWNER_DATE_RANGE_SELECT
-
 
 async def owner_custom_date_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     await update.callback_query.edit_message_text(
         "Enter start date DDMMYYYY:",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu")]]),
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu")]])
     )
     return OWNER_CUSTOM_DATE_INPUT
-
 
 async def owner_save_custom_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     txt = update.message.text.strip()
@@ -451,7 +615,6 @@ async def owner_save_custom_start(update: Update, context: ContextTypes.DEFAULT_
     context.user_data["report_data"] = _collect_report_data(sd, datetime.now())
     return await owner_show_report(update, context)
 
-
 async def owner_choose_scope(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.callback_query.data == "owner_range_week":
         context.user_data["start_date"] = datetime.now() - timedelta(days=7)
@@ -459,25 +622,23 @@ async def owner_choose_scope(update: Update, context: ContextTypes.DEFAULT_TYPE)
     elif update.callback_query.data == "owner_range_custom":
         return await owner_custom_date_input(update, context)
     context.user_data["page"] = 0
-    context.user_data["report_data"] = _collect_report_data(
-        context.user_data["start_date"], context.user_data["end_date"]
-    )
+    context.user_data["report_data"] = _collect_report_data(context.user_data["start_date"], context.user_data["end_date"])
     return await owner_show_report(update, context)
-
 
 @require_unlock
 async def owner_show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ctx = context.user_data
     pages = []
     for i in range(7):  # 7 pages/sections
-        backup_page = ctx.get("page", 0)
+        ctx_page_backup = ctx.get("page", 0)
         ctx["page"] = i
         section = _render_page(ctx)
         if section:
             pages.append(section[0])
-        ctx["page"] = backup_page
+        ctx["page"] = ctx_page_backup
 
     page = ctx.get("page", 0)
+
     kb = []
     if page > 0:
         kb.append(InlineKeyboardButton("⬅️ Prev", callback_data="owner_page_prev"))
@@ -487,10 +648,11 @@ async def owner_show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kb.append(InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu"))
 
     await update.callback_query.edit_message_text(
-        pages[page], reply_markup=InlineKeyboardMarkup([kb]), parse_mode="Markdown"
+        pages[page],
+        reply_markup=InlineKeyboardMarkup([kb]),
+        parse_mode="Markdown"
     )
     return OWNER_REPORT_PAGE
-
 
 @require_unlock
 async def owner_paginate(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -499,7 +661,6 @@ async def owner_paginate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif update.callback_query.data == "owner_page_prev":
         context.user_data["page"] = max(0, context.user_data["page"] - 1)
     return await owner_show_report(update, context)
-
 
 @require_unlock
 async def owner_export_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -510,20 +671,10 @@ async def owner_export_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.message.reply_document(pdf_file, caption="Owner Summary PDF")
     return await owner_show_report(update, context)
 
-
 def register_owner_report_handlers(app):
-    conv = ConversationHandler(
-        entry_points=[CallbackQueryHandler(show_owner_report_menu, pattern="^rep_owner$")],
-        states={
-            OWNER_DATE_RANGE_SELECT: [CallbackQueryHandler(owner_choose_scope, pattern="^owner_range_")],
-            OWNER_CUSTOM_DATE_INPUT: [MessageHandler(filters.TEXT & ~filters.COMMAND, owner_save_custom_start)],
-            OWNER_REPORT_SCOPE_SELECT: [],  # not used in this flow
-            OWNER_REPORT_PAGE: [
-                CallbackQueryHandler(owner_paginate, pattern="^owner_page_"),
-                CallbackQueryHandler(owner_export_pdf, pattern="^owner_export_pdf$"),
-            ],
-        },
-        fallbacks=[CallbackQueryHandler(lambda u, c: None, pattern="^main_menu$")],
-        per_message=False,
-    )
-    app.add_handler(conv)
+    app.add_handler(CallbackQueryHandler(show_owner_report_menu, pattern="^rep_owner$"))
+    app.add_handler(CallbackQueryHandler(owner_choose_scope, pattern="^owner_range_"))
+    app.add_handler(CallbackQueryHandler(owner_paginate, pattern="^owner_page_"))
+    app.add_handler(CallbackQueryHandler(owner_export_pdf, pattern="^owner_export_pdf$"))
+    app.add_handler(CallbackQueryHandler(lambda u, c: None, pattern="^main_menu$"))
+    app.add_handler(MessageHandler(None, owner_save_custom_start))
