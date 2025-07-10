@@ -65,24 +65,17 @@ def store_sales_diagnostic(store_id, secure_db, get_ledger, start=None, end=None
     if not found_sales:
         print("!! No sales found in any customer or store_customer ledger for this store_id.")
 
-    # HANDLING FEES: From customer and partner ledgers
+    # HANDLING FEES: From store ledger ONLY
+    sledger = get_ledger("store", store_id)
     found_fees = False
-    for acct_type in ["customer", "partner"]:
-        plural = acct_type + "s"
-        for cust in secure_db.all(plural):
-            cust_ledger = get_ledger(acct_type, cust.doc_id)
-            for e in cust_ledger:
-                if (
-                    e.get("entry_type") == "handling_fee"
-                    and e.get("store_id") == store_id
-                    and (not start or _between(e.get("date", ""), start, end))
-                ):
-                    if not found_fees:
-                        print("HANDLING FEES found in customer/partner ledgers for this store_id:")
-                        found_fees = True
-                    print(f"  [{acct_type}] Account: {cust['name']} Ledger:", e)
+    for e in sledger:
+        if e.get("entry_type") == "handling_fee" and (not start or _between(e.get("date", ""), start, end)):
+            if not found_fees:
+                print("HANDLING FEES in this store's own ledger (credits):")
+                found_fees = True
+            print("  Ledger:", e)
     if not found_fees:
-        print("!! No handling fee entries found in any customer or partner ledger for this store_id.")
+        print("!! No handling fee entries found in this store's own ledger.")
 
 @require_unlock
 async def show_store_report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -213,19 +206,9 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if e.get("entry_type") == "sale" and e.get("store_id") == sid and _between(e.get("date", ""), start, end):
                     store_sales.append(e)
 
-    # HANDLING FEES: from customer and partner ledgers, by store_id
-    handling_fees = []
-    for acct_type in ["customer", "partner"]:
-        plural = acct_type + "s"
-        for cust in secure_db.all(plural):
-            cust_ledger = get_ledger(acct_type, cust.doc_id)
-            for e in cust_ledger:
-                if (
-                    e.get("entry_type") == "handling_fee"
-                    and e.get("store_id") == sid
-                    and _between(e.get("date", ""), start, end)
-                ):
-                    handling_fees.append(e)
+    # HANDLING FEES: from store ledger ONLY (these are credits to the store)
+    sledger = get_ledger("store", sid)
+    handling_fees = [e for e in sledger if e.get("entry_type") == "handling_fee" and _between(e.get("date", ""), start, end)]
 
     # Combine, sort latest first
     all_sales = store_sales + handling_fees
@@ -266,7 +249,6 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
         + sum(abs(s.get('amount', 0)) for s in handling_fees)
 
     # ----- PAYMENTS -----
-    sledger = get_ledger("store", sid)
     payments = [
         e for e in sledger if e.get("entry_type") in ("payment", "payment_recv") and _between(e.get("date", ""), start, end)
     ]
