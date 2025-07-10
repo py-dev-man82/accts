@@ -15,6 +15,13 @@ from handlers.utils import require_unlock, fmt_money, fmt_date
 from handlers.ledger import get_ledger
 from secure_db import secure_db
 
+# === Import shared report utilities ===
+from handlers.reports.report_utils import (
+    compute_store_inventory,
+    compute_store_sales,
+    compute_payouts,
+)
+
 (
     STORE_SELECT,
     DATE_RANGE_SELECT,
@@ -45,6 +52,17 @@ def get_last_sale_price(ledger, item_id):
         latest = sorted(sales, key=lambda x: (x.get("date", ""), x.get("timestamp", "")), reverse=True)[0]
         return latest.get("unit_price", latest.get("unit_cost", 0))
     return 0
+
+# === Diagnostics function using shared logic ===
+def store_report_diagnostic(sid, secure_db, get_ledger):
+    print(f"\n==== STORE REPORT DIAGNOSTIC (Store {sid}) ====")
+    store_inventory = compute_store_inventory(secure_db, get_ledger)
+    store_sales = compute_store_sales(secure_db, get_ledger)
+    payouts = compute_payouts(secure_db, get_ledger)
+    print(f"Store Inventory: {store_inventory.get(sid, {})}")
+    print(f"Store Sales: {store_sales.get(sid, {})}")
+    print(f"Payouts: {[p for p in payouts if p.get('store_id') == sid]}")
+    print("==== END STORE REPORT DIAGNOSTIC ====\n")
 
 def build_store_report_lines(ctx, start, end, sid, cur, secure_db, get_ledger):
     store = secure_db.table("stores").get(doc_id=sid)
@@ -164,11 +182,9 @@ def build_store_report_lines(ctx, start, end, sid, cur, secure_db, get_ledger):
         expense_lines.append(f"📊 Total Other Expenses: {fmt_money(other_total, cur)}")
 
     # Current inventory at market
-    stock_balance = defaultdict(int)
-    for s in all_stockins:
-        stock_balance[s.get("item_id")] += s.get("quantity", 0)
-    for s in alltime_sales:
-        stock_balance[s.get("item_id")] -= abs(s.get("quantity", 0))
+    # USE SHARED LOGIC for inventory now:
+    store_inventory = compute_store_inventory(secure_db, get_ledger)
+    stock_balance = store_inventory.get(sid, defaultdict(int))
     market_prices = {}
     for item in stock_balance:
         price = get_last_sale_price(alltime_sales, item)
@@ -346,6 +362,9 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     cur = store["currency"]
     start, end = ctx["start_date"], ctx["end_date"]
+
+    # Print diagnostics (NEW)
+    store_report_diagnostic(sid, secure_db, get_ledger)
 
     lines = build_store_report_lines(ctx, start, end, sid, cur, secure_db, get_ledger)
 
