@@ -51,7 +51,7 @@ def get_last_sale_price(ledger, item_id):
 
 def store_sales_diagnostic(store_id, secure_db, get_ledger, start=None, end=None):
     print("\n==== STORE REPORT DIAGNOSTIC ====")
-    # SALES: All customer/store_customer sales handled by this store (store_id)
+    # SALES
     found_sales = False
     for cust in secure_db.all("customers"):
         for acct_type in ["customer", "store_customer"]:
@@ -64,6 +64,43 @@ def store_sales_diagnostic(store_id, secure_db, get_ledger, start=None, end=None
                     print(f"  [{acct_type}] Customer: {cust['name']} Ledger:", e)
     if not found_sales:
         print("!! No sales found in any customer or store_customer ledger for this store_id.")
+
+    # HANDLING FEES
+    sledger = get_ledger("store", store_id)
+    found_fees = False
+    for e in sledger:
+        if e.get("entry_type") == "handling_fee" and (not start or _between(e.get("date", ""), start, end)):
+            if not found_fees:
+                print("HANDLING FEES in this store's own ledger (credits):")
+                found_fees = True
+            print("  Ledger:", e)
+    if not found_fees:
+        print("!! No handling fee entries found in this store's own ledger.")
+
+    # PAYMENTS
+    found_payments = False
+    for cust in secure_db.all("customers"):
+        for acct_type in ["customer", "store_customer"]:
+            cust_ledger = get_ledger(acct_type, cust.doc_id)
+            for p in cust_ledger:
+                if p.get("entry_type") == "payment" and p.get("store_id") == store_id and (not start or _between(p.get("date", ""), start, end)):
+                    if not found_payments:
+                        print("PAYMENTS found in customer/store_customer ledgers for this store_id:")
+                        found_payments = True
+                    print(f"  [{acct_type}] Customer: {cust['name']} Ledger:", p)
+    if not found_payments:
+        print("!! No payments found in any customer or store_customer ledger for this store_id.")
+
+    # INVENTORY
+    found_inventory = False
+    for e in sledger:
+        if e.get("entry_type") == "stockin" and (not start or _between(e.get("date", ""), start, end)):
+            if not found_inventory:
+                print("INVENTORY (stock-in) entries in this store's ledger:")
+                found_inventory = True
+            print("  Ledger:", e)
+    if not found_inventory:
+        print("!! No stock-in entries found in this store's ledger.")
 
     # HANDLING FEES: From store ledger ONLY
     sledger = get_ledger("store", store_id)
