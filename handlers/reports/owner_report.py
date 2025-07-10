@@ -187,7 +187,241 @@ def _collect_report_data(start, end):
     net_position = pot_balance + sum(i["market"] for i in inventory_by_item_all.values())
     data["net_position"] = net_position
 
+    import logging
+from datetime import datetime, timedelta
+from collections import defaultdict
+from io import BytesIO
+from reportlab.lib.pagesizes import letter
+from reportlab.pdfgen import canvas
+
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, InputFile
+from telegram.ext import CallbackQueryHandler, ConversationHandler, ContextTypes, MessageHandler
+
+from handlers.utils import require_unlock, fmt_money, fmt_date
+from handlers.ledger import get_ledger
+from secure_db import secure_db
+
+(
+    OWNER_DATE_RANGE_SELECT,
+    OWNER_CUSTOM_DATE_INPUT,
+    OWNER_REPORT_SCOPE_SELECT,
+    OWNER_REPORT_PAGE,
+) = range(4)
+
+_PAGE_SIZE = 2
+
+def _between(date_str, start, end):
+    try:
+        dt = datetime.strptime(date_str, "%d%m%Y")
+    except Exception:
+        return False
+    return start <= dt <= end
+
+def get_last_sale_price_any(sales, stockins, item_id):
+    relevant_sales = [e for e in sales if e.get("item_id") == item_id]
+    if relevant_sales:
+        latest = sorted(relevant_sales, key=lambda x: (x.get("date", ""), x.get("timestamp", "")), reverse=True)[0]
+        return latest.get("unit_price", latest.get("unit_cost", 0))
+    else:
+        relevant_stockins = [e for e in stockins if e.get("item_id") == item_id]
+        if relevant_stockins:
+            latest = sorted(relevant_stockins, key=lambda x: (x.get("date", ""), x.get("timestamp", "")), reverse=True)[0]
+            return latest.get("unit_cost", 0)
+    return 0
+
+def compute_inventory(secure_db, get_ledger, start=None, end=None):
+    inventory_by_item = defaultdict(lambda: {"units": 0, "market": 0.0})
+    all_sales = []
+    all_stockins = []
+    # Stockins from stores
+    for store in secure_db.all("stores"):
+        sledger = get_ledger("store", store.doc_id)
+        for e in sledger:
+            if e.get("entry_type") == "stockin" and ((not start) or _between(e.get("date", ""), start, end)):
+                item_id = e.get("item_id")
+                qty = e.get("quantity", 0)
+                inventory_by_item[item_id]["units"] += qty
+                all_stockins.append(e)
+    # Stockins from partners
+    for partner in secure_db.all("partners"):
+        pledger = get_ledger("partner", partner.doc_id)
+        for e in pledger:
+            if e.get("entry_type") == "stockin" and ((not start) or _between(e.get("date", ""), start, end)):
+                item_id = e.get("item_id")
+                qty = e.get("quantity", 0)
+                inventory_by_item[item_id]["units"] += qty
+                all_stockins.append(e)
+    # Sales from customers
+    for c in secure_db.all("customers"):
+        cust_ledger = get_ledger("customer", c.doc_id)
+        for e in cust_ledger:
+            if e.get("entry_type") == "sale" and ((not start) or _between(e.get("date", ""), start, end)):
+                item_id = e.get("item_id")
+                qty = abs(e.get("quantity", 0))
+                inventory_by_item[item_id]["units"] -= qty
+                all_sales.append(e)
+    # Sales from general ledger
+    general_ledger = get_ledger("general", None)
+    for e in general_ledger:
+        if e.get("entry_type") == "sale" and ((not start) or _between(e.get("date", ""), start, end)):
+            item_id = e.get("item_id")
+            qty = abs(e.get("quantity", 0))
+            inventory_by_item[item_id]["units"] -= qty
+            all_sales.append(e)
+    # Market value for each item
+    for item_id in inventory_by_item.keys():
+        price = get_last_sale_price_any(all_sales, all_stockins, item_id)
+        inventory_by_item[item_id]["market"] = inventory_by_item[item_id]["units"] * price
+    return inventory_by_item, all_sales, all_stockins
+
+def owner_report_diagnostic(start, end, secure_db, get_ledger):
+    print("\n==== OWNER REPORT DIAGNOSTIC ====")
+    print(f"DATE RANGE: {fmt_date(start.strftime('%d%m%Y'))} to {fmt_date(end.strftime('%d%m%Y'))}")
+
+    pot_ledger = get_ledger("owner", "POT")
+    print(f"\n[Owner POT ledger] {len(pot_ledger)} entries in ledger.")
+
+    payments = [e for e in pot_ledger if e.get("entry_type") == "payment_recv" and _between(e["date"], start, end)]
+    currency_groups = defaultdict(lambda: {"local": 0.0, "usd": 0.0, "currency": "USD"})
+    for p in payments:
+        cur = p.get("currency", "USD")
+        currency_groups[cur]["local"] += p.get("amount", 0.0)
+        currency_groups[cur]["usd"] += p.get("usd_amt", 0.0)
+        currency_groups[cur]["currency"] = cur
+    print(f"\nPayments Received ({len(payments)} entries):")
+    for cur, group in currency_groups.items():
+        print(f"  {cur}: {group['local']} {cur} | {group['usd']} USD")
+    print(f"  > Total USD Received: {sum(group['usd'] for group in currency_groups.values())}")
+
+    payouts = [e for e in pot_ledger if e.get("entry_type") in ("payout", "payment_sent") and _between(e["date"], start, end)]
+    print(f"\nPayouts ({len(payouts)} entries):")
+    print(f"  > Total USD Paid Out: {sum(abs(e.get('usd_amt', e.get('amount', 0.0))) for e in payouts)}")
+
+    expenses = [e for e in pot_ledger if e.get("entry_type") in ("expense", "fee") and _between(e["date"], start, end)]
+    print(f"\nExpenses ({len(expenses)} entries):")
+    print(f"  > Total Expenses: {sum(abs(e.get('amount', 0)) for e in expenses)}")
+
+    all_sales = []
+    for cust in secure_db.all("customers"):
+        cust_ledger = get_ledger("customer", cust.doc_id)
+        for e in cust_ledger:
+            if e.get("entry_type") == "sale" and _between(e.get("date", ""), start, end):
+                all_sales.append(e)
+    general_ledger = get_ledger("general", None)
+    for e in general_ledger:
+        if e.get("entry_type") == "sale" and _between(e.get("date", ""), start, end):
+            all_sales.append(e)
+    print(f"\nSales entries in range: {len(all_sales)}")
+
+    inv_period, _, _ = compute_inventory(secure_db, get_ledger, start, end)
+    print("\nInventory by item (period):")
+    for item_id, v in inv_period.items():
+        print(f"  {item_id}: {v['units']} units, ${v['market']}")
+
+    inv_all, _, _ = compute_inventory(secure_db, get_ledger, None, None)
+    print("\nInventory by item (all time):")
+    for item_id, v in inv_all.items():
+        print(f"  {item_id}: {v['units']} units, ${v['market']}")
+    print("==== END OWNER REPORT DIAGNOSTIC ====\n")
+
+def _reset_state(ctx):
+    for k in ("start_date", "end_date", "page", "scope", "report_data"):
+        ctx.user_data.pop(k, None)
+
+def _paginate(lst, page):
+    start = page * _PAGE_SIZE
+    return lst[start : start + _PAGE_SIZE]
+
+def _collect_report_data(start, end):
+    data = {}
+    pot_ledger = get_ledger("owner", "POT")
+
+    pot_in = sum(e["amount"] for e in pot_ledger if e.get("entry_type") == "payment_recv" and _between(e["date"], start, end))
+    pot_out = sum(e["amount"] for e in pot_ledger if e.get("entry_type") in ("payout", "payment_sent") and _between(e["date"], start, end))
+    pot_balance = sum(e["amount"] for e in pot_ledger)
+    net_change = pot_in + pot_out
+
+    data["pot"] = {
+        "balance": pot_balance,
+        "inflows": pot_in,
+        "outflows": abs(pot_out),
+        "net": net_change,
+    }
+
+    sales_by_store_item = defaultdict(lambda: defaultdict(lambda: {"units": 0, "value": 0.0}))
+    for cust in secure_db.all("customers"):
+        cust_ledger = get_ledger("customer", cust.doc_id)
+        for e in cust_ledger:
+            if e.get("entry_type") == "sale" and _between(e.get("date", ""), start, end):
+                store_id = e.get("store_id")
+                item_id = e.get("item_id")
+                qty = abs(e.get("quantity", 0))
+                value = abs(qty * e.get("unit_price", e.get("unit_cost", 0)))
+                sales_by_store_item[store_id][item_id]["units"] += qty
+                sales_by_store_item[store_id][item_id]["value"] += value
+    general_ledger = get_ledger("general", None)
+    for e in general_ledger:
+        if e.get("entry_type") == "sale" and _between(e.get("date", ""), start, end):
+            store_id = e.get("store_id")
+            item_id = e.get("item_id")
+            qty = abs(e.get("quantity", 0))
+            value = abs(qty * e.get("unit_price", e.get("unit_cost", 0)))
+            sales_by_store_item[store_id][item_id]["units"] += qty
+            sales_by_store_item[store_id][item_id]["value"] += value
+    data["sales_by_store_item"] = sales_by_store_item
+
+    payments_ledger = get_ledger("owner", "POT")
+    payments_received = [e for e in payments_ledger if e.get("entry_type") == "payment_recv" and _between(e["date"], start, end)]
+    payments_by_currency = defaultdict(lambda: {"local": 0.0, "usd": 0.0, "currency": ""})
+    for p in payments_received:
+        cur = p.get("currency", "USD")
+        payments_by_currency[cur]["local"] += p.get("amount", 0.0)
+        payments_by_currency[cur]["usd"] += p.get("usd_amt", 0.0)
+        payments_by_currency[cur]["currency"] = cur
+    total_usd_received = sum(grp["usd"] for grp in payments_by_currency.values())
+    data["payments_by_currency"] = payments_by_currency
+    data["total_usd_received"] = total_usd_received
+
+    payouts = [e for e in pot_ledger if e.get("entry_type") in ("payout", "payment_sent") and _between(e["date"], start, end)]
+    total_usd_paid = sum(abs(e.get("usd_amt", e.get("amount", 0.0))) for e in payouts)
+    data["total_usd_paid"] = total_usd_paid
+
+    inventory_by_item, all_sales_period, all_stockins_period = compute_inventory(secure_db, get_ledger, start, end)
+    data["inventory_by_item"] = inventory_by_item
+
+    inventory_by_item_all, _, _ = compute_inventory(secure_db, get_ledger, None, None)
+    data["current_inventory_all_time"] = inventory_by_item_all
+
+    unreconciled = {}
+    store_inventory = secure_db.table("store_inventory").all()
+    inv_actual_by_item = defaultdict(float)
+    for item in store_inventory:
+        inv_actual_by_item[item['item_id']] += item['quantity']
+    for item_id in set(list(inv_actual_by_item.keys()) + list(inventory_by_item.keys())):
+        actual = inv_actual_by_item.get(item_id, 0)
+        expected = inventory_by_item.get(item_id, {}).get("units", 0)
+        if abs(actual - expected) > 0.01:
+            unreconciled[item_id] = {
+                "units": actual - expected,
+                "market": (actual - expected) * get_last_sale_price_any([], [], item_id)
+            }
+    data["unreconciled"] = unreconciled
+
+    all_expenses = [e for e in pot_ledger if e.get("entry_type") in ("expense", "fee") and _between(e.get("date"), start, end)]
+    total_expenses = sum(abs(e.get("amount", 0)) for e in all_expenses)
+    data["expenses"] = all_expenses
+    data["total_expenses"] = total_expenses
+
+    net_position = pot_balance + sum(i["market"] for i in inventory_by_item_all.values())
+    data["net_position"] = net_position
+
+    # === Diagnostic output for QA/testing ===
+    owner_report_diagnostic(start, end, secure_db, get_ledger)
+
     return data
+
+# ... [rest of your code unchanged: _render_page, _build_pdf, handlers, etc.]
+
 
 def _render_page(ctx):
     data = ctx["report_data"]
