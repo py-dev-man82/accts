@@ -205,12 +205,27 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     total_pay_local = sum(p.get('amount', 0) for p in payments)
     total_pay_usd = sum(p.get('usd_amt', 0) for p in payments)
 
-    # EXPENSES - handling fees by item and date/qty/unit_fee
+    # EXPENSES - handling fees, other, inventory purchase
     pledger = get_ledger("partner", pid)
     handling_fees = [e for e in pledger if e.get("entry_type") == "handling_fee" and _between(e.get("date", ""), start, end)]
     other_expenses = [e for e in pledger if e.get("entry_type") == "expense" and _between(e.get("date", ""), start, end)]
 
+    # Stock-Ins (Inventory Purchase) - in period
+    stockins = [
+        e for e in pledger if e.get("entry_type") == "stockin" and _between(e.get("date", ""), start, end)
+    ]
+    inventory_purchase_lines = []
+    total_inventory_purchase = 0
+    for s in sorted(stockins, key=lambda x: (x.get("date", ""), x.get("timestamp", "")), reverse=True):
+        qty = s.get('quantity', 0)
+        price = s.get('unit_price', 0)
+        total = qty * price
+        total_inventory_purchase += total
+        inventory_purchase_lines.append(f"   - {fmt_date(s.get('date', ''))}: [{s.get('item_id')}] {qty} @ {fmt_money(price, cur)} = {fmt_money(total, cur)}")
+
     expense_lines = []
+    handling_total = sum(abs(h.get("amount", 0)) for h in handling_fees)
+    other_total = sum(abs(e.get("amount", 0)) for e in other_expenses)
     if handling_fees:
         expense_lines.append("• 💳 Handling Fees")
         for h in handling_fees:
@@ -222,23 +237,19 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 expense_lines.append(f"   - {fmt_date(h.get('date', ''))}: [{item} x {qty}] {fmt_money(unit_fee, cur)} = {fmt_money(amt, cur)}")
             else:
                 expense_lines.append(f"   - {fmt_date(h.get('date', ''))}: [{item}] {fmt_money(amt, cur)}")
-        expense_lines.append(f"📊 Total Handling Fees: {fmt_money(sum(abs(h.get('amount', 0)) for h in handling_fees), cur)}")
+        expense_lines.append(f"📊 Total Handling Fees: {fmt_money(handling_total, cur)}")
     if other_expenses:
         expense_lines.append("• 🧾 Other Expenses")
         for e in other_expenses:
             expense_lines.append(f"   - {fmt_date(e.get('date', ''))}: {fmt_money(abs(e.get('amount', 0)), cur)}")
-        expense_lines.append(f"📊 Total Other Expenses: {fmt_money(sum(abs(e.get('amount', 0)) for e in other_expenses), cur)}")
-
-    # STOCK-INS (MOVEMENT) - in period
-    stockins = [
-        e for e in pledger if e.get("entry_type") == "stockin" and _between(e.get("date", ""), start, end)
-    ]
-    stockin_lines = []
-    for s in sorted(stockins, key=lambda x: (x.get("date", ""), x.get("timestamp", "")), reverse=True):
-        qty = s.get('quantity', 0)
-        price = s.get('unit_price', 0)  # Always use unit_cost for stock-in
-        total = qty * price
-        stockin_lines.append(f"   - {fmt_date(s.get('date', ''))}: [{s.get('item_id')}] {qty} @ {fmt_money(price, cur)} = {fmt_money(total, cur)}")
+        expense_lines.append(f"📊 Total Other Expenses: {fmt_money(other_total, cur)}")
+    if inventory_purchase_lines:
+        expense_lines.append("📦 Inventory Purchase:")
+        expense_lines += inventory_purchase_lines
+        expense_lines.append(f"📊 Total Inventory Purchase: {fmt_money(total_inventory_purchase, cur)}")
+    total_all_expenses = handling_total + other_total + total_inventory_purchase
+    if expense_lines:
+        expense_lines.append(f"\n📊 Total All Expenses: {fmt_money(total_all_expenses, cur)}")
 
     # CURRENT STOCK @ MARKET - ALL TIME (no date filter)
     all_stockins = [e for e in pledger if e.get("entry_type") == "stockin"]
@@ -254,14 +265,13 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for s in all_sales:
         stock_balance[s.get("item_id")] -= abs(s.get("quantity", 0))
 
-    # Market prices: still use last sale price, fallback to last stock-in cost
     market_prices = {}
     for item in stock_balance:
         price = get_last_sale_price(all_sales, item)
         if price == 0:
             stk = [e for e in all_stockins if e.get("item_id") == item]
             if stk:
-                price = sorted(stk, key=lambda x: (x.get("date", ""), x.get("timestamp", "")), reverse=True)[0].get("unit_cost", 0)
+                price = sorted(stk, key=lambda x: (x.get("date", ""), x.get("timestamp", "")), reverse=True)[0].get("unit_price", 0)
         market_prices[item] = price or 0
 
     current_stock_lines = []
@@ -289,9 +299,9 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
         unit_summary.append(f"- [{item_id}] : {units} units, {fmt_money(value, cur)}")
     total_sales = sum(abs(s.get('quantity', 0) * s.get('unit_price', s.get('unit_cost', 0))) for s in sales)
 
-    total_handling = sum(abs(h.get("amount", 0)) for h in handling_fees)
-    total_other_exp = sum(abs(e.get("amount", 0)) for e in other_expenses)
-    balance = total_sales - total_pay_local - total_handling - total_other_exp
+    total_handling = handling_total
+    total_other_exp = other_total
+    balance = total_sales - total_pay_local - total_handling - total_other_exp - total_inventory_purchase
 
     lines = []
     if ctx["scope"] in ("full", "sales"):
@@ -310,9 +320,6 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines += expense_lines
         lines.append("")
         lines.append("📦 Inventory")
-        if stockin_lines:
-            lines.append("• Stock-Ins:")
-            lines += stockin_lines
         if current_stock_lines:
             lines.append("• Current Stock @ market:")
             lines += current_stock_lines
@@ -388,19 +395,49 @@ async def export_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     handling_fees = [e for e in pledger if e.get("entry_type") == "handling_fee" and _between(e.get("date", ""), start, end)]
     other_expenses = [e for e in pledger if e.get("entry_type") == "expense" and _between(e.get("date", ""), start, end)]
-    total_handling = sum(abs(h.get("amount", 0)) for h in handling_fees)
-    total_other_exp = sum(abs(e.get("amount", 0)) for e in other_expenses)
 
-    # Stock-Ins (MOVEMENT) - in period
-    stockins = [e for e in pledger if e.get("entry_type") == "stockin" and _between(e.get("date", ""), start, end)]
-    stockin_lines = []
+    # Stock-Ins (Inventory Purchase) - in period
+    stockins = [
+        e for e in pledger if e.get("entry_type") == "stockin" and _between(e.get("date", ""), start, end)
+    ]
+    inventory_purchase_lines = []
+    total_inventory_purchase = 0
     for s in sorted(stockins, key=lambda x: (x.get("date", ""), x.get("timestamp", "")), reverse=True):
         qty = s.get('quantity', 0)
         price = s.get('unit_price', 0)
         total = qty * price
-        stockin_lines.append(f"   - {fmt_date(s.get('date', ''))}: [{s.get('item_id')}] {qty} @ {fmt_money(price, cur)} = {fmt_money(total, cur)}")
+        total_inventory_purchase += total
+        inventory_purchase_lines.append(f"   - {fmt_date(s.get('date', ''))}: [{s.get('item_id')}] {qty} @ {fmt_money(price, cur)} = {fmt_money(total, cur)}")
 
-    # CURRENT STOCK @ MARKET (ALL TIME, no date filter)
+    expense_lines = []
+    handling_total = sum(abs(h.get("amount", 0)) for h in handling_fees)
+    other_total = sum(abs(e.get("amount", 0)) for e in other_expenses)
+    if handling_fees:
+        expense_lines.append("• 💳 Handling Fees")
+        for h in handling_fees:
+            item = h.get('item_id', '?')
+            qty = h.get('quantity', 1)
+            amt = abs(h.get('amount', 0))
+            if qty and qty != 1:
+                unit_fee = amt / qty
+                expense_lines.append(f"   - {fmt_date(h.get('date', ''))}: [{item} x {qty}] {fmt_money(unit_fee, cur)} = {fmt_money(amt, cur)}")
+            else:
+                expense_lines.append(f"   - {fmt_date(h.get('date', ''))}: [{item}] {fmt_money(amt, cur)}")
+        expense_lines.append(f"📊 Total Handling Fees: {fmt_money(handling_total, cur)}")
+    if other_expenses:
+        expense_lines.append("• 🧾 Other Expenses")
+        for e in other_expenses:
+            expense_lines.append(f"   - {fmt_date(e.get('date', ''))}: {fmt_money(abs(e.get('amount', 0)), cur)}")
+        expense_lines.append(f"📊 Total Other Expenses: {fmt_money(other_total, cur)}")
+    if inventory_purchase_lines:
+        expense_lines.append("📦 Inventory Purchase:")
+        expense_lines += inventory_purchase_lines
+        expense_lines.append(f"📊 Total Inventory Purchase: {fmt_money(total_inventory_purchase, cur)}")
+    total_all_expenses = handling_total + other_total + total_inventory_purchase
+    if expense_lines:
+        expense_lines.append(f"\n📊 Total All Expenses: {fmt_money(total_all_expenses, cur)}")
+
+    # CURRENT STOCK @ MARKET - ALL TIME (no date filter)
     all_stockins = [e for e in pledger if e.get("entry_type") == "stockin"]
     all_sales = []
     for c in secure_db.all("customers"):
@@ -427,7 +464,7 @@ async def export_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if price == 0:
             stk = [e for e in all_stockins if e.get("item_id") == item]
             if stk:
-                price = sorted(stk, key=lambda x: (x.get("date", ""), x.get("timestamp", "")), reverse=True)[0].get("unit_cost", 0)
+                price = sorted(stk, key=lambda x: (x.get("date", ""), x.get("timestamp", "")), reverse=True)[0].get("unit_price", 0)
         market_prices[item] = price or 0
 
     current_stock_lines = []
@@ -439,7 +476,7 @@ async def export_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
             current_stock_lines.append(f"   - [{item}] {qty} × {fmt_money(mp, cur)} = {fmt_money(val, cur)}")
             stock_value += val
 
-    balance = total_sales - total_pay_local - total_handling - total_other_exp
+    balance = total_sales - total_pay_local - handling_total - other_total - total_inventory_purchase
 
     buf = BytesIO()
     pdf = canvas.Canvas(buf, pagesize=letter)
@@ -492,30 +529,16 @@ async def export_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
         y -= 10
 
     if scope == "full":
-        if handling_fees:
-            line("Handling Fees", bold=True)
-            for h in handling_fees:
-                item = h.get('item_id', '?')
-                qty = h.get('quantity', 1)
-                amt = abs(h.get('amount', 0))
-                if qty and qty != 1:
-                    unit_fee = amt / qty
-                    line(f"   - {fmt_date(h.get('date', ''))}: [{item} x {qty}] {fmt_money(unit_fee, cur)} = {fmt_money(amt, cur)}")
-                else:
-                    line(f"   - {fmt_date(h.get('date', ''))}: [{item}] {fmt_money(amt, cur)}")
-            line(f"Total Handling Fees: {fmt_money(sum(abs(h.get('amount', 0)) for h in handling_fees), cur)}")
-        if other_expenses:
-            line("Other Expenses", bold=True)
-            for e in other_expenses:
-                line(f"   - {fmt_date(e.get('date', ''))}: {fmt_money(abs(e.get('amount', 0)), cur)}")
-            line(f"Total Other Expenses: {fmt_money(total_other_exp, cur)}")
-        y -= 10
-        line("Stock-Ins", bold=True)
-        for l in stockin_lines:
-            line(l)
-        line("Current Stock @ market:", bold=True)
-        for l in current_stock_lines:
-            line(l)
+        if expense_lines:
+            line("Expenses", bold=True)
+            for l in expense_lines:
+                line(l)
+            y -= 10
+        line("Inventory", bold=True)
+        if current_stock_lines:
+            line("• Current Stock @ market:")
+            for l in current_stock_lines:
+                line(l)
         line(f"Stock Value: {fmt_money(stock_value, cur)}")
         y -= 10
         line("Financial Position", bold=True)
