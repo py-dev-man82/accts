@@ -14,7 +14,6 @@ from handlers.reports.report_utils import (
     compute_payouts,
     compute_store_inventory,
     compute_partner_inventory,
-    compute_store_sales,
 )
 
 OWNER_ACCOUNT_ID = "POT"
@@ -41,7 +40,6 @@ async def show_owner_position(update: Update, context: ContextTypes.DEFAULT_TYPE
     payouts = compute_payouts(secure_db, get_ledger)
     store_inventory = compute_store_inventory(secure_db, get_ledger)
     partner_inventory = compute_partner_inventory(secure_db, get_ledger)
-    store_sales = compute_store_sales(secure_db, get_ledger)
 
     # --- Cash position (POT): total USD received from customers - total payouts sent ---
     cash_in = 0
@@ -57,20 +55,21 @@ async def show_owner_position(update: Update, context: ContextTypes.DEFAULT_TYPE
         for item_id, qty in items.items():
             owner_inventory_by_item[item_id] += qty
 
-    # --- Gather all store sales and stockins for price lookup ---
-    # (For best accuracy, add customer/partner sales as needed.)
-    all_store_sales_entries = []
-    for item_sales in store_sales.values():
-        for sales_list in item_sales.values():
-            all_store_sales_entries.extend(sales_list)
+    # --- Use customer and partner sales for price lookup ---
+    all_sales_entries = []
+    for cust_sales in customer_sales.values():
+        for sales_list in cust_sales.values():
+            all_sales_entries.extend(sales_list)
+    for partner_sales_dict in partner_sales.values():
+        for sales_list in partner_sales_dict.values():
+            all_sales_entries.extend(sales_list)
 
     # --- Calculate owner inventory value by item ---
     total_owner_inventory_value = 0
     inventory_lines = []
     for item_id, qty in owner_inventory_by_item.items():
         if qty > 0:
-            # Use store sales for last market price (fallback: 1.0)
-            price = get_last_market_price([e for e in all_store_sales_entries if e.get("item_id") == item_id])
+            price = get_last_market_price([e for e in all_sales_entries if e.get("item_id") == item_id])
             value = qty * price
             total_owner_inventory_value += value
             inventory_lines.append(f"    - {item_id}: {qty} units × {fmt_money(price, 'USD')} = {fmt_money(value, 'USD')}")
