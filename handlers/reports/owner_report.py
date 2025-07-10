@@ -297,17 +297,22 @@ def _collect_report_data(start, end):
             sales_by_store_item[store_id][item_id]["value"] += value
     data["sales_by_store_item"] = sales_by_store_item
 
-    payments_ledger = get_ledger("owner", "POT")
-    payments_received = [e for e in payments_ledger if e.get("entry_type") == "payment_recv" and _between(e["date"], start, end)]
-    payments_by_currency = defaultdict(lambda: {"local": 0.0, "usd": 0.0, "currency": ""})
-    for p in payments_received:
-        cur = p.get("currency", "USD")
-        payments_by_currency[cur]["local"] += p.get("amount", 0.0)
-        payments_by_currency[cur]["usd"] += p.get("usd_amt", 0.0)
-        payments_by_currency[cur]["currency"] = cur
-    total_usd_received = sum(grp["usd"] for grp in payments_by_currency.values())
-    data["payments_by_currency"] = payments_by_currency
-    data["total_usd_received"] = total_usd_received
+    # PAYMENTS RECEIVED: sum/group by local currency from ALL customer ledgers
+payments_by_currency = defaultdict(lambda: {"local": 0.0, "usd": 0.0, "currency": ""})
+for customer in secure_db.all("customers"):
+    cledger = get_ledger("customer", customer.doc_id)
+    for e in cledger:
+        if e.get("entry_type") == "payment" and _between(e.get("date", ""), start, end):
+            cur = e.get("currency", "USD")
+            amt = e.get("amount", 0.0)
+            usd = e.get("usd_amt", 0.0)
+            payments_by_currency[cur]["local"] += amt
+            payments_by_currency[cur]["usd"] += usd
+            payments_by_currency[cur]["currency"] = cur
+total_usd_received = sum(grp["usd"] for grp in payments_by_currency.values())
+data["payments_by_currency"] = payments_by_currency
+data["total_usd_received"] = total_usd_received
+
 
     payouts = [e for e in pot_ledger if e.get("entry_type") in ("payout", "payment_sent") and _between(e["date"], start, end)]
     total_usd_paid = sum(abs(e.get("usd_amt", e.get("amount", 0.0))) for e in payouts)
