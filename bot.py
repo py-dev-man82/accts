@@ -43,14 +43,9 @@ from handlers.reports.store_report    import (
     show_store_report_menu,
     save_custom_start as save_custom_start_store,
 )
-# 🆕 Owner Summary Report module
-from handlers.reports.owner_report    import (
-    register_owner_report_handlers,
-    show_owner_report_menu,
-    save_custom_start as save_custom_start_owner,
-)
+from handlers.reports.owner_report    import register_owner_report_handlers
 
-# 🆕  Owner module ––– enabled now
+# Owner module
 from handlers.owner import register_owner_handlers, show_owner_menu
 
 # ════════════════════════════════════════════════════════════
@@ -74,24 +69,18 @@ async def kill_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ════════════════════════════════════════════════════════════
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Root menu / back-to-root callback."""
-    kb = InlineKeyboardMarkup(
-        [
-            [InlineKeyboardButton("Customers",     callback_data="customer_menu"),
-             InlineKeyboardButton("Stores",        callback_data="store_menu")],
-
-            [InlineKeyboardButton("Partners",      callback_data="partner_menu"),
-             InlineKeyboardButton("Sales",         callback_data="sales_menu")],
-
-            [InlineKeyboardButton("Payments",      callback_data="payment_menu"),
-             InlineKeyboardButton("Payouts",       callback_data="payout_menu")],
-
-            [InlineKeyboardButton("Stock-In",      callback_data="stockin_menu"),
-             InlineKeyboardButton("Partner Sales", callback_data="partner_sales_menu")],
-
-            [InlineKeyboardButton("👑 Owner",      callback_data="owner_menu"),
-             InlineKeyboardButton("📊 Reports",    callback_data="report_menu")],
-        ]
-    )
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("Customers",     callback_data="customer_menu"),
+         InlineKeyboardButton("Stores",        callback_data="store_menu")],
+        [InlineKeyboardButton("Partners",      callback_data="partner_menu"),
+         InlineKeyboardButton("Sales",         callback_data="sales_menu")],
+        [InlineKeyboardButton("Payments",      callback_data="payment_menu"),
+         InlineKeyboardButton("Payouts",       callback_data="payout_menu")],
+        [InlineKeyboardButton("Stock-In",      callback_data="stockin_menu"),
+         InlineKeyboardButton("Partner Sales", callback_data="partner_sales_menu")],
+        [InlineKeyboardButton("👑 Owner",      callback_data="owner_menu"),
+         InlineKeyboardButton("📊 Reports",    callback_data="report_menu")],
+    ])
     if update.callback_query:
         await update.callback_query.answer()
         await update.callback_query.edit_message_text(
@@ -104,15 +93,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def show_report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
-    kb = InlineKeyboardMarkup(
-        [
-            [InlineKeyboardButton("📄 Customer Report", callback_data="rep_cust")],
-            [InlineKeyboardButton("📄 Partner Report",  callback_data="rep_part")],
-            [InlineKeyboardButton("📄 Store Report",    callback_data="rep_store")],
-            [InlineKeyboardButton("📄 Owner Summary",   callback_data="rep_owner")],
-            [InlineKeyboardButton("🔙 Back",            callback_data="main_menu")],
-        ]
-    )
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📄 Customer Report", callback_data="rep_cust")],
+        [InlineKeyboardButton("📄 Partner Report",  callback_data="rep_part")],
+        [InlineKeyboardButton("📄 Store Report",    callback_data="rep_store")],
+        [InlineKeyboardButton("📄 Owner Summary",   callback_data="rep_owner")],
+        [InlineKeyboardButton("🔙 Back",            callback_data="main_menu")],
+    ])
     await update.callback_query.edit_message_text(
         "Reports: choose a type", reply_markup=kb
     )
@@ -127,7 +114,7 @@ async def run_bot():
     )
     app = ApplicationBuilder().token(config.BOT_TOKEN).build()
 
-    # Admin commands — put these at the top for highest priority!
+    # Admin commands
     app.add_handler(CommandHandler("restart", restart_bot))
     app.add_handler(CommandHandler("kill",    kill_bot))
 
@@ -163,25 +150,23 @@ async def run_bot():
     app.add_handler(
         CallbackQueryHandler(show_store_report_menu, pattern="^rep_store$")
     )
-    # Owner Summary Report
-    register_owner_report_handlers(app)
-    app.add_handler(CallbackQueryHandler(show_owner_report_menu, pattern="^rep_owner$"))
+    register_owner_report_handlers(app)   # This now works with your fixed function name!
 
-    # 🆕 Owner module registration
+    # Owner module
     register_owner_handlers(app)
     app.add_handler(CallbackQueryHandler(show_owner_menu, pattern="^owner_menu$"))
 
-    # --- PATCH: Add these handlers for custom date input in reports ---
+    # --- PATCH: Add these handlers for custom date input in partner and store reports only
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, save_custom_start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, save_custom_start_store))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, save_custom_start_owner))
+    # (No MessageHandler for owner needed!)
 
     # Start polling
     await app.initialize()
     await app.start()
     await app.updater.start_polling()
     try:
-        await asyncio.Event().wait()           # keep process alive
+        await asyncio.Event().wait()
     finally:
         await app.updater.stop()
         await app.stop()
@@ -189,7 +174,7 @@ async def run_bot():
 
 # ════════════════════════════════════════════════════════════
 # Simple self-supervisor — restarts on crash
-# ════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════
 def main_supervisor():
     while True:
         logging.warning("🔄  Starting bot process…")
