@@ -49,6 +49,41 @@ def get_last_sale_price(ledger, item_id):
         return latest.get("unit_price", latest.get("unit_cost", 0))
     return 0
 
+def store_sales_diagnostic(store_id, secure_db, get_ledger, start=None, end=None):
+    print("\n==== STORE REPORT DIAGNOSTIC ====")
+    # SALES: All customer/store_customer sales handled by this store (store_id)
+    found_sales = False
+    for cust in secure_db.all("customers"):
+        for acct_type in ["customer", "store_customer"]:
+            cust_ledger = get_ledger(acct_type, cust.doc_id)
+            for e in cust_ledger:
+                if e.get("entry_type") == "sale" and e.get("store_id") == store_id and (not start or _between(e.get("date", ""), start, end)):
+                    if not found_sales:
+                        print("SALES found in customer/store_customer ledgers for this store_id:")
+                        found_sales = True
+                    print(f"  [{acct_type}] Customer: {cust['name']} Ledger:", e)
+    if not found_sales:
+        print("!! No sales found in any customer or store_customer ledger for this store_id.")
+
+    # HANDLING FEES: From customer and partner ledgers
+    found_fees = False
+    for acct_type in ["customer", "partner"]:
+        plural = acct_type + "s"
+        for cust in secure_db.all(plural):
+            cust_ledger = get_ledger(acct_type, cust.doc_id)
+            for e in cust_ledger:
+                if (
+                    e.get("entry_type") == "handling_fee"
+                    and e.get("store_id") == store_id
+                    and (not start or _between(e.get("date", ""), start, end))
+                ):
+                    if not found_fees:
+                        print("HANDLING FEES found in customer/partner ledgers for this store_id:")
+                        found_fees = True
+                    print(f"  [{acct_type}] Account: {cust['name']} Ledger:", e)
+    if not found_fees:
+        print("!! No handling fee entries found in any customer or partner ledger for this store_id.")
+
 @require_unlock
 async def show_store_report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     _reset_state(context)
@@ -166,17 +201,31 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cur = store["currency"]
     start, end = ctx["start_date"], ctx["end_date"]
 
-    # SALES: all customer sales handled by this store (by store_id on the sale entry)
+    # --- DIAGNOSTIC: Print all sales and fees being pulled for this store ---
+    store_sales_diagnostic(sid, secure_db, get_ledger, start, end)
+
+    # SALES: all customer/store_customer sales handled by this store (by store_id on the sale entry)
     store_sales = []
     for cust in secure_db.all("customers"):
-        cust_ledger = get_ledger("customer", cust.doc_id)
-        for e in cust_ledger:
-            if e.get("entry_type") == "sale" and e.get("store_id") == sid and _between(e.get("date", ""), start, end):
-                store_sales.append(e)
+        for acct_type in ["customer", "store_customer"]:
+            cust_ledger = get_ledger(acct_type, cust.doc_id)
+            for e in cust_ledger:
+                if e.get("entry_type") == "sale" and e.get("store_id") == sid and _between(e.get("date", ""), start, end):
+                    store_sales.append(e)
 
-    # HANDLING FEES: from store ledger
-    sledger = get_ledger("store", sid)
-    handling_fees = [e for e in sledger if e.get("entry_type") == "handling_fee" and _between(e.get("date", ""), start, end)]
+    # HANDLING FEES: from customer and partner ledgers, by store_id
+    handling_fees = []
+    for acct_type in ["customer", "partner"]:
+        plural = acct_type + "s"
+        for cust in secure_db.all(plural):
+            cust_ledger = get_ledger(acct_type, cust.doc_id)
+            for e in cust_ledger:
+                if (
+                    e.get("entry_type") == "handling_fee"
+                    and e.get("store_id") == sid
+                    and _between(e.get("date", ""), start, end)
+                ):
+                    handling_fees.append(e)
 
     # Combine, sort latest first
     all_sales = store_sales + handling_fees
@@ -200,7 +249,7 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"• {fmt_date(s['date'])}: [Store Fee] [{item}] {qty} × {fmt_money(unit_fee, cur)} = {fmt_money(amt, cur)}"
             )
 
-    # Units sold: all customer sales for this store
+    # Units sold: all customer/store_customer sales for this store
     unit_summary = []
     item_totals = defaultdict(lambda: {"units": 0, "value": 0.0})
     for s in store_sales:
@@ -217,6 +266,7 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
         + sum(abs(s.get('amount', 0)) for s in handling_fees)
 
     # ----- PAYMENTS -----
+    sledger = get_ledger("store", sid)
     payments = [
         e for e in sledger if e.get("entry_type") in ("payment", "payment_recv") and _between(e.get("date", ""), start, end)
     ]
