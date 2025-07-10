@@ -14,7 +14,6 @@ from telegram.ext import (
     CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
-    MessageHandler,
 )
 
 # Core utilities
@@ -51,14 +50,22 @@ from handlers.owner import register_owner_handlers, show_owner_menu
 # ════════════════════════════════════════════════════════════
 @require_unlock
 async def restart_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("♻️ Bot is restarting…")
+    if update.message:
+        await update.message.reply_text("♻️ Bot is restarting…")
+    elif update.callback_query:
+        await update.callback_query.answer()
+        await update.callback_query.edit_message_text("♻️ Bot is restarting…")
     logging.warning("⚠️  Admin issued /restart — restarting bot.")
     subprocess.Popen([sys.executable, os.path.abspath(sys.argv[0]), "child"])
     raise SystemExit(0)
 
 @require_unlock
 async def kill_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🛑 Bot is shutting down… it will auto-restart.")
+    if update.message:
+        await update.message.reply_text("🛑 Bot is shutting down… it will auto-restart.")
+    elif update.callback_query:
+        await update.callback_query.answer()
+        await update.callback_query.edit_message_text("🛑 Bot is shutting down… it will auto-restart.")
     logging.warning("⚠️  Admin issued /kill — shutting down cleanly.")
     raise SystemExit(0)
 
@@ -102,7 +109,7 @@ async def show_report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("📄 Customer Report", callback_data="rep_cust")],
             [InlineKeyboardButton("📄 Partner Report",  callback_data="rep_part")],
             [InlineKeyboardButton("📄 Store Report",    callback_data="rep_store")],
-            [InlineKeyboardButton("📄 Owner Summary",   callback_data="rep_owner")],   # <--- This triggers the new handler
+            [InlineKeyboardButton("📄 Owner Summary",   callback_data="rep_owner")],
             [InlineKeyboardButton("🔙 Back",            callback_data="main_menu")],
         ]
     )
