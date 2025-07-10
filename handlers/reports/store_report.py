@@ -65,7 +65,7 @@ async def show_store_report_menu(update: Update, context: ContextTypes.DEFAULT_T
 
     btns = [
         InlineKeyboardButton(
-            f"{s['name']} ({s['currency']})", callback_data=f"sreport_{s.doc_id}"
+            f"{s['name']} ({s['currency']})", callback_data=f"store_sreport_{s.doc_id}"
         )
         for s in stores
     ]
@@ -85,8 +85,8 @@ async def select_date_range(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     kb = InlineKeyboardMarkup(
         [
-            [InlineKeyboardButton("📅 Last 7 days", callback_data="range_week")],
-            [InlineKeyboardButton("📆 Custom Range", callback_data="range_custom")],
+            [InlineKeyboardButton("📅 Last 7 days", callback_data="store_range_week")],
+            [InlineKeyboardButton("📆 Custom Range", callback_data="store_range_custom")],
             [InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu")],
         ]
     )
@@ -120,20 +120,20 @@ async def choose_scope(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if getattr(update, "callback_query", None):
         await update.callback_query.answer()
         choice = update.callback_query.data
-        if choice == "range_week":
+        if choice == "store_range_week":
             context.user_data["start_date"] = datetime.now() - timedelta(days=7)
             context.user_data["end_date"] = datetime.now()
-        elif choice == "range_custom":
+        elif choice == "store_range_custom":
             return await ask_custom_start(update, context)
 
     kb = InlineKeyboardMarkup(
         [
             [
-                InlineKeyboardButton("📝 Full Report", callback_data="scope_full"),
-                InlineKeyboardButton("🛒 Sales Only", callback_data="scope_sales"),
+                InlineKeyboardButton("📝 Full Report", callback_data="store_scope_full"),
+                InlineKeyboardButton("🛒 Sales Only", callback_data="store_scope_sales"),
             ],
             [
-                InlineKeyboardButton("💵 Payments Only", callback_data="scope_payments")
+                InlineKeyboardButton("💵 Payments Only", callback_data="store_scope_payments")
             ],
             [InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu")],
         ]
@@ -151,9 +151,8 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     ctx = context.user_data
     ctx.setdefault("page", 0)
-    ctx["scope"] = update.callback_query.data.split("_")[-1]
+    ctx["scope"] = update.callback_query.data.replace("store_scope_", "")
 
-    # Defensive: Make sure store_id is set and store exists
     if "store_id" not in ctx:
         await update.callback_query.edit_message_text("⚠️ Please select a store first from the report menu.")
         return ConversationHandler.END
@@ -167,7 +166,6 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cur = store["currency"]
     start, end = ctx["start_date"], ctx["end_date"]
 
-    # --- SALES (only direct store sales + handling fees as credits) ---
     sledger = get_ledger("store", sid)
     direct_sales = [
         e for e in sledger if e.get("entry_type") == "sale" and _between(e.get("date", ""), start, end)
@@ -177,7 +175,6 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     all_sales = direct_sales + handling_credits
 
-    # Format sales lines
     sales_lines = []
     for s in sorted(all_sales, key=lambda x: (x.get("date", ""), x.get("timestamp", "")), reverse=True):
         if s.get("entry_type") == "sale":
@@ -187,15 +184,11 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"• {fmt_date(s['date'])}: [{s.get('item_id','?')}] {qty} × {fmt_money(price, cur)} = {fmt_money(abs(qty * price), cur)}"
             )
         elif s.get("entry_type") == "handling_fee":
-            # Handling fee as Owner Sale (income)
             amt = s.get('amount', 0)
-            item = s.get('item_id', '')
-            qty = s.get('quantity', '')
             sales_lines.append(
                 f"• {fmt_date(s['date'])}: [Owner Sale] {fmt_money(amt, cur)}"
             )
 
-    # Units Sold (by item) - only direct sales
     unit_summary = []
     item_totals = defaultdict(lambda: {"units": 0, "value": 0.0})
     for s in direct_sales:
@@ -207,11 +200,9 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for iid, sums in item_totals.items():
         unit_summary.append(f"- [{iid}] : {sums['units']} units, {fmt_money(sums['value'], cur)}")
 
-    # Total Sales: sum direct sales and handling fee credits
     total_sales = sum(abs(s.get('quantity', 0) * s.get('unit_price', s.get('unit_cost', 0))) for s in direct_sales) \
         + sum(s.get('amount', 0) for s in handling_credits)
 
-    # --- PAYMENTS (payments *received* by store) ---
     payments = [
         e for e in sledger if e.get("entry_type") in ("payment", "payment_recv") and _between(e.get("date", ""), start, end)
     ]
@@ -228,11 +219,9 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     total_pay_local = sum(p.get('amount', 0) for p in payments)
     total_pay_usd = sum(p.get('usd_amt', 0) for p in payments)
 
-    # --- EXPENSES (NO handling fees here) ---
     expenses = [e for e in sledger if e.get("entry_type") == "expense" and _between(e.get("date", ""), start, end)]
     stockins = [e for e in sledger if e.get("entry_type") == "stockin" and _between(e.get("date", ""), start, end)]
 
-    # Inventory purchase (stock-in) lines
     inventory_purchase_lines = []
     total_inventory_purchase = 0
     for s in sorted(stockins, key=lambda x: (x.get("date", ""), x.get("timestamp", "")), reverse=True):
@@ -242,7 +231,6 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
         total_inventory_purchase += total
         inventory_purchase_lines.append(f"   - {fmt_date(s.get('date', ''))}: [{s.get('item_id')}] {qty} @ {fmt_money(price, cur)} = {fmt_money(total, cur)}")
 
-    # Expense lines
     expense_lines = []
     other_total = sum(abs(e.get("amount", 0)) for e in expenses)
     if expenses:
@@ -258,7 +246,6 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if expense_lines:
         expense_lines.append(f"\n📊 Total All Expenses: {fmt_money(total_all_expenses, cur)}")
 
-    # --- CURRENT STOCK (all time, not just in period) ---
     all_stockins = [e for e in sledger if e.get("entry_type") == "stockin"]
     all_sales = [e for e in sledger if e.get("entry_type") == "sale"]
     stock_balance = defaultdict(int)
@@ -285,10 +272,8 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
             current_stock_lines.append(f"   - [{item}] {qty} × {fmt_money(mp, cur)} = {fmt_money(val, cur)}")
             stock_value += val
 
-    # --- FINANCIAL POSITION ---
     balance = total_sales - total_pay_local - total_all_expenses
 
-    # --- Output lines by scope ---
     lines = []
     if ctx["scope"] in ("full", "sales"):
         lines.append("🛒 Sales")
@@ -318,7 +303,8 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     nav = []
     if ctx["page"] > 0:
-        nav.append(InlineKeyboardButton("⬅️ Prev", callback_data="page_prev"))
+        nav.append(InlineKeyboardButton("⬅️ Prev", callback_data="store_page_prev"))
+    # For completeness, you could add a "Next" button if pagination is needed
     nav.append(InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu"))
 
     await update.callback_query.edit_message_text(
@@ -330,18 +316,15 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @require_unlock
 async def paginate(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.callback_query.data == "page_next":
+    if update.callback_query.data == "store_page_next":
         context.user_data["page"] += 1
-    elif update.callback_query.data == "page_prev":
+    elif update.callback_query.data == "store_page_prev":
         context.user_data["page"] = max(0, context.user_data["page"] - 1)
     return await show_report(update, context)
 
-# Register
 def register_store_report_handlers(app):
     app.add_handler(CallbackQueryHandler(show_store_report_menu, pattern="^rep_store$"))
-    app.add_handler(CallbackQueryHandler(select_date_range, pattern="^sreport_"))
-    app.add_handler(CallbackQueryHandler(choose_scope, pattern="^range_"))
-    app.add_handler(CallbackQueryHandler(show_report, pattern="^scope_"))
-    app.add_handler(CallbackQueryHandler(paginate, pattern="^page_"))
-    # Add custom date input if using MessageHandler in your main bot.py
-
+    app.add_handler(CallbackQueryHandler(select_date_range, pattern="^store_sreport_"))
+    app.add_handler(CallbackQueryHandler(choose_scope, pattern="^store_range_"))
+    app.add_handler(CallbackQueryHandler(show_report, pattern="^store_scope_"))
+    app.add_handler(CallbackQueryHandler(paginate, pattern="^store_page_"))
