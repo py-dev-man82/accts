@@ -275,29 +275,30 @@ def _collect_report_data(start, end):
         "net": net_change,
     }
 
+    # --- SALES: all customers and general ledger ---
     sales_by_store_item = defaultdict(lambda: defaultdict(lambda: {"units": 0, "value": 0.0}))
-    for cust in secure_db.all("customers"):
-        cust_ledger = get_ledger("customer", cust.doc_id)
-        for e in cust_ledger:
-            if e.get("entry_type") == "sale" and _between(e.get("date", ""), start, end):
-                store_id = e.get("store_id")
-                item_id = e.get("item_id")
-                qty = abs(e.get("quantity", 0))
-                value = abs(qty * e.get("unit_price", e.get("unit_cost", 0)))
+    for customer in secure_db.all("customers"):
+        cust_ledger = get_ledger("customer", customer.doc_id)
+        for entry in cust_ledger:
+            if entry.get("entry_type") == "sale" and _between(entry.get("date", ""), start, end):
+                store_id = entry.get("store_id")
+                item_id = entry.get("item_id")
+                qty = abs(entry.get("quantity", 0))
+                value = abs(qty * entry.get("unit_price", entry.get("unit_cost", 0)))
                 sales_by_store_item[store_id][item_id]["units"] += qty
                 sales_by_store_item[store_id][item_id]["value"] += value
     general_ledger = get_ledger("general", None)
-    for e in general_ledger:
-        if e.get("entry_type") == "sale" and _between(e.get("date", ""), start, end):
-            store_id = e.get("store_id")
-            item_id = e.get("item_id")
-            qty = abs(e.get("quantity", 0))
-            value = abs(qty * e.get("unit_price", e.get("unit_cost", 0)))
+    for entry in general_ledger:
+        if entry.get("entry_type") == "sale" and _between(entry.get("date", ""), start, end):
+            store_id = entry.get("store_id")
+            item_id = entry.get("item_id")
+            qty = abs(entry.get("quantity", 0))
+            value = abs(qty * entry.get("unit_price", entry.get("unit_cost", 0)))
             sales_by_store_item[store_id][item_id]["units"] += qty
             sales_by_store_item[store_id][item_id]["value"] += value
     data["sales_by_store_item"] = sales_by_store_item
 
-    # -- NEW: PAYMENTS RECEIVED FROM ALL CUSTOMER LEDGERS --
+    # --------- PAYMENTS: from customer ledgers ---------
     payments_by_currency = defaultdict(lambda: {"local": 0.0, "usd": 0.0, "currency": ""})
     for customer in secure_db.all("customers"):
         cledger = get_ledger("customer", customer.doc_id)
@@ -354,6 +355,7 @@ def _collect_report_data(start, end):
 
     return data
 
+# (Leave the rest of your file unchanged: _render_page, _build_pdf, handlers, etc.)
 def _render_page(ctx):
     data = ctx["report_data"]
     page = ctx.get("page", 0)
@@ -466,7 +468,6 @@ def _render_page(ctx):
 
     return pages
 
-# ... rest of your file (PDF export, handlers, etc) unchanged ...
 def _build_pdf(ctx):
     buffer = BytesIO()
     p = canvas.Canvas(buffer, pagesize=letter)
