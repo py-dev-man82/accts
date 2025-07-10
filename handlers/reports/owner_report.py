@@ -86,17 +86,11 @@ def compute_inventory(secure_db, get_ledger, start=None, end=None):
     return inventory_by_item, all_sales, all_stockins
 
 def compute_store_and_owner_inventory(secure_db, get_ledger):
-    """
-    Returns:
-      store_inventory: {store_id: {item_id: {"units": X, "market": Y}}}
-      owner_totals: {item_id: {"units": X, "market": Y}}
-    """
     store_inventory = defaultdict(lambda: defaultdict(lambda: {"units": 0, "market": 0.0}))
     owner_totals = defaultdict(lambda: {"units": 0, "market": 0.0})
     all_sales = []
     all_stockins = []
 
-    # Stockins from store ledgers
     for store in secure_db.all("stores"):
         sledger = get_ledger("store", store.doc_id)
         for e in sledger:
@@ -106,7 +100,6 @@ def compute_store_and_owner_inventory(secure_db, get_ledger):
                 store_inventory[store.doc_id][item_id]["units"] += qty
                 all_stockins.append(e)
 
-    # Sales from customer ledgers
     for customer in secure_db.all("customers"):
         cledger = get_ledger("customer", customer.doc_id)
         for e in cledger:
@@ -117,7 +110,6 @@ def compute_store_and_owner_inventory(secure_db, get_ledger):
                 store_inventory[store_id][item_id]["units"] -= qty
                 all_sales.append(e)
 
-    # Sales from general ledger (if these are direct store sales, use their store_id)
     general_ledger = get_ledger("general", None)
     for e in general_ledger:
         if e.get("entry_type") == "sale":
@@ -146,6 +138,41 @@ def compute_store_and_owner_inventory(secure_db, get_ledger):
             owner_totals[item_id]["market"] += v["market"]
 
     return store_inventory, owner_totals
+
+def cross_check_payouts(secure_db, get_ledger, start, end):
+    pot_ledger = get_ledger("owner", "POT")
+    payout_entries = [
+        e for e in pot_ledger
+        if e.get("entry_type") in ("payout", "payment_sent") and _between(e["date"], start, end)
+    ]
+    print("\nPAYOUT CROSS-CHECK:")
+    for payout in payout_entries:
+        partner_id = payout.get("related_id")
+        usd_amt = abs(payout.get("usd_amt", payout.get("amount", 0)))
+        partner_name = None
+        if partner_id:
+            try:
+                partner = secure_db.table("partners").get(doc_id=int(partner_id))
+            except Exception:
+                partner = None
+            if partner:
+                partner_name = partner.get("name")
+                # Search partner's ledger for a matching payout-in
+                pledger = get_ledger("partner", int(partner_id))
+                match = [
+                    e for e in pledger
+                    if abs(e.get("usd_amt", e.get("amount", 0))) == usd_amt
+                    and e.get("entry_type", "").startswith("payout")
+                    and _between(e["date"], start, end)
+                ]
+                if match:
+                    print(f"  ✔️ Payout to partner {partner_name} (${usd_amt}) FOUND in partner ledger.")
+                else:
+                    print(f"  ⚠️ Payout to partner {partner_name} (${usd_amt}) NOT FOUND in partner ledger!")
+            else:
+                print(f"  ⚠️ Payout related_id {partner_id} not found in partners table.")
+        else:
+            print(f"  ⚠️ Payout entry without related_id: {payout}")
 
 def owner_report_diagnostic(start, end, secure_db, get_ledger):
     print("\n==== OWNER REPORT DIAGNOSTIC ====")
@@ -195,6 +222,7 @@ def owner_report_diagnostic(start, end, secure_db, get_ledger):
     print("\nInventory by item (all time):")
     for item_id, v in inv_all.items():
         print(f"  {item_id}: {v['units']} units, ${v['market']}")
+    cross_check_payouts(secure_db, get_ledger, start, end)
     print("==== END OWNER REPORT DIAGNOSTIC ====\n")
 
 def _reset_state(ctx):
@@ -292,7 +320,6 @@ def _collect_report_data(start, end):
     net_position = pot_balance + sum(i["market"] for i in inventory_by_item_all.values())
     data["net_position"] = net_position
 
-    # === Diagnostic output for QA/testing ===
     owner_report_diagnostic(start, end, secure_db, get_ledger)
 
     return data
@@ -313,46 +340,68 @@ def _render_page(ctx):
         lines.append(f"  Outflows: {fmt_money(pot['outflows'], 'USD')}")
         lines.append(f"  Net Change: {fmt_money(pot['net'], 'USD')}\n")
         lines.append("🛒 SALES (by item)")
-        for store_id, items in data["sales_by_store_item"].items():
-            store = secure_db.table("stores").get(doc_id=store_id) or {"name": f"Store {store_id}"}
-            for item_id, v in items.items():
-                lines.append(f"  - {store['name']}: {v['units']} units [item {item_id}] | {fmt_money(v['value'], 'USD')}")
+        if any(data["sales_by_store_item"].values()):
+            for store_id, items in data["sales_by_store_item"].items():
+                store = secure_db.table("stores").get(doc_id=store_id) or {"name": f"Store {store_id}"}
+                for item_id, v in items.items():
+                    lines.append(f"  - {store['name']}: {v['units']} units [item {item_id}] | {fmt_money(v['value'], 'USD')}")
+        else:
+            lines.append("  No sales in this period.")
         pages.append("\n".join(lines))
 
     if page == 1:
         lines = []
         lines.append("─────────────────────────────\n💰 PAYMENTS RECEIVED")
-        for cur, group in data["payments_by_currency"].items():
-            lines.append(f"{cur}: {fmt_money(group['local'], cur)} | {fmt_money(group['usd'], 'USD')}")
-        lines.append(f"\nTotal USD Received (all currencies): {fmt_money(data['total_usd_received'], 'USD')}")
+        if data["payments_by_currency"]:
+            for cur, group in data["payments_by_currency"].items():
+                lines.append(f"{cur}: {fmt_money(group['local'], cur)} | {fmt_money(group['usd'], 'USD')}")
+            lines.append(f"\nTotal USD Received (all currencies): {fmt_money(data['total_usd_received'], 'USD')}")
+        else:
+            lines.append("No payments received in this period.")
+            lines.append(f"\nTotal USD Received (all currencies): $0.00")
         pages.append("\n".join(lines))
     if page == 2:
         lines = []
         lines.append("─────────────────────────────\n💸 PAYOUTS TO PARTNERS")
         lines.append(f"  Total USD Paid Out: {fmt_money(data['total_usd_paid'], 'USD')}")
+        if data["total_usd_paid"] == 0:
+            lines.append("  (No payouts this period.)")
+        else:
+            lines.append("  (Payouts are cross-checked in diagnostics log.)")
         pages.append("\n".join(lines))
     if page == 3:
         lines = []
         lines.append("─────────────────────────────\n📦 INVENTORY (for period)")
-        for item_id, v in data["inventory_by_item"].items():
-            lines.append(f"  {item_id}: {v['units']} units = {fmt_money(v['market'], 'USD')}")
-        lines.append(f"  Total Inventory Value: {fmt_money(sum(v['market'] for v in data['inventory_by_item'].values()), 'USD')}")
+        if data["inventory_by_item"]:
+            for item_id, v in data["inventory_by_item"].items():
+                lines.append(f"  {item_id}: {v['units']} units = {fmt_money(v['market'], 'USD')}")
+            lines.append(f"  Total Inventory Value: {fmt_money(sum(v['market'] for v in data['inventory_by_item'].values()), 'USD')}")
+        else:
+            lines.append("  No inventory movements in this period.")
+            lines.append("  Total Inventory Value: $0.00")
         if data["unreconciled"]:
             lines.append("\n⚠️ UNRECONCILED INVENTORY")
             for item_id, v in data["unreconciled"].items():
                 lines.append(f"  - {item_id}: {v['units']} units ({fmt_money(v['market'], 'USD')})")
-
         lines.append("\n📦 CURRENT INVENTORY (ALL TIME)")
-        for item_id, v in data["current_inventory_all_time"].items():
-            lines.append(f"  {item_id}: {v['units']} units = {fmt_money(v['market'], 'USD')}")
-        lines.append(f"  Total Inventory Value (all time): {fmt_money(sum(v['market'] for v in data['current_inventory_all_time'].values()), 'USD')}")
+        if data["current_inventory_all_time"]:
+            for item_id, v in data["current_inventory_all_time"].items():
+                lines.append(f"  {item_id}: {v['units']} units = {fmt_money(v['market'], 'USD')}")
+            lines.append(f"  Total Inventory Value (all time): {fmt_money(sum(v['market'] for v in data['current_inventory_all_time'].values()), 'USD')}")
+        else:
+            lines.append("  No inventory on hand (all time).")
+            lines.append("  Total Inventory Value (all time): $0.00")
         pages.append("\n".join(lines))
     if page == 4:
         lines = []
         lines.append("─────────────────────────────\n📉 EXPENSES")
-        for e in data["expenses"]:
-            lines.append(f"  {fmt_date(e['date'])}: {fmt_money(abs(e['amount']), e['currency'])}")
-        lines.append(f"  Total Expenses: {fmt_money(data['total_expenses'], 'USD')}")
+        if data["expenses"]:
+            for e in data["expenses"]:
+                lines.append(f"  {fmt_date(e['date'])}: {fmt_money(abs(e['amount']), e['currency'])}")
+            lines.append(f"  Total Expenses: {fmt_money(data['total_expenses'], 'USD')}")
+        else:
+            lines.append("No expenses in this period.")
+            lines.append(f"  Total Expenses: $0.00")
         pages.append("\n".join(lines))
     if page == 5:
         lines = []
@@ -370,17 +419,25 @@ def _render_page(ctx):
         lines.append("─────────────────────────────\n📦 INVENTORY ON HAND (by Store and Type)")
         store_inventory = data.get("store_inventory_by_item", {})
         owner_totals = data.get("owner_inventory_totals", {})
-        for store_id, items in store_inventory.items():
-            store = secure_db.table("stores").get(doc_id=store_id) or {"name": f"Store {store_id}"}
-            for item_id, v in items.items():
-                lines.append(f"{store['name']} | Item {item_id}: {v['units']} units = {fmt_money(v['market'], 'USD')}")
+        if store_inventory:
+            for store_id, items in store_inventory.items():
+                store = secure_db.table("stores").get(doc_id=store_id) or {"name": f"Store {store_id}"}
+                for item_id, v in items.items():
+                    lines.append(f"{store['name']} | Item {item_id}: {v['units']} units = {fmt_money(v['market'], 'USD')}")
+        else:
+            lines.append("No inventory on hand in any store.")
         lines.append("\nOWNER TOTALS BY ITEM:")
-        for item_id, v in owner_totals.items():
-            lines.append(f"Item {item_id}: {v['units']} units = {fmt_money(v['market'], 'USD')}")
+        if owner_totals:
+            for item_id, v in owner_totals.items():
+                lines.append(f"Item {item_id}: {v['units']} units = {fmt_money(v['market'], 'USD')}")
+        else:
+            lines.append("No inventory on hand for any item.")
         pages.append("\n".join(lines))
 
     return pages
 
+# The rest of your file: _build_pdf, handler functions, ConversationHandlers, etc, remains unchanged!
+# If you need this expanded further to show those, let me know.
 def _build_pdf(ctx):
     buffer = BytesIO()
     p = canvas.Canvas(buffer, pagesize=letter)
@@ -407,55 +464,83 @@ def _build_pdf(ctx):
     y -= 10
 
     y = write("🛒 SALES (by item)", y)
-    for store_id, items in data["sales_by_store_item"].items():
-        store = secure_db.table("stores").get(doc_id=store_id) or {"name": f"Store {store_id}"}
-        for item_id, v in items.items():
-            y = write(f"  - {store['name']}: {v['units']} units [item {item_id}] | {fmt_money(v['value'], 'USD')}", y)
+    if any(data["sales_by_store_item"].values()):
+        for store_id, items in data["sales_by_store_item"].items():
+            store = secure_db.table("stores").get(doc_id=store_id) or {"name": f"Store {store_id}"}
+            for item_id, v in items.items():
+                y = write(f"  - {store['name']}: {v['units']} units [item {item_id}] | {fmt_money(v['value'], 'USD')}", y)
+    else:
+        y = write("  No sales in this period.", y)
     y -= 10
 
     y = write("💰 PAYMENTS RECEIVED", y)
-    for cur, group in data["payments_by_currency"].items():
-        y = write(f"{cur}: {fmt_money(group['local'], cur)} | {fmt_money(group['usd'], 'USD')}", y)
-    y = write(f"\nTotal USD Received (all currencies): {fmt_money(data['total_usd_received'], 'USD')}", y)
+    if data["payments_by_currency"]:
+        for cur, group in data["payments_by_currency"].items():
+            y = write(f"{cur}: {fmt_money(group['local'], cur)} | {fmt_money(group['usd'], 'USD')}", y)
+        y = write(f"\nTotal USD Received (all currencies): {fmt_money(data['total_usd_received'], 'USD')}", y)
+    else:
+        y = write("No payments received in this period.", y)
+        y = write(f"\nTotal USD Received (all currencies): $0.00", y)
     y -= 10
 
     y = write("💸 PAYOUTS TO PARTNERS", y)
     y = write(f"  Total USD Paid Out: {fmt_money(data['total_usd_paid'], 'USD')}", y)
+    if data["total_usd_paid"] == 0:
+        y = write("  (No payouts this period.)", y)
+    else:
+        y = write("  (Payouts are cross-checked in diagnostics log.)", y)
     y -= 10
 
     y = write("📦 INVENTORY (for period)", y)
-    for item_id, v in data["inventory_by_item"].items():
-        y = write(f"  {item_id}: {v['units']} units = {fmt_money(v['market'], 'USD')}", y)
-    y = write(f"  Total Inventory Value: {fmt_money(sum(v['market'] for v in data['inventory_by_item'].values()), 'USD')}", y)
+    if data["inventory_by_item"]:
+        for item_id, v in data["inventory_by_item"].items():
+            y = write(f"  {item_id}: {v['units']} units = {fmt_money(v['market'], 'USD')}", y)
+        y = write(f"  Total Inventory Value: {fmt_money(sum(v['market'] for v in data['inventory_by_item'].values()), 'USD')}", y)
+    else:
+        y = write("  No inventory movements in this period.", y)
+        y = write("  Total Inventory Value: $0.00", y)
     if data["unreconciled"]:
         y -= 10
         y = write("⚠️ UNRECONCILED INVENTORY", y)
         for item_id, v in data["unreconciled"].items():
             y = write(f"  - {item_id}: {v['units']} units ({fmt_money(v['market'], 'USD')})", y)
-
     y = write("📦 CURRENT INVENTORY (ALL TIME)", y)
-    for item_id, v in data["current_inventory_all_time"].items():
-        y = write(f"  {item_id}: {v['units']} units = {fmt_money(v['market'], 'USD')}", y)
-    y = write(f"  Total Inventory Value (all time): {fmt_money(sum(v['market'] for v in data['current_inventory_all_time'].values()), 'USD')}", y)
+    if data["current_inventory_all_time"]:
+        for item_id, v in data["current_inventory_all_time"].items():
+            y = write(f"  {item_id}: {v['units']} units = {fmt_money(v['market'], 'USD')}", y)
+        y = write(f"  Total Inventory Value (all time): {fmt_money(sum(v['market'] for v in data['current_inventory_all_time'].values()), 'USD')}", y)
+    else:
+        y = write("  No inventory on hand (all time).", y)
+        y = write("  Total Inventory Value (all time): $0.00", y)
     y -= 10
 
-    # NEW: Inventory on hand by store and item
+    # Inventory on hand by store and item
     y = write("📦 INVENTORY ON HAND (by Store and Type)", y)
     store_inventory = data.get("store_inventory_by_item", {})
     owner_totals = data.get("owner_inventory_totals", {})
-    for store_id, items in store_inventory.items():
-        store = secure_db.table("stores").get(doc_id=store_id) or {"name": f"Store {store_id}"}
-        for item_id, v in items.items():
-            y = write(f"{store['name']} | Item {item_id}: {v['units']} units = {fmt_money(v['market'], 'USD')}", y)
+    if store_inventory:
+        for store_id, items in store_inventory.items():
+            store = secure_db.table("stores").get(doc_id=store_id) or {"name": f"Store {store_id}"}
+            for item_id, v in items.items():
+                y = write(f"{store['name']} | Item {item_id}: {v['units']} units = {fmt_money(v['market'], 'USD')}", y)
+    else:
+        y = write("No inventory on hand in any store.", y)
     y = write("OWNER TOTALS BY ITEM:", y)
-    for item_id, v in owner_totals.items():
-        y = write(f"Item {item_id}: {v['units']} units = {fmt_money(v['market'], 'USD')}", y)
+    if owner_totals:
+        for item_id, v in owner_totals.items():
+            y = write(f"Item {item_id}: {v['units']} units = {fmt_money(v['market'], 'USD')}", y)
+    else:
+        y = write("No inventory on hand for any item.", y)
     y -= 10
 
     y = write("📉 EXPENSES", y)
-    for e in data["expenses"]:
-        y = write(f"  {fmt_date(e['date'])}: {fmt_money(abs(e['amount']), e['currency'])}", y)
-    y = write(f"  Total Expenses: {fmt_money(data['total_expenses'], 'USD')}", y)
+    if data["expenses"]:
+        for e in data["expenses"]:
+            y = write(f"  {fmt_date(e['date'])}: {fmt_money(abs(e['amount']), e['currency'])}", y)
+        y = write(f"  Total Expenses: {fmt_money(data['total_expenses'], 'USD')}", y)
+    else:
+        y = write("No expenses in this period.", y)
+        y = write(f"  Total Expenses: $0.00", y)
     y -= 10
 
     y = write("🏁 FINANCIAL POSITION (USD)", y)
@@ -515,7 +600,7 @@ async def owner_choose_scope(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def owner_show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ctx = context.user_data
     pages = []
-    for i in range(7):  # now 7 pages/sections
+    for i in range(7):  # 7 pages/sections
         ctx["page"] = i
         section = _render_page(ctx)
         if section:
