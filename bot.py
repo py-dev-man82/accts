@@ -38,16 +38,16 @@ from handlers.reports.partner_report  import (
     show_partner_report_menu,
     save_custom_start,
 )
-from handlers.reports.store_report import (
+from handlers.reports.store_report    import (
     register_store_report_handlers,
     show_store_report_menu,
     save_custom_start as save_custom_start_store,
 )
 # 🆕 Owner Summary Report module
-from handlers.reports.owner_report import (
+from handlers.reports.owner_report    import (
     register_owner_report_handlers,
     show_owner_report_menu,
-    owner_save_custom_start,
+    save_custom_start as save_custom_start_owner,
 )
 
 # 🆕  Owner module ––– enabled now
@@ -174,7 +174,7 @@ async def run_bot():
     # --- PATCH: Add these handlers for custom date input in reports ---
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, save_custom_start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, save_custom_start_store))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, owner_save_custom_start))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, save_custom_start_owner))
 
     # Start polling
     await app.initialize()
@@ -189,7 +189,7 @@ async def run_bot():
 
 # ════════════════════════════════════════════════════════════
 # Simple self-supervisor — restarts on crash
-# ════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════
 def main_supervisor():
     while True:
         logging.warning("🔄  Starting bot process…")
