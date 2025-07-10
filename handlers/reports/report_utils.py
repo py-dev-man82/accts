@@ -133,3 +133,44 @@ def compute_payouts(secure_db, get_ledger, start=None, end=None):
                         continue
                 payouts.append(e)
     return payouts
+
+def compute_customer_sales(secure_db, get_ledger, start=None, end=None):
+    """
+    Returns: dict[customer_id][item_id] = [sales entries...]
+    Optionally filter by date.
+    """
+    sales = defaultdict(lambda: defaultdict(list))
+    for customer in secure_db.all("customers"):
+        for e in get_ledger("customer", customer.doc_id):
+            if e.get("entry_type") == "sale":
+                if start and end:
+                    dt = e.get("date", "")
+                    try:
+                        dt_obj = datetime.strptime(dt, "%d%m%Y")
+                        if not (start <= dt_obj <= end):
+                            continue
+                    except Exception:
+                        continue
+                item_id = e.get("item_id", "?")
+                sales[customer.doc_id][item_id].append(e)
+    return sales
+
+def compute_customer_payments(secure_db, get_ledger, start=None, end=None):
+    """
+    Returns: dict[customer_id] = [payment entries...]
+    Optionally filter by date.
+    """
+    payments = defaultdict(list)
+    for customer in secure_db.all("customers"):
+        for e in get_ledger("customer", customer.doc_id):
+            if e.get("entry_type") == "payment":
+                if start and end:
+                    dt = e.get("date", "")
+                    try:
+                        dt_obj = datetime.strptime(dt, "%d%m%Y")
+                        if not (start <= dt_obj <= end):
+                            continue
+                    except Exception:
+                        continue
+                payments[customer.doc_id].append(e)
+    return payments
