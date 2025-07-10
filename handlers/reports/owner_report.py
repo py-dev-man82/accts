@@ -40,7 +40,6 @@ def owner_report_diagnostic(start, end, secure_db, get_ledger):
     payments = [e for e in pot_ledger if e.get("entry_type") == "payment_recv" and _between(e["date"], start, end)]
     payments_by_person = defaultdict(lambda: {"local": 0.0, "usd": 0.0, "currency": "USD"})
     for p in payments:
-        # Try to extract customer/store from note, or fallback
         person = p.get("note", "").split(" ")[0] if p.get("note") else "Unknown"
         payments_by_person[person]["usd"] += p.get("usd_amt", 0.0)
         payments_by_person[person]["local"] += p.get("amount", 0.0)
@@ -293,5 +292,242 @@ def _collect_report_data(start, end):
 
     return data
 
-# ... [THE REST OF THE FILE IS THE SAME AS THE OWNER REPORT HANDLER ABOVE: _render_page, _build_pdf, handlers, etc.]
-# (For brevity, you can use the previous version's Telegram handler, PDF builder, and handler registration code here.)
+def _render_page(ctx):
+    data = ctx["report_data"]
+    page = ctx.get("page", 0)
+    pages = []
+
+    if page == 0:
+        lines = []
+        lines.append("👑 OWNER SUMMARY OVERVIEW")
+        lines.append(f"Date Range: {fmt_date(ctx['start_date'].strftime('%d%m%Y'))} – {fmt_date(ctx['end_date'].strftime('%d%m%Y'))}\n")
+        pot = data["pot"]
+        lines.append("─────────────────────────────\n💲 POT (USD Account)")
+        lines.append(f"  Balance: {fmt_money(pot['balance'], 'USD')}")
+        lines.append(f"  Inflows: {fmt_money(pot['inflows'], 'USD')}")
+        lines.append(f"  Outflows: {fmt_money(pot['outflows'], 'USD')}")
+        lines.append(f"  Net Change: {fmt_money(pot['net'], 'USD')}\n")
+        lines.append("🛒 SALES (by item)")
+        for store_id, items in data["sales_by_store_item"].items():
+            store = secure_db.table("stores").get(doc_id=store_id) or {"name": f"Store {store_id}"}
+            for item_id, v in items.items():
+                lines.append(f"  - {store['name']}: {v['units']} units [item {item_id}] | {fmt_money(v['value'], 'USD')}")
+        pages.append("\n".join(lines))
+
+    if page == 1:
+        lines = []
+        lines.append("─────────────────────────────\n💰 PAYMENTS RECEIVED")
+        for name, v in data["payments_by_person"].items():
+            if name:
+                lines.append(f"  {name}: {fmt_money(v['local'], v['currency'])} | {fmt_money(v['usd'], 'USD')}")
+        lines.append(f"  Total USD Received: {fmt_money(data['total_usd_received'], 'USD')}")
+        pages.append("\n".join(lines))
+    if page == 2:
+        lines = []
+        lines.append("─────────────────────────────\n💸 PAYOUTS TO PARTNERS")
+        for name, v in data["payouts_by_partner"].items():
+            if name:
+                lines.append(f"  {name}: {fmt_money(v['local'], v['currency'])} | {fmt_money(v['usd'], 'USD')}")
+        lines.append(f"  Total USD Paid Out: {fmt_money(data['total_usd_paid'], 'USD')}")
+        pages.append("\n".join(lines))
+    if page == 3:
+        lines = []
+        lines.append("─────────────────────────────\n📦 INVENTORY")
+        for item_id, v in data["inventory_by_item"].items():
+            lines.append(f"  {item_id}: {v['units']} units = {fmt_money(v['market'], 'USD')}")
+        lines.append(f"  Total Inventory Value: {fmt_money(sum(v['market'] for v in data['inventory_by_item'].values()), 'USD')}")
+        if data["unreconciled"]:
+            lines.append("\n⚠️ UNRECONCILED INVENTORY")
+            for item_id, v in data["unreconciled"].items():
+                lines.append(f"  - {item_id}: {v['units']} units ({fmt_money(v['market'], 'USD')})")
+        pages.append("\n".join(lines))
+    if page == 4:
+        lines = []
+        lines.append("─────────────────────────────\n📉 EXPENSES")
+        for e in data["expenses"]:
+            lines.append(f"  {fmt_date(e['date'])}: {fmt_money(abs(e['amount']), e['currency'])}")
+        lines.append(f"  Total Expenses: {fmt_money(data['total_expenses'], 'USD')}")
+        pages.append("\n".join(lines))
+    if page == 5:
+        lines = []
+        lines.append("─────────────────────────────\n🏁 FINANCIAL POSITION (USD)")
+        pot = data["pot"]
+        inventory_value = sum(v["market"] for v in data["inventory_by_item"].values())
+        lines.append(f"  POT Balance: {fmt_money(pot['balance'], 'USD')}")
+        lines.append(f"  + Inventory: {fmt_money(inventory_value, 'USD')}")
+        lines.append(f"  = NET POSITION: {fmt_money(data['net_position'], 'USD')}")
+        pages.append("\n".join(lines))
+    return pages
+
+def _build_pdf(ctx):
+    buffer = BytesIO()
+    p = canvas.Canvas(buffer, pagesize=letter)
+    width, height = letter
+    y = height - 36
+    p.setFont("Helvetica", 12)
+
+    data = ctx["report_data"]
+
+    def write(line, y):
+        p.drawString(40, y, line)
+        return y - 18
+
+    y = write("👑 OWNER SUMMARY OVERVIEW", y)
+    y = write(f"Date Range: {fmt_date(ctx['start_date'].strftime('%d%m%Y'))} – {fmt_date(ctx['end_date'].strftime('%d%m%Y'))}", y)
+    y -= 10
+
+    # POT
+    pot = data["pot"]
+    y = write("💲 POT (USD Account)", y)
+    y = write(f"  Balance: {fmt_money(pot['balance'], 'USD')}", y)
+    y = write(f"  Inflows: {fmt_money(pot['inflows'], 'USD')}", y)
+    y = write(f"  Outflows: {fmt_money(pot['outflows'], 'USD')}", y)
+    y = write(f"  Net Change: {fmt_money(pot['net'], 'USD')}", y)
+    y -= 10
+
+    # Sales summary
+    y = write("🛒 SALES (by item)", y)
+    for store_id, items in data["sales_by_store_item"].items():
+        store = secure_db.table("stores").get(doc_id=store_id) or {"name": f"Store {store_id}"}
+        for item_id, v in items.items():
+            y = write(f"  - {store['name']}: {v['units']} units [item {item_id}] | {fmt_money(v['value'], 'USD')}", y)
+    y -= 10
+
+    # Payments received
+    y = write("💰 PAYMENTS RECEIVED", y)
+    for name, v in data["payments_by_person"].items():
+        if name:
+            y = write(f"  {name}: {fmt_money(v['local'], v['currency'])} | {fmt_money(v['usd'], 'USD')}", y)
+    y = write(f"  Total USD Received: {fmt_money(data['total_usd_received'], 'USD')}", y)
+    y -= 10
+
+    # Payouts
+    y = write("💸 PAYOUTS TO PARTNERS", y)
+    for name, v in data["payouts_by_partner"].items():
+        if name:
+            y = write(f"  {name}: {fmt_money(v['local'], v['currency'])} | {fmt_money(v['usd'], 'USD')}", y)
+    y = write(f"  Total USD Paid Out: {fmt_money(data['total_usd_paid'], 'USD')}", y)
+    y -= 10
+
+    # Inventory
+    y = write("📦 INVENTORY", y)
+    for item_id, v in data["inventory_by_item"].items():
+        y = write(f"  {item_id}: {v['units']} units = {fmt_money(v['market'], 'USD')}", y)
+    y = write(f"  Total Inventory Value: {fmt_money(sum(v['market'] for v in data['inventory_by_item'].values()), 'USD')}", y)
+    if data["unreconciled"]:
+        y -= 10
+        y = write("⚠️ UNRECONCILED INVENTORY", y)
+        for item_id, v in data["unreconciled"].items():
+            y = write(f"  - {item_id}: {v['units']} units ({fmt_money(v['market'], 'USD')})", y)
+    y -= 10
+
+    # Expenses
+    y = write("📉 EXPENSES", y)
+    for e in data["expenses"]:
+        y = write(f"  {fmt_date(e['date'])}: {fmt_money(abs(e['amount']), e['currency'])}", y)
+    y = write(f"  Total Expenses: {fmt_money(data['total_expenses'], 'USD')}", y)
+    y -= 10
+
+    # Financial position
+    y = write("🏁 FINANCIAL POSITION (USD)", y)
+    y = write(f"  POT Balance: {fmt_money(pot['balance'], 'USD')}", y)
+    inventory_value = sum(v["market"] for v in data["inventory_by_item"].values())
+    y = write(f"  + Inventory: {fmt_money(inventory_value, 'USD')}", y)
+    y = write(f"  = NET POSITION: {fmt_money(data['net_position'], 'USD')}", y)
+    p.showPage()
+    p.save()
+    buffer.seek(0)
+    return buffer
+
+@require_unlock
+async def show_owner_report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    _reset_state(context)
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📅 Last 7 days", callback_data="owner_range_week")],
+        [InlineKeyboardButton("📆 Custom Range", callback_data="owner_range_custom")],
+        [InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu")],
+    ])
+    await update.callback_query.answer()
+    await update.callback_query.edit_message_text("Choose period:", reply_markup=kb)
+    return OWNER_DATE_RANGE_SELECT
+
+async def owner_custom_date_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+    await update.callback_query.edit_message_text(
+        "Enter start date DDMMYYYY:",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu")]])
+    )
+    return OWNER_CUSTOM_DATE_INPUT
+
+async def owner_save_custom_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    txt = update.message.text.strip()
+    try:
+        sd = datetime.strptime(txt, "%d%m%Y")
+    except ValueError:
+        await update.message.reply_text("❌ Format DDMMYYYY please.")
+        return OWNER_CUSTOM_DATE_INPUT
+    context.user_data["start_date"] = sd
+    context.user_data["end_date"] = datetime.now()
+    context.user_data["page"] = 0
+    context.user_data["report_data"] = _collect_report_data(sd, datetime.now())
+    return await owner_show_report(update, context)
+
+async def owner_choose_scope(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.callback_query.data == "owner_range_week":
+        context.user_data["start_date"] = datetime.now() - timedelta(days=7)
+        context.user_data["end_date"] = datetime.now()
+    elif update.callback_query.data == "owner_range_custom":
+        return await owner_custom_date_input(update, context)
+    context.user_data["page"] = 0
+    context.user_data["report_data"] = _collect_report_data(context.user_data["start_date"], context.user_data["end_date"])
+    return await owner_show_report(update, context)
+
+@require_unlock
+async def owner_show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    ctx = context.user_data
+    pages = []
+    for i in range(6):  # total number of report pages/sections
+        ctx["page"] = i
+        section = _render_page(ctx)
+        if section:
+            pages.append(section[0])
+    page = ctx.get("page", 0)
+    kb = []
+    if page > 0:
+        kb.append(InlineKeyboardButton("⬅️ Prev", callback_data="owner_page_prev"))
+    if page < len(pages) - 1:
+        kb.append(InlineKeyboardButton("➡️ Next", callback_data="owner_page_next"))
+    kb.append(InlineKeyboardButton("📄 Export PDF", callback_data="owner_export_pdf"))
+    kb.append(InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu"))
+
+    await update.callback_query.edit_message_text(
+        pages[page],
+        reply_markup=InlineKeyboardMarkup([kb]),
+        parse_mode="Markdown"
+    )
+    return OWNER_REPORT_PAGE
+
+@require_unlock
+async def owner_paginate(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.callback_query.data == "owner_page_next":
+        context.user_data["page"] += 1
+    elif update.callback_query.data == "owner_page_prev":
+        context.user_data["page"] = max(0, context.user_data["page"] - 1)
+    return await owner_show_report(update, context)
+
+@require_unlock
+async def owner_export_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer("Generating PDF …")
+    ctx = context.user_data
+    pdf_buf = _build_pdf(ctx)
+    pdf_file = InputFile(pdf_buf, filename=f"Owner_Summary_{datetime.now().strftime('%Y%m%d')}.pdf")
+    await update.callback_query.message.reply_document(pdf_file, caption="Owner Summary PDF")
+    return await owner_show_report(update, context)
+
+def register_owner_report_handlers(app):
+    app.add_handler(CallbackQueryHandler(show_owner_report_menu, pattern="^rep_owner$"))
+    app.add_handler(CallbackQueryHandler(owner_choose_scope, pattern="^owner_range_"))
+    app.add_handler(CallbackQueryHandler(owner_paginate, pattern="^owner_page_"))
+    app.add_handler(CallbackQueryHandler(owner_export_pdf, pattern="^owner_export_pdf$"))
+    app.add_handler(CallbackQueryHandler(lambda u, c: None, pattern="^main_menu$"))
+    app.add_handler(MessageHandler(None, owner_save_custom_start))
