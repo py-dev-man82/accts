@@ -1,370 +1,507 @@
 import logging
 from datetime import datetime, timedelta
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.ext import (
-    ConversationHandler,
-    CallbackQueryHandler,
-    MessageHandler,
-    filters,
-    ContextTypes,
-)
-from secure_db import secure_db
-from handlers.utils import require_unlock, fmt_money, fmt_date
-from handlers.ledger import get_ledger, get_balance
+from collections import defaultdict
+from io import BytesIO
+from reportlab.lib.pagesizes import letter
+from reportlab.pdfgen import canvas
 
-async def _goto_main_menu(update, context):
-    from bot import start
-    return await start(update, context)
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, InputFile
+from telegram.ext import CallbackQueryHandler, ConversationHandler, ContextTypes, MessageHandler
+
+from handlers.utils import require_unlock, fmt_money, fmt_date
+from handlers.ledger import get_ledger
+from secure_db import secure_db
 
 (
-    CUST_SELECT,
-    DATE_RANGE_SELECT,
-    CUSTOM_DATE_INPUT,
-    REPORT_SCOPE_SELECT,
-    REPORT_PAGE,
-) = range(5)
+    OWNER_DATE_RANGE_SELECT,
+    OWNER_CUSTOM_DATE_INPUT,
+    OWNER_REPORT_SCOPE_SELECT,
+    OWNER_REPORT_PAGE,
+) = range(4)
 
-_PAGE_SIZE = 8
+_PAGE_SIZE = 2
+
+def _between(date_str, start, end):
+    try:
+        dt = datetime.strptime(date_str, "%d%m%Y")
+    except Exception:
+        return False
+    return start <= dt <= end
+
+def get_last_sale_price_any(sales, stockins, item_id):
+    relevant_sales = [e for e in sales if e.get("item_id") == item_id]
+    if relevant_sales:
+        latest = sorted(relevant_sales, key=lambda x: (x.get("date", ""), x.get("timestamp", "")), reverse=True)[0]
+        return latest.get("unit_price", latest.get("unit_cost", 0))
+    else:
+        relevant_stockins = [e for e in stockins if e.get("item_id") == item_id]
+        if relevant_stockins:
+            latest = sorted(relevant_stockins, key=lambda x: (x.get("date", ""), x.get("timestamp", "")), reverse=True)[0]
+            return latest.get("unit_cost", 0)
+    return 0
+
+def compute_inventory(secure_db, get_ledger, start=None, end=None):
+    inventory_by_item = defaultdict(lambda: {"units": 0, "market": 0.0})
+    all_sales = []
+    all_stockins = []
+    # Stockins from stores
+    for store in secure_db.all("stores"):
+        sledger = get_ledger("store", store.doc_id)
+        for e in sledger:
+            if e.get("entry_type") == "stockin" and ((not start) or _between(e.get("date", ""), start, end)):
+                item_id = e.get("item_id")
+                qty = e.get("quantity", 0)
+                inventory_by_item[item_id]["units"] += qty
+                all_stockins.append(e)
+    # Stockins from partners
+    for partner in secure_db.all("partners"):
+        pledger = get_ledger("partner", partner.doc_id)
+        for e in pledger:
+            if e.get("entry_type") == "stockin" and ((not start) or _between(e.get("date", ""), start, end)):
+                item_id = e.get("item_id")
+                qty = e.get("quantity", 0)
+                inventory_by_item[item_id]["units"] += qty
+                all_stockins.append(e)
+    # Sales from customers and customer-specific general ledger
+    for c in secure_db.all("customers"):
+        cust_ledger = get_ledger("customer", c.doc_id) + get_ledger("general", c.doc_id)
+        for e in cust_ledger:
+            if e.get("entry_type") == "sale" and ((not start) or _between(e.get("date", ""), start, end)):
+                item_id = e.get("item_id")
+                qty = abs(e.get("quantity", 0))
+                inventory_by_item[item_id]["units"] -= qty
+                all_sales.append(e)
+    # Sales from global general ledger
+    general_ledger = get_ledger("general", None)
+    for e in general_ledger:
+        if e.get("entry_type") == "sale" and ((not start) or _between(e.get("date", ""), start, end)):
+            item_id = e.get("item_id")
+            qty = abs(e.get("quantity", 0))
+            inventory_by_item[item_id]["units"] -= qty
+            all_sales.append(e)
+    # Market value for each item
+    for item_id in inventory_by_item.keys():
+        price = get_last_sale_price_any(all_sales, all_stockins, item_id)
+        inventory_by_item[item_id]["market"] = inventory_by_item[item_id]["units"] * price
+    return inventory_by_item, all_sales, all_stockins
+
+def compute_store_and_owner_inventory(secure_db, get_ledger):
+    store_inventory = defaultdict(lambda: defaultdict(lambda: {"units": 0, "market": 0.0}))
+    owner_totals = defaultdict(lambda: {"units": 0, "market": 0.0})
+    all_sales = []
+    all_stockins = []
+
+    for store in secure_db.all("stores"):
+        sledger = get_ledger("store", store.doc_id)
+        for e in sledger:
+            if e.get("entry_type") == "stockin":
+                item_id = e.get("item_id")
+                qty = e.get("quantity", 0)
+                store_inventory[store.doc_id][item_id]["units"] += qty
+                all_stockins.append(e)
+
+    for customer in secure_db.all("customers"):
+        cust_ledger = get_ledger("customer", customer.doc_id) + get_ledger("general", customer.doc_id)
+        for e in cust_ledger:
+            if e.get("entry_type") == "sale":
+                store_id = e.get("store_id")
+                item_id = e.get("item_id")
+                qty = abs(e.get("quantity", 0))
+                store_inventory[store_id][item_id]["units"] -= qty
+                all_sales.append(e)
+
+    general_ledger = get_ledger("general", None)
+    for e in general_ledger:
+        if e.get("entry_type") == "sale":
+            store_id = e.get("store_id")
+            item_id = e.get("item_id")
+            qty = abs(e.get("quantity", 0))
+            store_inventory[store_id][item_id]["units"] -= qty
+            all_sales.append(e)
+
+    def get_last_price(item_id):
+        relevant_sales = [e for e in all_sales if e.get("item_id") == item_id]
+        if relevant_sales:
+            latest = sorted(relevant_sales, key=lambda x: (x.get("date", ""), x.get("timestamp", "")), reverse=True)[0]
+            return latest.get("unit_price", latest.get("unit_cost", 0))
+        relevant_stockins = [e for e in all_stockins if e.get("item_id") == item_id]
+        if relevant_stockins:
+            latest = sorted(relevant_stockins, key=lambda x: (x.get("date", ""), x.get("timestamp", "")), reverse=True)[0]
+            return latest.get("unit_cost", 0)
+        return 0
+
+    for store_id, items in store_inventory.items():
+        for item_id, v in items.items():
+            price = get_last_price(item_id)
+            v["market"] = v["units"] * price
+            owner_totals[item_id]["units"] += v["units"]
+            owner_totals[item_id]["market"] += v["market"]
+
+    return store_inventory, owner_totals
+
+# ... diagnostics, payout cross-check, etc. (unchanged) ...
+
+def _collect_report_data(start, end):
+    data = {}
+    pot_ledger = get_ledger("owner", "POT")
+
+    pot_in = sum(e["amount"] for e in pot_ledger if e.get("entry_type") == "payment_recv" and _between(e["date"], start, end))
+    pot_out = sum(e["amount"] for e in pot_ledger if e.get("entry_type") in ("payout", "payment_sent") and _between(e["date"], start, end))
+    pot_balance = sum(e["amount"] for e in pot_ledger)
+    net_change = pot_in + pot_out
+
+    data["pot"] = {
+        "balance": pot_balance,
+        "inflows": pot_in,
+        "outflows": abs(pot_out),
+        "net": net_change,
+    }
+
+    # --- SALES: aggregate like customer report ---
+    sales_by_store_item = defaultdict(lambda: defaultdict(lambda: {"units": 0, "value": 0.0}))
+    # Customer sales and customer-specific general sales
+    for customer in secure_db.all("customers"):
+        cust_ledger = get_ledger("customer", customer.doc_id) + get_ledger("general", customer.doc_id)
+        for entry in cust_ledger:
+            if entry.get("entry_type") == "sale" and _between(entry.get("date", ""), start, end):
+                store_id = entry.get("store_id")
+                item_id = entry.get("item_id")
+                qty = abs(entry.get("quantity", 0))
+                value = abs(qty * entry.get("unit_price", entry.get("unit_cost", 0)))
+                sales_by_store_item[store_id][item_id]["units"] += qty
+                sales_by_store_item[store_id][item_id]["value"] += value
+    # Global general sales
+    general_ledger = get_ledger("general", None)
+    for entry in general_ledger:
+        if entry.get("entry_type") == "sale" and _between(entry.get("date", ""), start, end):
+            store_id = entry.get("store_id")
+            item_id = entry.get("item_id")
+            qty = abs(entry.get("quantity", 0))
+            value = abs(qty * entry.get("unit_price", entry.get("unit_cost", 0)))
+            sales_by_store_item[store_id][item_id]["units"] += qty
+            sales_by_store_item[store_id][item_id]["value"] += value
+    data["sales_by_store_item"] = sales_by_store_item
+
+    # ... the rest of your code is unchanged, including payments, payouts, inventory, rendering, PDF, etc. ...
+def _render_page(ctx):
+    data = ctx["report_data"]
+    page = ctx.get("page", 0)
+    pages = []
+
+    if page == 0:
+        lines = []
+        lines.append("👑 OWNER SUMMARY OVERVIEW")
+        lines.append(f"Date Range: {fmt_date(ctx['start_date'].strftime('%d%m%Y'))} – {fmt_date(ctx['end_date'].strftime('%d%m%Y'))}\n")
+        pot = data["pot"]
+        lines.append("─────────────────────────────\n💲 POT (USD Account)")
+        lines.append(f"  Balance: {fmt_money(pot['balance'], 'USD')}")
+        lines.append(f"  Inflows: {fmt_money(pot['inflows'], 'USD')}")
+        lines.append(f"  Outflows: {fmt_money(pot['outflows'], 'USD')}")
+        lines.append(f"  Net Change: {fmt_money(pot['net'], 'USD')}\n")
+        lines.append("🛒 SALES (by item)")
+        if any(data["sales_by_store_item"].values()):
+            for store_id, items in data["sales_by_store_item"].items():
+                store = secure_db.table("stores").get(doc_id=store_id) or {"name": f"Store {store_id}"}
+                for item_id, v in items.items():
+                    lines.append(f"  - {store['name']}: {v['units']} units [item {item_id}] | {fmt_money(v['value'], 'USD')}")
+        else:
+            lines.append("  No sales in this period.")
+        pages.append("\n".join(lines))
+
+    if page == 1:
+        lines = []
+        lines.append("─────────────────────────────\n💰 PAYMENTS RECEIVED")
+        if data["payments_by_currency"]:
+            for cur, group in data["payments_by_currency"].items():
+                lines.append(f"{cur}: {fmt_money(group['local'], cur)} | {fmt_money(group['usd'], 'USD')}")
+            lines.append(f"\nTotal USD Received (all currencies): {fmt_money(data['total_usd_received'], 'USD')}")
+        else:
+            lines.append("No payments received in this period.")
+            lines.append(f"\nTotal USD Received (all currencies): $0.00")
+        pages.append("\n".join(lines))
+    if page == 2:
+        lines = []
+        lines.append("─────────────────────────────\n💸 PAYOUTS TO PARTNERS")
+        lines.append(f"  Total USD Paid Out: {fmt_money(data['total_usd_paid'], 'USD')}")
+        if data["total_usd_paid"] == 0:
+            lines.append("  (No payouts this period.)")
+        else:
+            lines.append("  (Payouts are cross-checked in diagnostics log.)")
+        pages.append("\n".join(lines))
+    if page == 3:
+        lines = []
+        lines.append("─────────────────────────────\n📦 INVENTORY (for period)")
+        if data["inventory_by_item"]:
+            for item_id, v in data["inventory_by_item"].items():
+                lines.append(f"  {item_id}: {v['units']} units = {fmt_money(v['market'], 'USD')}")
+            lines.append(f"  Total Inventory Value: {fmt_money(sum(v['market'] for v in data['inventory_by_item'].values()), 'USD')}")
+        else:
+            lines.append("  No inventory movements in this period.")
+            lines.append("  Total Inventory Value: $0.00")
+        if data["unreconciled"]:
+            lines.append("\n⚠️ UNRECONCILED INVENTORY")
+            for item_id, v in data["unreconciled"].items():
+                lines.append(f"  - {item_id}: {v['units']} units ({fmt_money(v['market'], 'USD')})")
+        lines.append("\n📦 CURRENT INVENTORY (ALL TIME)")
+        if data["current_inventory_all_time"]:
+            for item_id, v in data["current_inventory_all_time"].items():
+                lines.append(f"  {item_id}: {v['units']} units = {fmt_money(v['market'], 'USD')}")
+            lines.append(f"  Total Inventory Value (all time): {fmt_money(sum(v['market'] for v in data['current_inventory_all_time'].values()), 'USD')}")
+        else:
+            lines.append("  No inventory on hand (all time).")
+            lines.append("  Total Inventory Value (all time): $0.00")
+        pages.append("\n".join(lines))
+    if page == 4:
+        lines = []
+        lines.append("─────────────────────────────\n📉 EXPENSES")
+        if data["expenses"]:
+            for e in data["expenses"]:
+                lines.append(f"  {fmt_date(e['date'])}: {fmt_money(abs(e['amount']), e['currency'])}")
+            lines.append(f"  Total Expenses: {fmt_money(data['total_expenses'], 'USD')}")
+        else:
+            lines.append("No expenses in this period.")
+            lines.append(f"  Total Expenses: $0.00")
+        pages.append("\n".join(lines))
+    if page == 5:
+        lines = []
+        lines.append("─────────────────────────────\n🏁 FINANCIAL POSITION (USD)")
+        pot = data["pot"]
+        inventory_value = sum(v["market"] for v in data["current_inventory_all_time"].values())
+        lines.append(f"  POT Balance: {fmt_money(pot['balance'], 'USD')}")
+        lines.append(f"  + Inventory: {fmt_money(inventory_value, 'USD')}")
+        lines.append(f"  = NET POSITION: {fmt_money(data['net_position'], 'USD')}")
+        pages.append("\n".join(lines))
+
+    # NEW INVENTORY BY STORE AND TYPE PAGE
+    if page == 6:
+        lines = []
+        lines.append("─────────────────────────────\n📦 INVENTORY ON HAND (by Store and Type)")
+        store_inventory = data.get("store_inventory_by_item", {})
+        owner_totals = data.get("owner_inventory_totals", {})
+        if store_inventory:
+            for store_id, items in store_inventory.items():
+                store = secure_db.table("stores").get(doc_id=store_id) or {"name": f"Store {store_id}"}
+                for item_id, v in items.items():
+                    lines.append(f"{store['name']} | Item {item_id}: {v['units']} units = {fmt_money(v['market'], 'USD')}")
+        else:
+            lines.append("No inventory on hand in any store.")
+        lines.append("\nOWNER TOTALS BY ITEM:")
+        if owner_totals:
+            for item_id, v in owner_totals.items():
+                lines.append(f"Item {item_id}: {v['units']} units = {fmt_money(v['market'], 'USD')}")
+        else:
+            lines.append("No inventory on hand for any item.")
+        pages.append("\n".join(lines))
+
+    return pages
+
+def _build_pdf(ctx):
+    buffer = BytesIO()
+    p = canvas.Canvas(buffer, pagesize=letter)
+    width, height = letter
+    y = height - 36
+    p.setFont("Helvetica", 12)
+
+    data = ctx["report_data"]
+
+    def write(line, y):
+        p.drawString(40, y, line)
+        return y - 18
+
+    y = write("👑 OWNER SUMMARY OVERVIEW", y)
+    y = write(f"Date Range: {fmt_date(ctx['start_date'].strftime('%d%m%Y'))} – {fmt_date(ctx['end_date'].strftime('%d%m%Y'))}", y)
+    y -= 10
+
+    pot = data["pot"]
+    y = write("💲 POT (USD Account)", y)
+    y = write(f"  Balance: {fmt_money(pot['balance'], 'USD')}", y)
+    y = write(f"  Inflows: {fmt_money(pot['inflows'], 'USD')}", y)
+    y = write(f"  Outflows: {fmt_money(pot['outflows'], 'USD')}", y)
+    y = write(f"  Net Change: {fmt_money(pot['net'], 'USD')}", y)
+    y -= 10
+
+    y = write("🛒 SALES (by item)", y)
+    if any(data["sales_by_store_item"].values()):
+        for store_id, items in data["sales_by_store_item"].items():
+            store = secure_db.table("stores").get(doc_id=store_id) or {"name": f"Store {store_id}"}
+            for item_id, v in items.items():
+                y = write(f"  - {store['name']}: {v['units']} units [item {item_id}] | {fmt_money(v['value'], 'USD')}", y)
+    else:
+        y = write("  No sales in this period.", y)
+    y -= 10
+
+    y = write("💰 PAYMENTS RECEIVED", y)
+    if data["payments_by_currency"]:
+        for cur, group in data["payments_by_currency"].items():
+            y = write(f"{cur}: {fmt_money(group['local'], cur)} | {fmt_money(group['usd'], 'USD')}", y)
+        y = write(f"\nTotal USD Received (all currencies): {fmt_money(data['total_usd_received'], 'USD')}", y)
+    else:
+        y = write("No payments received in this period.", y)
+        y = write(f"\nTotal USD Received (all currencies): $0.00", y)
+    y -= 10
+
+    y = write("💸 PAYOUTS TO PARTNERS", y)
+    y = write(f"  Total USD Paid Out: {fmt_money(data['total_usd_paid'], 'USD')}", y)
+    if data["total_usd_paid"] == 0:
+        y = write("  (No payouts this period.)", y)
+    else:
+        y = write("  (Payouts are cross-checked in diagnostics log.)", y)
+    y -= 10
+
+    y = write("📦 INVENTORY (for period)", y)
+    if data["inventory_by_item"]:
+        for item_id, v in data["inventory_by_item"].items():
+            y = write(f"  {item_id}: {v['units']} units = {fmt_money(v['market'], 'USD')}", y)
+        y = write(f"  Total Inventory Value: {fmt_money(sum(v['market'] for v in data['inventory_by_item'].values()), 'USD')}", y)
+    else:
+        y = write("  No inventory movements in this period.", y)
+        y = write("  Total Inventory Value: $0.00", y)
+    if data["unreconciled"]:
+        y -= 10
+        y = write("⚠️ UNRECONCILED INVENTORY", y)
+        for item_id, v in data["unreconciled"].items():
+            y = write(f"  - {item_id}: {v['units']} units ({fmt_money(v['market'], 'USD')})", y)
+    y = write("📦 CURRENT INVENTORY (ALL TIME)", y)
+    if data["current_inventory_all_time"]:
+        for item_id, v in data["current_inventory_all_time"].items():
+            y = write(f"  {item_id}: {v['units']} units = {fmt_money(v['market'], 'USD')}", y)
+        y = write(f"  Total Inventory Value (all time): {fmt_money(sum(v['market'] for v in data['current_inventory_all_time'].values()), 'USD')}", y)
+    else:
+        y = write("  No inventory on hand (all time).", y)
+        y = write("  Total Inventory Value (all time): $0.00", y)
+    y -= 10
+
+    y = write("📦 INVENTORY ON HAND (by Store and Type)", y)
+    store_inventory = data.get("store_inventory_by_item", {})
+    owner_totals = data.get("owner_inventory_totals", {})
+    if store_inventory:
+        for store_id, items in store_inventory.items():
+            store = secure_db.table("stores").get(doc_id=store_id) or {"name": f"Store {store_id}"}
+            for item_id, v in items.items():
+                y = write(f"{store['name']} | Item {item_id}: {v['units']} units = {fmt_money(v['market'], 'USD')}", y)
+    else:
+        y = write("No inventory on hand in any store.", y)
+    y = write("OWNER TOTALS BY ITEM:", y)
+    if owner_totals:
+        for item_id, v in owner_totals.items():
+            y = write(f"Item {item_id}: {v['units']} units = {fmt_money(v['market'], 'USD')}", y)
+    else:
+        y = write("No inventory on hand for any item.", y)
+    y -= 10
+
+    y = write("📉 EXPENSES", y)
+    if data["expenses"]:
+        for e in data["expenses"]:
+            y = write(f"  {fmt_date(e['date'])}: {fmt_money(abs(e['amount']), e['currency'])}", y)
+        y = write(f"  Total Expenses: {fmt_money(data['total_expenses'], 'USD')}", y)
+    else:
+        y = write("No expenses in this period.", y)
+        y = write(f"  Total Expenses: $0.00", y)
+    y -= 10
+
+    y = write("🏁 FINANCIAL POSITION (USD)", y)
+    inventory_value = sum(v["market"] for v in data["current_inventory_all_time"].values())
+    y = write(f"  POT Balance: {fmt_money(pot['balance'], 'USD')}", y)
+    y = write(f"  + Inventory: {fmt_money(inventory_value, 'USD')}", y)
+    y = write(f"  = NET POSITION: {fmt_money(data['net_position'], 'USD')}", y)
+    p.showPage()
+    p.save()
+    buffer.seek(0)
+    return buffer
 
 @require_unlock
-async def show_customer_report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    for k in ['customer_id', 'start_date', 'end_date', 'page', 'scope']:
-        context.user_data.pop(k, None)
-    logging.info("show_customer_report_menu called")
-    customers = secure_db.all("customers")
-    if not customers:
-        await update.callback_query.answer()
-        await update.callback_query.edit_message_text(
-            "⚠️ No customers found.",
-            reply_markup=InlineKeyboardMarkup([
-                [
-                    InlineKeyboardButton("🔙 Back", callback_data="customer_report_menu"),
-                    InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu"),
-                ]
-            ])
-        )
-        return ConversationHandler.END
-
-    buttons = [
-        InlineKeyboardButton(f"{c['name']} ({c['currency']})", callback_data=f"custrep_{c.doc_id}")
-        for c in customers
-    ]
-    grid = [buttons[i:i+2] for i in range(0, len(buttons), 2)]
-    grid.append([
-        InlineKeyboardButton("🔙 Back", callback_data="customer_report_menu"),
-        InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu"),
-    ])
-
-    await update.callback_query.answer()
-    await update.callback_query.edit_message_text(
-        "📄 Select a customer to view report:",
-        reply_markup=InlineKeyboardMarkup(grid)
-    )
-    return CUST_SELECT
-
-async def select_date_range(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logging.info("select_date_range: %s", update.callback_query.data)
-    await update.callback_query.answer()
-    cid = int(update.callback_query.data.split("_")[-1])
-    context.user_data["customer_id"] = cid
-
+async def show_owner_report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    _reset_state(context)
     kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📅 Weekly (Last 7 days)", callback_data="daterange_weekly")],
-        [InlineKeyboardButton("📆 Custom Range", callback_data="daterange_custom")],
-        [
-            InlineKeyboardButton("🔙 Back", callback_data="customer_report_menu"),
-            InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu"),
-        ],
+        [InlineKeyboardButton("📅 Last 7 days", callback_data="owner_range_week")],
+        [InlineKeyboardButton("📆 Custom Range", callback_data="owner_range_custom")],
+        [InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu")],
     ])
-    await update.callback_query.edit_message_text(
-        "Choose date range:", reply_markup=kb
-    )
-    return DATE_RANGE_SELECT
+    await update.callback_query.answer()
+    await update.callback_query.edit_message_text("Choose period:", reply_markup=kb)
+    return OWNER_DATE_RANGE_SELECT
 
-async def get_custom_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logging.info("get_custom_date")
+async def owner_custom_date_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     await update.callback_query.edit_message_text(
-        "📅 Enter start date (DDMMYYYY):",
-        reply_markup=InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton("🔙 Back", callback_data="customer_report_menu"),
-                InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu"),
-            ]
-        ])
+        "Enter start date DDMMYYYY:",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu")]])
     )
-    return CUSTOM_DATE_INPUT
+    return OWNER_CUSTOM_DATE_INPUT
 
-async def save_custom_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logging.info("save_custom_date: %s", update.message.text)
-    text = update.message.text.strip()
+async def owner_save_custom_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    txt = update.message.text.strip()
     try:
-        start_date = datetime.strptime(text, "%d%m%Y")
+        sd = datetime.strptime(txt, "%d%m%Y")
     except ValueError:
-        await update.message.reply_text("❌ Invalid format. Enter date as DDMMYYYY.")
-        return CUSTOM_DATE_INPUT
-
-    context.user_data["start_date"] = start_date
+        await update.message.reply_text("❌ Format DDMMYYYY please.")
+        return OWNER_CUSTOM_DATE_INPUT
+    context.user_data["start_date"] = sd
     context.user_data["end_date"] = datetime.now()
-    return await choose_report_scope(update, context)
+    context.user_data["page"] = 0
+    context.user_data["report_data"] = _collect_report_data(sd, datetime.now())
+    return await owner_show_report(update, context)
 
-async def choose_report_scope(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    data = None
-    if getattr(update, "callback_query", None):
-        await update.callback_query.answer()
-        data = update.callback_query.data
-    elif getattr(update, "message", None):
-        data = "custom_date_message"
-
-    logging.info("choose_report_scope: %s", data)
-
-    if data == "daterange_weekly":
+async def owner_choose_scope(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.callback_query.data == "owner_range_week":
         context.user_data["start_date"] = datetime.now() - timedelta(days=7)
         context.user_data["end_date"] = datetime.now()
-    elif data == "daterange_custom":
-        return await get_custom_date(update, context)
-
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📝 Full Report", callback_data="scope_full")],
-        [InlineKeyboardButton("🛒 Sales Only", callback_data="scope_sales")],
-        [InlineKeyboardButton("💵 Payments Only", callback_data="scope_payments")],
-        [
-            InlineKeyboardButton("🔙 Back", callback_data="customer_report_menu"),
-            InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu"),
-        ],
-    ])
-    if getattr(update, "callback_query", None):
-        await update.callback_query.edit_message_text("Choose report scope:", reply_markup=kb)
-    else:
-        await update.message.reply_text("Choose report scope:", reply_markup=kb)
-    return REPORT_SCOPE_SELECT
-
-def _paginate(items, page):
-    start = page * _PAGE_SIZE
-    return items[start:start + _PAGE_SIZE], len(items)
-
-def _filter_ledger(entries, start_date, end_date):
-    out = []
-    for e in entries:
-        try:
-            d = datetime.strptime(e["date"], "%d%m%Y")
-        except Exception:
-            continue
-        if start_date <= d <= end_date:
-            out.append(e)
-    return out
+    elif update.callback_query.data == "owner_range_custom":
+        return await owner_custom_date_input(update, context)
+    context.user_data["page"] = 0
+    context.user_data["report_data"] = _collect_report_data(context.user_data["start_date"], context.user_data["end_date"])
+    return await owner_show_report(update, context)
 
 @require_unlock
-async def show_customer_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logging.info("show_customer_report: page=%s scope=%s", context.user_data.get("page"), context.user_data.get("scope"))
-    await update.callback_query.answer()
-    scope = update.callback_query.data.split("_")[-1]
-    context.user_data["scope"] = scope
-    context.user_data.setdefault("page", 0)
+async def owner_show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    ctx = context.user_data
+    pages = []
+    for i in range(7):  # 7 pages/sections
+        ctx_page_backup = ctx.get("page", 0)
+        ctx["page"] = i
+        section = _render_page(ctx)
+        if section:
+            pages.append(section[0])
+        ctx["page"] = ctx_page_backup
 
-    cid = context.user_data["customer_id"]
-    start_date = context.user_data["start_date"]
-    end_date = context.user_data["end_date"]
-    page = context.user_data["page"]
-    customer = secure_db.table("customers").get(doc_id=cid)
-    currency = customer['currency']
+    page = ctx.get("page", 0)
 
-    # --- PATCH: Pull from both customer and general account_types ---
-    ledger_entries = get_ledger("customer", cid) + get_ledger("general", cid)
-    filtered_entries = _filter_ledger(ledger_entries, start_date, end_date)
-    sales = [e for e in filtered_entries if e["entry_type"] == "sale"]
-    payments = [e for e in filtered_entries if e["entry_type"] == "payment"]
-
-    total_sales = sum(-e["amount"] for e in sales)
-    total_payments_local = sum(e["amount"] for e in payments)
-    balance = get_balance("customer", cid)
-
-    sales_page, sales_count = _paginate(sales, page) if scope in ["full", "sales"] else ([], 0)
-    payments_page, payments_count = _paginate(payments, page) if scope in ["full", "payments"] else ([], 0)
-
-    lines = [
-        f"📄 *Report — {customer['name']}*",
-        f"Period: {fmt_date(start_date.strftime('%d%m%Y'))} → {fmt_date(end_date.strftime('%d%m%Y'))}",
-        f"Currency: {currency}\n"
-    ]
-
-    if scope in ["full", "sales"]:
-        lines.append("🛒 *Sales*")
-        if sales_page:
-            for s in sales_page:
-                qty = s.get("quantity", 1)
-                price = s.get("unit_price", 0)
-                total_val = qty * price
-                lines.append(
-                    f"• {fmt_date(s['date'])}: {qty} × {fmt_money(price, currency)} = {fmt_money(total_val, currency)}"
-                )
-        else:
-            lines.append("  (No sales on this page)")
-        if page == 0:
-            lines.append(f"📊 *Total Sales:* {fmt_money(total_sales, currency)}")
-
-    if scope in ["full", "payments"]:
-        lines.append("\n💵 *Payments*")
-        if payments_page:
-            for p in payments_page:
-                line = f"• {fmt_date(p['date'])}: {fmt_money(p['amount'], currency)}"
-                if p.get('note'):
-                    line += f"  📝 {p['note']}"
-                lines.append(line)
-        else:
-            lines.append("  (No payments on this page)")
-        if page == 0:
-            lines.append(f"📊 *Total Payments:* {fmt_money(total_payments_local, currency)}")
-
-    lines.append(f"\n📊 *Current Balance:* {fmt_money(balance, currency)}")
-
-    nav = []
+    kb = []
     if page > 0:
-        nav.append(InlineKeyboardButton("⬅️ Prev", callback_data="page_prev"))
-    if (page + 1) * _PAGE_SIZE < (sales_count if scope in ['full','sales'] else payments_count):
-        nav.append(InlineKeyboardButton("➡️ Next", callback_data="page_next"))
-    nav.append(InlineKeyboardButton("📄 Export PDF", callback_data="export_pdf"))
-    nav.append(InlineKeyboardButton("🔙 Back", callback_data="customer_report_menu"))
-    nav.append(InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu"))
+        kb.append(InlineKeyboardButton("⬅️ Prev", callback_data="owner_page_prev"))
+    if page < len(pages) - 1:
+        kb.append(InlineKeyboardButton("➡️ Next", callback_data="owner_page_next"))
+    kb.append(InlineKeyboardButton("📄 Export PDF", callback_data="owner_export_pdf"))
+    kb.append(InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu"))
 
     await update.callback_query.edit_message_text(
-        "\n".join(lines),
-        reply_markup=InlineKeyboardMarkup([nav]),
+        pages[page],
+        reply_markup=InlineKeyboardMarkup([kb]),
         parse_mode="Markdown"
     )
-    return REPORT_PAGE
+    return OWNER_REPORT_PAGE
 
 @require_unlock
-async def paginate_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logging.info("paginate_report: %s", update.callback_query.data)
-    await update.callback_query.answer()
-    if update.callback_query.data == "page_next":
-        context.user_data['page'] += 1
-    elif update.callback_query.data == "page_prev":
-        context.user_data['page'] = max(0, context.user_data.get('page', 0) - 1)
-    return await show_customer_report(update, context)
+async def owner_paginate(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.callback_query.data == "owner_page_next":
+        context.user_data["page"] += 1
+    elif update.callback_query.data == "owner_page_prev":
+        context.user_data["page"] = max(0, context.user_data["page"] - 1)
+    return await owner_show_report(update, context)
 
 @require_unlock
-async def export_pdf_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.answer()
-    cid = context.user_data.get('customer_id')
-    customer = secure_db.table('customers').get(doc_id=cid)
-    start = context.user_data.get('start_date')
-    end = context.user_data.get('end_date')
-    scope = context.user_data.get('scope')
-    currency = customer['currency']
+async def owner_export_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer("Generating PDF …")
+    ctx = context.user_data
+    pdf_buf = _build_pdf(ctx)
+    pdf_file = InputFile(pdf_buf, filename=f"Owner_Summary_{datetime.now().strftime('%Y%m%d')}.pdf")
+    await update.callback_query.message.reply_document(pdf_file, caption="Owner Summary PDF")
+    return await owner_show_report(update, context)
 
-    ledger_entries = get_ledger("customer", cid) + get_ledger("general", cid)
-    filtered_entries = _filter_ledger(ledger_entries, start, end)
-    sales = [e for e in filtered_entries if e["entry_type"] == "sale"]
-    payments = [e for e in filtered_entries if e["entry_type"] == "payment"]
-
-    from io import BytesIO
-    from reportlab.lib.pagesizes import letter
-    from reportlab.pdfgen import canvas
-
-    buffer = BytesIO()
-    pdf = canvas.Canvas(buffer, pagesize=letter)
-    width, height = letter
-    y = height - 50
-
-    pdf.setFont('Helvetica-Bold', 14)
-    pdf.drawString(50, y, f"Report — {customer['name']}")
-    y -= 20
-    pdf.setFont('Helvetica', 10)
-    pdf.drawString(50, y, f"Period: {fmt_date(start.strftime('%d%m%Y'))} → {fmt_date(end.strftime('%d%m%Y'))}")
-    y -= 15
-    pdf.drawString(50, y, f"Currency: {currency}")
-    y -= 30
-
-    if scope in ('full','sales'):
-        pdf.setFont('Helvetica-Bold', 12)
-        pdf.drawString(50, y, 'Sales:')
-        y -= 20
-        pdf.setFont('Helvetica', 10)
-        for s in sales:
-            qty = s.get("quantity", 1)
-            price = s.get("unit_price", 0)
-            total_val = qty * price
-            line = f"{fmt_date(s['date'])}: {qty} × {fmt_money(price, currency)} = {fmt_money(total_val, currency)}"
-            pdf.drawString(60, y, line)
-            y -= 15
-            if y<50:
-                pdf.showPage(); y=height-50
-        total_sales = sum(-s['amount'] for s in sales)
-        pdf.setFont('Helvetica-Bold',10)
-        pdf.drawString(50, y, f"Total Sales: {fmt_money(total_sales, currency)}")
-        y -= 30
-
-    if scope in ('full','payments'):
-        pdf.setFont('Helvetica-Bold', 12)
-        pdf.drawString(50, y, 'Payments:')
-        y -= 20
-        pdf.setFont('Helvetica', 10)
-        for p in payments:
-            line = f"{fmt_date(p['date'])}: {fmt_money(p['amount'], currency)}"
-            if p.get('note'):
-                line += f"  Note: {p['note']}"
-            pdf.drawString(60, y, line)
-            y -= 15
-            if y<50:
-                pdf.showPage(); y=height-50
-        total_local = sum(p['amount'] for p in payments)
-        pdf.setFont('Helvetica-Bold',10)
-        pdf.drawString(50, y, f"Total Payments: {fmt_money(total_local, currency)}")
-        y -= 30
-
-    balance = get_balance("customer", cid)
-    pdf.setFont('Helvetica-Bold',12)
-    pdf.drawString(50, y, f"Current Balance: {fmt_money(balance, currency)}")
-
-    pdf.showPage()
-    pdf.save()
-    buffer.seek(0)
-
-    await update.callback_query.message.reply_document(
-        document=buffer,
-        filename=f"report_{customer['name']}_{start.strftime('%Y%m%d')}.pdf"
-    )
-    return REPORT_PAGE
-
-def register_customer_report_handlers(app):
-    logging.info("Registering customer_report handlers")
-    conv = ConversationHandler(
-        entry_points=[
-            CallbackQueryHandler(show_customer_report_menu, pattern="^rep_cust$"),
-            CallbackQueryHandler(show_customer_report_menu, pattern="^customer_report_menu$"),
-            CallbackQueryHandler(_goto_main_menu, pattern="^main_menu$"),
-        ],
-        states={
-            CUST_SELECT: [
-                CallbackQueryHandler(select_date_range, pattern="^custrep_"),
-                CallbackQueryHandler(show_customer_report_menu, pattern="^customer_report_menu$"),
-                CallbackQueryHandler(_goto_main_menu, pattern="^main_menu$"),
-            ],
-            DATE_RANGE_SELECT: [
-                CallbackQueryHandler(choose_report_scope, pattern="^daterange_"),
-                CallbackQueryHandler(show_customer_report_menu, pattern="^customer_report_menu$"),
-                CallbackQueryHandler(_goto_main_menu, pattern="^main_menu$"),
-            ],
-            CUSTOM_DATE_INPUT: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, save_custom_date),
-                CallbackQueryHandler(show_customer_report_menu, pattern="^customer_report_menu$"),
-                CallbackQueryHandler(_goto_main_menu, pattern="^main_menu$"),
-            ],
-            REPORT_SCOPE_SELECT: [
-                CallbackQueryHandler(show_customer_report, pattern="^scope_"),
-                CallbackQueryHandler(show_customer_report_menu, pattern="^customer_report_menu$"),
-                CallbackQueryHandler(_goto_main_menu, pattern="^main_menu$"),
-            ],
-            REPORT_PAGE: [
-                CallbackQueryHandler(paginate_report, pattern="^page_(prev|next)$"),
-                CallbackQueryHandler(export_pdf_report, pattern="^export_pdf$"),
-                CallbackQueryHandler(show_customer_report_menu, pattern="^customer_report_menu$"),
-                CallbackQueryHandler(_goto_main_menu, pattern="^main_menu$"),
-            ],
-        },
-        fallbacks=[],
-        per_message=False,
-    )
-    app.add_handler(conv)
+def register_owner_report_handlers(app):
+    app.add_handler(CallbackQueryHandler(show_owner_report_menu, pattern="^rep_owner$"))
+    app.add_handler(CallbackQueryHandler(owner_choose_scope, pattern="^owner_range_"))
+    app.add_handler(CallbackQueryHandler(owner_paginate, pattern="^owner_page_"))
+    app.add_handler(CallbackQueryHandler(owner_export_pdf, pattern="^owner_export_pdf$"))
+    app.add_handler(CallbackQueryHandler(lambda u, c: None, pattern="^main_menu$"))
+    app.add_handler(MessageHandler(None, owner_save_custom_start))
