@@ -627,27 +627,30 @@ async def owner_choose_scope(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def owner_show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ctx = context.user_data
     pages = []
-    for i in range(7):
-        ctx_page_backup = ctx.get("page", 0)   # save current page
-        ctx["page"] = i
-        section = _render_page(ctx)
-        if section:
-           pages.append(section[0])
-    ctx["page"] = ctx_page_backup          # restore after page render
-    kb = []
-    if page > 0:
-        kb.append(InlineKeyboardButton("⬅️ Prev", callback_data="owner_page_prev"))
-    if page < len(pages) - 1:
-        kb.append(InlineKeyboardButton("➡️ Next", callback_data="owner_page_next"))
-    kb.append(InlineKeyboardButton("📄 Export PDF", callback_data="owner_export_pdf"))
-    kb.append(InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu"))
+for i in range(7):
+    ctx_page_backup = ctx.get("page", 0)
+    ctx["page"] = i
+    section = _render_page(ctx)
+    if section:
+        pages.append(section[0])
+    ctx["page"] = ctx_page_backup
 
-    await update.callback_query.edit_message_text(
-        pages[page],
-        reply_markup=InlineKeyboardMarkup([kb]),
-        parse_mode="Markdown"
-    )
-    return OWNER_REPORT_PAGE
+page = ctx.get("page", 0)  # <--- Move this line UP here, before you use 'page'
+
+kb = []
+if page > 0:
+    kb.append(InlineKeyboardButton("⬅️ Prev", callback_data="owner_page_prev"))
+if page < len(pages) - 1:
+    kb.append(InlineKeyboardButton("➡️ Next", callback_data="owner_page_next"))
+kb.append(InlineKeyboardButton("📄 Export PDF", callback_data="owner_export_pdf"))
+kb.append(InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu"))
+
+await update.callback_query.edit_message_text(
+    pages[page],
+    reply_markup=InlineKeyboardMarkup([kb]),
+    parse_mode="Markdown"
+)
+return OWNER_REPORT_PAGE
 
 @require_unlock
 async def owner_paginate(update: Update, context: ContextTypes.DEFAULT_TYPE):
