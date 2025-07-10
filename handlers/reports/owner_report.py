@@ -628,12 +628,12 @@ async def owner_show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ctx = context.user_data
     pages = []
     for i in range(7):
-    ctx_page_backup = ctx.get("page", 0)   # save current page
-    ctx["page"] = i
-    section = _render_page(ctx)
-    if section:
-        pages.append(section[0])
-    ctx["page"] = ctx_page_backu
+        ctx_page_backup = ctx.get("page", 0)   # save current page
+        ctx["page"] = i
+        section = _render_page(ctx)
+        if section:
+           pages.append(section[0])
+    ctx["page"] = ctx_page_backup          # restore after page render
     kb = []
     if page > 0:
         kb.append(InlineKeyboardButton("⬅️ Prev", callback_data="owner_page_prev"))
