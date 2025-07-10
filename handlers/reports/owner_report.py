@@ -10,10 +10,10 @@ from secure_db import secure_db
 from handlers.reports.report_utils import (
     compute_customer_sales,
     compute_customer_payments,
-    compute_partner_sales,      # must exist in report_utils
+    compute_partner_sales,
     compute_payouts,
     compute_store_inventory,
-    compute_partner_inventory,  # must exist in report_utils
+    compute_partner_inventory,
 )
 
 OWNER_ACCOUNT_ID = "POT"
@@ -21,13 +21,13 @@ OWNER_ACCOUNT_ID = "POT"
     SHOW_POSITION,
 ) = range(1)
 
-def get_last_market_price(sales_entries, stockin_entries, item_id):
-    # For now, just fallback to 1.0 if not available
-    relevant_sales = [e for e in sales_entries if e.get("item_id") == item_id]
+def get_last_market_price(all_sales, all_stockins, item_id):
+    # Use all sales and stockins from ALL stores for best market value accuracy
+    relevant_sales = [e for e in all_sales if e.get("item_id") == item_id]
     if relevant_sales:
         latest = sorted(relevant_sales, key=lambda x: (x.get("date", ""), x.get("timestamp", "")), reverse=True)[0]
         return latest.get("unit_price", latest.get("unit_cost", 1.0))
-    relevant_stockins = [e for e in stockin_entries if e.get("item_id") == item_id]
+    relevant_stockins = [e for e in all_stockins if e.get("item_id") == item_id]
     if relevant_stockins:
         latest = sorted(relevant_stockins, key=lambda x: (x.get("date", ""), x.get("timestamp", "")), reverse=True)[0]
         return latest.get("unit_price", 1.0)
@@ -54,41 +54,63 @@ async def show_owner_position(update: Update, context: ContextTypes.DEFAULT_TYPE
     cash_out = sum(abs(p.get('amount', 0)) for p in payouts)
     owner_cash_position = cash_in - cash_out
 
-    # --- Owner inventory value ---
-    owner_inventory_value = 0
+    # --- Aggregate owner inventory by item across all stores ---
+    owner_inventory_by_item = defaultdict(int)
     for store_id, items in store_inventory.items():
         for item_id, qty in items.items():
-            # Optionally: get last market price per item using all available data (improve as needed)
-            price = 1.0  # fallback
-            owner_inventory_value += qty * price
+            owner_inventory_by_item[item_id] += qty
 
-    # --- Partner inventory value ---
+    # --- Gather all sales and stockins for price lookup ---
+    all_sales_entries = []
+    all_stockin_entries = []
+    # Collect all sales (from all store/customer ledgers if you wish)
+    for store_id, item_sales in compute_store_sales(secure_db, get_ledger).items():
+        for sales_list in item_sales.values():
+            all_sales_entries.extend(sales_list)
+    # Optionally, add partner/customer sales as well if relevant for market
+    for cust_sales in customer_sales.values():
+        for sales_list in cust_sales.values():
+            all_sales_entries.extend(sales_list)
+    for partner_sales_dict in partner_sales.values():
+        for sales_list in partner_sales_dict.values():
+            all_sales_entries.extend(sales_list)
+    # Collect all stockins (from all stores)
+    for store_id, stockins in compute_store_inventory(secure_db, get_ledger).items():
+        for item_id, qty in stockins.items():
+            # You might want to get entries not just counts here; adjust as needed for your data
+            pass # if you have stockin entry lists elsewhere, gather here
+
+    # --- Calculate market value by item ---
+    total_owner_inventory_value = 0
+    inventory_lines = []
+    for item_id, qty in owner_inventory_by_item.items():
+        if qty > 0:
+            price = get_last_market_price(all_sales_entries, [], item_id)
+            value = qty * price
+            total_owner_inventory_value += value
+            inventory_lines.append(f"    - {item_id}: {qty} units × {fmt_money(price, 'USD')} = {fmt_money(value, 'USD')}")
+    if not inventory_lines:
+        inventory_lines.append("    (No inventory)")
+
+    # --- Partner inventory value and reconciliation ---
     partner_inventory_value = 0
     for partner_id, items in partner_inventory.items():
         for item_id, qty in items.items():
-            price = 1.0  # fallback
+            price = get_last_market_price(all_sales_entries, [], item_id)
             partner_inventory_value += qty * price
 
-    # --- Inventory reconciliation ---
-    total_store_units = sum(sum(items.values()) for items in store_inventory.values())
-    total_partner_units = sum(sum(items.values()) for items in partner_inventory.values())
-    total_inventory_units = total_store_units + total_partner_units
-
-    # (Optional) Expected inventory: total stock-ins minus total sales (customer + partner)
-    # You can implement this logic for deep reconciliation
-
     # --- Net position ---
-    net_position = owner_cash_position + owner_inventory_value
+    net_position = owner_cash_position + total_owner_inventory_value
 
     # --- Output ---
     lines = []
     lines.append(f"📊 **Owner Financial Position** 📊")
     lines.append(f"• Cash Position (POT): {fmt_money(owner_cash_position, 'USD')}")
-    lines.append(f"• Owner Inventory Value: {fmt_money(owner_inventory_value, 'USD')}")
+    lines.append(f"• Owner Inventory (by item):")
+    lines += inventory_lines
+    lines.append(f"• Owner Inventory Total Market Value: {fmt_money(total_owner_inventory_value, 'USD')}")
     lines.append(f"• Partner Inventory Value: {fmt_money(partner_inventory_value, 'USD')}")
-    lines.append(f"• Total Inventory Units (store+partner): {total_inventory_units}")
     lines.append(f"• Net Position (Cash + Inventory): {fmt_money(net_position, 'USD')}")
-    lines.append("\n[Details on customer sales, partner sales, payouts, etc. can be shown below if desired]")
 
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("🔄 Refresh", callback_data="rep_owner")],
