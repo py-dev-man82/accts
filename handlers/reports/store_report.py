@@ -210,27 +210,27 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sledger = get_ledger("store", sid)
     handling_fees = [e for e in sledger if e.get("entry_type") == "handling_fee" and _between(e.get("date", ""), start, end)]
 
-    # Combine, sort latest first
-    all_sales = store_sales + handling_fees
-    all_sales_sorted = sorted(all_sales, key=lambda x: (x.get("date", ""), x.get("timestamp", "")), reverse=True)
+    # Sort and format sales and fees as separate sections
+    sales_sorted = sorted(store_sales, key=lambda x: (x.get("date", ""), x.get("timestamp", "")), reverse=True)
+    fees_sorted  = sorted(handling_fees, key=lambda x: (x.get("date", ""), x.get("timestamp", "")), reverse=True)
 
-    # Format sales lines
     sales_lines = []
-    for s in all_sales_sorted:
-        if s.get("entry_type") == "sale":
-            qty = s.get('quantity', 0)
-            price = s.get('unit_price', s.get('unit_cost', 0))
-            sales_lines.append(
-                f"• {fmt_date(s['date'])}: [{s.get('item_id','?')}] {qty} × {fmt_money(price, cur)} = {fmt_money(abs(qty * price), cur)}"
-            )
-        elif s.get("entry_type") == "handling_fee":
-            qty = abs(s.get('quantity', 0)) or 1
-            amt = s.get('amount', 0)
-            unit_fee = amt / qty if qty else amt
-            item = s.get('item_id', '?')
-            sales_lines.append(
-                f"• {fmt_date(s['date'])}: [Store Fee] [{item}] {qty} × {fmt_money(unit_fee, cur)} = {fmt_money(amt, cur)}"
-            )
+    for s in sales_sorted:
+        qty = s.get('quantity', 0)
+        price = s.get('unit_price', s.get('unit_cost', 0))
+        sales_lines.append(
+            f"• {fmt_date(s['date'])}: [{s.get('item_id','?')}] {qty} × {fmt_money(price, cur)} = {fmt_money(abs(qty * price), cur)}"
+        )
+
+    fee_lines = []
+    for f in fees_sorted:
+        qty = abs(f.get('quantity', 0)) or 1
+        amt = f.get('amount', 0)
+        unit_fee = amt / qty if qty else amt
+        item = f.get('item_id', '?')
+        fee_lines.append(
+            f"• {fmt_date(f['date'])}: [{item}] {qty} × {fmt_money(unit_fee, cur)} = {fmt_money(amt, cur)}"
+        )
 
     # Units sold: all customer/store_customer sales for this store
     unit_summary = []
@@ -244,9 +244,10 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for iid, sums in item_totals.items():
         unit_summary.append(f"- [{iid}] : {sums['units']} units, {fmt_money(sums['value'], cur)}")
 
-    # Total Sales
-    total_sales = sum(abs(s.get('quantity', 0) * s.get('unit_price', s.get('unit_cost', 0))) for s in store_sales) \
-        + sum(abs(s.get('amount', 0)) for s in handling_fees)
+    # Totals for Sales, Fees, Grand Total
+    total_sales_only = sum(abs(s.get('quantity', 0) * s.get('unit_price', s.get('unit_cost', 0))) for s in store_sales)
+    total_fees_only = sum(abs(f.get('amount', 0)) for f in handling_fees)
+    grand_total = total_sales_only + total_fees_only
 
     # ----- PAYMENTS -----
     payments = [
@@ -319,16 +320,21 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
             current_stock_lines.append(f"   - [{item}] {qty} × {fmt_money(mp, cur)} = {fmt_money(val, cur)}")
             stock_value += val
 
-    balance = total_sales - total_pay_local - total_all_expenses
+    balance = grand_total - total_pay_local - total_all_expenses
 
     lines = []
     if ctx["scope"] in ("full", "sales"):
         lines.append("🛒 Sales")
         lines += sales_lines
         lines.append("")
+        lines.append("💸 Store Fees")
+        lines += fee_lines
+        lines.append("")
         lines.append("📦 Units Sold (by item):")
         lines += unit_summary
-        lines.append(f"\n📊 Total Sales: {fmt_money(total_sales, cur)}\n")
+        lines.append(f"\n📊 Total Sales: {fmt_money(total_sales_only, cur)}")
+        lines.append(f"📊 Total Store Fees: {fmt_money(total_fees_only, cur)}")
+        lines.append(f"📊 Grand Total: {fmt_money(grand_total, cur)}\n")
     if ctx["scope"] in ("full", "payments"):
         lines.append("💵 Payments")
         lines += payment_lines
@@ -343,7 +349,7 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
             lines += current_stock_lines
         lines.append(f"\n📊 Stock Value: {fmt_money(stock_value, cur)}\n")
         lines.append("📊 Financial Position")
-        lines.append(f"Balance (S − P − E): {fmt_money(balance, cur)}")
+        lines.append(f"Balance (S + Fees − P − E): {fmt_money(balance, cur)}")
         lines.append(f"Inventory Value:     {fmt_money(stock_value, cur)}")
         lines.append("────────────────────────────────────")
         lines.append(f"Total Position:      {fmt_money(balance + stock_value, cur)}")
