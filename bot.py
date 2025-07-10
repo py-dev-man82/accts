@@ -127,6 +127,10 @@ async def run_bot():
     )
     app = ApplicationBuilder().token(config.BOT_TOKEN).build()
 
+    # Admin commands — put these at the top for highest priority!
+    app.add_handler(CommandHandler("restart", restart_bot))
+    app.add_handler(CommandHandler("kill",    kill_bot))
+
     # Root / back
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(start, pattern="^main_menu$"))
@@ -167,14 +171,9 @@ async def run_bot():
     register_owner_handlers(app)
     app.add_handler(CallbackQueryHandler(show_owner_menu, pattern="^owner_menu$"))
 
-    # Admin commands
-    app.add_handler(CommandHandler("restart", restart_bot))
-    app.add_handler(CommandHandler("kill",    kill_bot))
-
     # --- PATCH: Add these handlers for custom date input in reports ---
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, save_custom_start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, save_custom_start_store))
-    # 🆕 Owner report custom date handler
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, owner_save_custom_start))
 
     # Start polling
