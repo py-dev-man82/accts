@@ -157,10 +157,21 @@ def get_last_sale_price(ledger, item_id):
         return latest.get("unit_price", latest.get("unit_cost", 0))
     return 0
 
-def _collect_report_data(start, end):
-    # DIAGNOSTIC PRINTS (runs every report view)
-    owner_report_diagnostic(start, end, secure_db, get_ledger)
+def get_last_sale_price(sales, stockins, item_id):
+    relevant_sales = [e for e in sales if e.get("item_id") == item_id]
+    if relevant_sales:
+        # Get latest sale price
+        latest = sorted(relevant_sales, key=lambda x: (x.get("date", ""), x.get("timestamp", "")), reverse=True)[0]
+        return latest.get("unit_price", latest.get("unit_cost", 0))
+    else:
+        # Fallback to latest stock-in cost if no sale
+        relevant_stockins = [e for e in stockins if e.get("item_id") == item_id]
+        if relevant_stockins:
+            latest = sorted(relevant_stockins, key=lambda x: (x.get("date", ""), x.get("timestamp", "")), reverse=True)[0]
+            return latest.get("unit_cost", 0)
+    return 0
 
+def _collect_report_data(start, end):
     data = {}
 
     # POT = owner's USD account
@@ -193,7 +204,6 @@ def _collect_report_data(start, end):
                 sales_by_store_item[store_id][item_id]["units"] += qty
                 sales_by_store_item[store_id][item_id]["value"] += value
                 all_sales.append(s)
-
     data["sales_by_store_item"] = sales_by_store_item
 
     # PAYMENTS RECEIVED: group by person (customer/store)
@@ -228,56 +238,53 @@ def _collect_report_data(start, end):
     data["payouts_by_partner"] = payouts_by_partner
     data["total_usd_paid"] = total_usd_paid
 
-    # INVENTORY: per item, including unreconciled
-    inventory_by_item = defaultdict(lambda: {"units": 0, "market": 0.0})
-    unreconciled = {}
-    store_inventory = secure_db.table("store_inventory").all()
-    all_items = set(i["item_id"] for i in store_inventory)
-    # market price per item (last sale)
-    last_prices = {}
-    for item_id in all_items:
-        ledger_sales = [s for s in all_sales if s.get("item_id") == item_id]
-        if ledger_sales:
-            last_price = ledger_sales[-1].get("unit_price", ledger_sales[-1].get("unit_cost", 0))
-        else:
-            last_price = store_inventory[0].get("unit_cost", 0) if store_inventory else 0
-        last_prices[item_id] = last_price
-
-    for item in store_inventory:
-        item_id = item["item_id"]
-        qty = item["quantity"]
-        market_val = qty * last_prices.get(item_id, 0)
-        inventory_by_item[item_id]["units"] += qty
-        inventory_by_item[item_id]["market"] += market_val
-
-    # Recompute inventory from ledger for reconciliation
-    ledger_inv_by_item = defaultdict(float)
-    # store stockins
+    # LEDGER-BASED INVENTORY CALCULATION
+    ledger_inventory = defaultdict(lambda: {"units": 0, "market": 0.0})
+    all_stockins = []
     for store in all_stores:
         sledger = get_ledger("store", store.doc_id)
         for e in sledger:
-            if e.get("entry_type") == "stockin" and _between(e.get("date", ""), start, end):
-                ledger_inv_by_item[e.get("item_id")] += e.get("quantity", 0)
-    # partner stockins
+            if e.get("entry_type") == "stockin":
+                item_id = e.get("item_id")
+                qty = e.get("quantity", 0)
+                ledger_inventory[item_id]["units"] += qty
+                all_stockins.append(e)
     for partner in secure_db.all("partners"):
         pledger = get_ledger("partner", partner.doc_id)
         for e in pledger:
-            if e.get("entry_type") == "stockin" and _between(e.get("date", ""), start, end):
-                ledger_inv_by_item[e.get("item_id")] += e.get("quantity", 0)
-    # sales
-    for sale in all_sales:
-        ledger_inv_by_item[sale.get("item_id")] -= abs(sale.get("quantity", 0))
+            if e.get("entry_type") == "stockin":
+                item_id = e.get("item_id")
+                qty = e.get("quantity", 0)
+                ledger_inventory[item_id]["units"] += qty
+                all_stockins.append(e)
+    for c in all_customers:
+        cust_ledger = get_ledger("customer", c.doc_id)
+        for e in cust_ledger:
+            if e.get("entry_type") == "sale":
+                item_id = e.get("item_id")
+                qty = abs(e.get("quantity", 0))
+                ledger_inventory[item_id]["units"] -= qty
 
-    # Identify unreconciled inventory
-    for item_id in set(list(inventory_by_item.keys()) + list(ledger_inv_by_item.keys())):
-        actual = inventory_by_item[item_id]["units"]
-        expected = ledger_inv_by_item.get(item_id, 0)
+    # Market value per item (using last sale price or last stock-in cost)
+    for item_id in ledger_inventory.keys():
+        price = get_last_sale_price(all_sales, all_stockins, item_id)
+        ledger_inventory[item_id]["market"] = ledger_inventory[item_id]["units"] * price
+    data["inventory_by_item"] = ledger_inventory
+
+    # For audit only: unreconciled inventory (difference from store_inventory)
+    unreconciled = {}
+    store_inventory = secure_db.table("store_inventory").all()
+    inv_actual_by_item = defaultdict(float)
+    for item in store_inventory:
+        inv_actual_by_item[item['item_id']] += item['quantity']
+    for item_id in set(list(inv_actual_by_item.keys()) + list(ledger_inventory.keys())):
+        actual = inv_actual_by_item.get(item_id, 0)
+        expected = ledger_inventory.get(item_id, {}).get("units", 0)
         if abs(actual - expected) > 0.01:
             unreconciled[item_id] = {
                 "units": actual - expected,
-                "market": (actual - expected) * last_prices.get(item_id, 0)
+                "market": (actual - expected) * get_last_sale_price(all_sales, all_stockins, item_id)
             }
-    data["inventory_by_item"] = inventory_by_item
     data["unreconciled"] = unreconciled
 
     # EXPENSES
@@ -287,10 +294,14 @@ def _collect_report_data(start, end):
     data["total_expenses"] = total_expenses
 
     # FINANCIAL POSITION
-    net_position = pot_balance + sum(i["market"] for i in inventory_by_item.values())
+    net_position = pot_balance + sum(i["market"] for i in ledger_inventory.values())
     data["net_position"] = net_position
 
+    # Diagnostic print (shows all source data)
+    owner_report_diagnostic(start, end, secure_db, get_ledger, ledger_inventory)
+
     return data
+
 
 def _render_page(ctx):
     data = ctx["report_data"]
