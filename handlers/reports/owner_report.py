@@ -297,22 +297,21 @@ def _collect_report_data(start, end):
             sales_by_store_item[store_id][item_id]["value"] += value
     data["sales_by_store_item"] = sales_by_store_item
 
-    # PAYMENTS RECEIVED: sum/group by local currency from ALL customer ledgers
-payments_by_currency = defaultdict(lambda: {"local": 0.0, "usd": 0.0, "currency": ""})
-for customer in secure_db.all("customers"):
-    cledger = get_ledger("customer", customer.doc_id)
-    for e in cledger:
-        if e.get("entry_type") == "payment" and _between(e.get("date", ""), start, end):
-            cur = e.get("currency", "USD")
-            amt = e.get("amount", 0.0)
-            usd = e.get("usd_amt", 0.0)
-            payments_by_currency[cur]["local"] += amt
-            payments_by_currency[cur]["usd"] += usd
-            payments_by_currency[cur]["currency"] = cur
-total_usd_received = sum(grp["usd"] for grp in payments_by_currency.values())
-data["payments_by_currency"] = payments_by_currency
-data["total_usd_received"] = total_usd_received
-
+    # -- NEW: PAYMENTS RECEIVED FROM ALL CUSTOMER LEDGERS --
+    payments_by_currency = defaultdict(lambda: {"local": 0.0, "usd": 0.0, "currency": ""})
+    for customer in secure_db.all("customers"):
+        cledger = get_ledger("customer", customer.doc_id)
+        for e in cledger:
+            if e.get("entry_type") == "payment" and _between(e.get("date", ""), start, end):
+                cur = e.get("currency", "USD")
+                amt = e.get("amount", 0.0)
+                usd = e.get("usd_amt", 0.0)
+                payments_by_currency[cur]["local"] += amt
+                payments_by_currency[cur]["usd"] += usd
+                payments_by_currency[cur]["currency"] = cur
+    total_usd_received = sum(grp["usd"] for grp in payments_by_currency.values())
+    data["payments_by_currency"] = payments_by_currency
+    data["total_usd_received"] = total_usd_received
 
     payouts = [e for e in pot_ledger if e.get("entry_type") in ("payout", "payment_sent") and _between(e["date"], start, end)]
     total_usd_paid = sum(abs(e.get("usd_amt", e.get("amount", 0.0))) for e in payouts)
@@ -467,6 +466,7 @@ def _render_page(ctx):
 
     return pages
 
+# ... rest of your file (PDF export, handlers, etc) unchanged ...
 def _build_pdf(ctx):
     buffer = BytesIO()
     p = canvas.Canvas(buffer, pagesize=letter)
@@ -543,7 +543,6 @@ def _build_pdf(ctx):
         y = write("  Total Inventory Value (all time): $0.00", y)
     y -= 10
 
-    # Inventory on hand by store and item
     y = write("📦 INVENTORY ON HAND (by Store and Type)", y)
     store_inventory = data.get("store_inventory_by_item", {})
     owner_totals = data.get("owner_inventory_totals", {})
