@@ -174,7 +174,34 @@ def cross_check_payouts(secure_db, get_ledger, start, end):
         else:
             print(f"  ⚠️ Payout entry without related_id: {payout}")
 
+
+def debug_dump_payouts(secure_db, get_ledger, start, end):
+    print("\n[DEBUG] OWNER POT LEDGER PAYOUT ENTRIES:")
+    pot_ledger = get_ledger("owner", "POT")
+    for e in pot_ledger:
+        if e.get("entry_type") in ("payout", "payment_sent") and _between(e["date"], start, end):
+            partner_id = e.get("related_id")
+            partner_name = None
+            if partner_id:
+                try:
+                    partner = secure_db.table("partners").get(doc_id=int(partner_id))
+                    partner_name = partner.get("name") if partner else None
+                except Exception:
+                    partner_name = None
+            print(f"- Date: {e.get('date')}, Amount: {e.get('usd_amt', e.get('amount'))} USD, "
+                  f"PartnerID: {partner_id}, PartnerName: {partner_name}, Raw: {e}")
+
+    print("\n[DEBUG] ALL PARTNER LEDGER PAYOUT RECEIVED ENTRIES:")
+    for partner in secure_db.all("partners"):
+        pledger = get_ledger("partner", partner.doc_id)
+        for e in pledger:
+            if "payout" in e.get("entry_type", ""):
+                print(f"- Date: {e.get('date')}, Amount: {e.get('usd_amt', e.get('amount'))} USD, "
+                      f"PartnerName: {partner.get('name')}, Raw: {e}")
+    print("---- END OF DEBUG DUMP ----")
+
 def owner_report_diagnostic(start, end, secure_db, get_ledger):
+    debug_dump_payouts(secure_db, get_ledger, start, end)
     print("\n==== OWNER REPORT DIAGNOSTIC ====")
     print(f"DATE RANGE: {fmt_date(start.strftime('%d%m%Y'))} to {fmt_date(end.strftime('%d%m%Y'))}")
 
