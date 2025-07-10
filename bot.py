@@ -14,6 +14,8 @@ from telegram.ext import (
     CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
+    MessageHandler,
+    filters
 )
 
 # Core utilities
@@ -34,13 +36,19 @@ from handlers.reports.customer_report import register_customer_report_handlers
 from handlers.reports.partner_report  import (
     register_partner_report_handlers,
     show_partner_report_menu,
+    save_custom_start,
 )
-from handlers.reports.store_report    import (
+from handlers.reports.store_report import (
     register_store_report_handlers,
     show_store_report_menu,
+    save_custom_start as save_custom_start_store,
 )
-# 🆕 Owner Summary Report Module
-from handlers.reports.owner_report    import register_owner_report_handlers
+# 🆕 Owner Summary Report module
+from handlers.reports.owner_report import (
+    register_owner_report_handlers,
+    show_owner_report_menu,
+    owner_save_custom_start,
+)
 
 # 🆕  Owner module ––– enabled now
 from handlers.owner import register_owner_handlers, show_owner_menu
@@ -50,22 +58,14 @@ from handlers.owner import register_owner_handlers, show_owner_menu
 # ════════════════════════════════════════════════════════════
 @require_unlock
 async def restart_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message:
-        await update.message.reply_text("♻️ Bot is restarting…")
-    elif update.callback_query:
-        await update.callback_query.answer()
-        await update.callback_query.edit_message_text("♻️ Bot is restarting…")
+    await update.message.reply_text("♻️ Bot is restarting…")
     logging.warning("⚠️  Admin issued /restart — restarting bot.")
     subprocess.Popen([sys.executable, os.path.abspath(sys.argv[0]), "child"])
     raise SystemExit(0)
 
 @require_unlock
 async def kill_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message:
-        await update.message.reply_text("🛑 Bot is shutting down… it will auto-restart.")
-    elif update.callback_query:
-        await update.callback_query.answer()
-        await update.callback_query.edit_message_text("🛑 Bot is shutting down… it will auto-restart.")
+    await update.message.reply_text("🛑 Bot is shutting down… it will auto-restart.")
     logging.warning("⚠️  Admin issued /kill — shutting down cleanly.")
     raise SystemExit(0)
 
@@ -159,8 +159,9 @@ async def run_bot():
     app.add_handler(
         CallbackQueryHandler(show_store_report_menu, pattern="^rep_store$")
     )
-    # 🆕 Register Owner Summary report handler
+    # Owner Summary Report
     register_owner_report_handlers(app)
+    app.add_handler(CallbackQueryHandler(show_owner_report_menu, pattern="^rep_owner$"))
 
     # 🆕 Owner module registration
     register_owner_handlers(app)
@@ -169,6 +170,12 @@ async def run_bot():
     # Admin commands
     app.add_handler(CommandHandler("restart", restart_bot))
     app.add_handler(CommandHandler("kill",    kill_bot))
+
+    # --- PATCH: Add these handlers for custom date input in reports ---
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, save_custom_start))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, save_custom_start_store))
+    # 🆕 Owner report custom date handler
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, owner_save_custom_start))
 
     # Start polling
     await app.initialize()
