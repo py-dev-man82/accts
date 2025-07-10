@@ -139,6 +139,31 @@ def compute_store_and_owner_inventory(secure_db, get_ledger):
 
     return store_inventory, owner_totals
 
+def debug_dump_payouts(secure_db, get_ledger, start, end):
+    print("\n[DEBUG] OWNER POT LEDGER PAYOUT ENTRIES:")
+    pot_ledger = get_ledger("owner", "POT")
+    for e in pot_ledger:
+        if e.get("entry_type") in ("payout", "payment_sent") and _between(e["date"], start, end):
+            partner_id = e.get("related_id")
+            partner_name = None
+            if partner_id:
+                try:
+                    partner = secure_db.table("partners").get(doc_id=int(partner_id))
+                    partner_name = partner.get("name") if partner else None
+                except Exception:
+                    partner_name = None
+            print(f"- Date: {e.get('date')}, Amount: {e.get('usd_amt', e.get('amount'))} USD, "
+                  f"PartnerID: {partner_id}, PartnerName: {partner_name}, Raw: {e}")
+
+    print("\n[DEBUG] ALL PARTNER LEDGER PAYOUT RECEIVED ENTRIES:")
+    for partner in secure_db.all("partners"):
+        pledger = get_ledger("partner", partner.doc_id)
+        for e in pledger:
+            if "payout" in e.get("entry_type", ""):
+                print(f"- Date: {e.get('date')}, Amount: {e.get('usd_amt', e.get('amount'))} USD, "
+                      f"PartnerName: {partner.get('name')}, Raw: {e}")
+    print("---- END OF DEBUG DUMP ----")
+
 def cross_check_payouts(secure_db, get_ledger, start, end):
     pot_ledger = get_ledger("owner", "POT")
     payout_entries = [
@@ -173,32 +198,6 @@ def cross_check_payouts(secure_db, get_ledger, start, end):
                 print(f"  ⚠️ Payout related_id {partner_id} not found in partners table.")
         else:
             print(f"  ⚠️ Payout entry without related_id: {payout}")
-
-
-def debug_dump_payouts(secure_db, get_ledger, start, end):
-    print("\n[DEBUG] OWNER POT LEDGER PAYOUT ENTRIES:")
-    pot_ledger = get_ledger("owner", "POT")
-    for e in pot_ledger:
-        if e.get("entry_type") in ("payout", "payment_sent") and _between(e["date"], start, end):
-            partner_id = e.get("related_id")
-            partner_name = None
-            if partner_id:
-                try:
-                    partner = secure_db.table("partners").get(doc_id=int(partner_id))
-                    partner_name = partner.get("name") if partner else None
-                except Exception:
-                    partner_name = None
-            print(f"- Date: {e.get('date')}, Amount: {e.get('usd_amt', e.get('amount'))} USD, "
-                  f"PartnerID: {partner_id}, PartnerName: {partner_name}, Raw: {e}")
-
-    print("\n[DEBUG] ALL PARTNER LEDGER PAYOUT RECEIVED ENTRIES:")
-    for partner in secure_db.all("partners"):
-        pledger = get_ledger("partner", partner.doc_id)
-        for e in pledger:
-            if "payout" in e.get("entry_type", ""):
-                print(f"- Date: {e.get('date')}, Amount: {e.get('usd_amt', e.get('amount'))} USD, "
-                      f"PartnerName: {partner.get('name')}, Raw: {e}")
-    print("---- END OF DEBUG DUMP ----")
 
 def owner_report_diagnostic(start, end, secure_db, get_ledger):
     debug_dump_payouts(secure_db, get_ledger, start, end)
@@ -463,8 +462,6 @@ def _render_page(ctx):
 
     return pages
 
-# The rest of your file: _build_pdf, handler functions, ConversationHandlers, etc, remains unchanged!
-# If you need this expanded further to show those, let me know.
 def _build_pdf(ctx):
     buffer = BytesIO()
     p = canvas.Canvas(buffer, pagesize=letter)
@@ -627,30 +624,30 @@ async def owner_choose_scope(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def owner_show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ctx = context.user_data
     pages = []
-for i in range(7):
-    ctx_page_backup = ctx.get("page", 0)
-    ctx["page"] = i
-    section = _render_page(ctx)
-    if section:
-        pages.append(section[0])
-    ctx["page"] = ctx_page_backup
+    for i in range(7):  # 7 pages/sections
+        ctx_page_backup = ctx.get("page", 0)
+        ctx["page"] = i
+        section = _render_page(ctx)
+        if section:
+            pages.append(section[0])
+        ctx["page"] = ctx_page_backup
 
-page = ctx.get("page", 0)  # <--- Move this line UP here, before you use 'page'
+    page = ctx.get("page", 0)
 
-kb = []
-if page > 0:
-    kb.append(InlineKeyboardButton("⬅️ Prev", callback_data="owner_page_prev"))
-if page < len(pages) - 1:
-    kb.append(InlineKeyboardButton("➡️ Next", callback_data="owner_page_next"))
-kb.append(InlineKeyboardButton("📄 Export PDF", callback_data="owner_export_pdf"))
-kb.append(InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu"))
+    kb = []
+    if page > 0:
+        kb.append(InlineKeyboardButton("⬅️ Prev", callback_data="owner_page_prev"))
+    if page < len(pages) - 1:
+        kb.append(InlineKeyboardButton("➡️ Next", callback_data="owner_page_next"))
+    kb.append(InlineKeyboardButton("📄 Export PDF", callback_data="owner_export_pdf"))
+    kb.append(InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu"))
 
-await update.callback_query.edit_message_text(
-    pages[page],
-    reply_markup=InlineKeyboardMarkup([kb]),
-    parse_mode="Markdown"
-)
-return OWNER_REPORT_PAGE
+    await update.callback_query.edit_message_text(
+        pages[page],
+        reply_markup=InlineKeyboardMarkup([kb]),
+        parse_mode="Markdown"
+    )
+    return OWNER_REPORT_PAGE
 
 @require_unlock
 async def owner_paginate(update: Update, context: ContextTypes.DEFAULT_TYPE):
