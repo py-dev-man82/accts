@@ -28,7 +28,7 @@ def _between(date_str, start, end):
         return False
     return start <= dt <= end
 
-def owner_report_diagnostic(start, end, secure_db, get_ledger):
+def owner_report_diagnostic(start, end, secure_db, get_ledger, ledger_inventory):
     print("\n==== OWNER REPORT DIAGNOSTIC ====")
     print(f"DATE RANGE: {fmt_date(start.strftime('%d%m%Y'))} to {fmt_date(end.strftime('%d%m%Y'))}")
 
