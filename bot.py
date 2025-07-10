@@ -14,8 +14,6 @@ from telegram.ext import (
     CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
-    MessageHandler,
-    filters
 )
 
 # Core utilities
@@ -36,17 +34,16 @@ from handlers.reports.customer_report import register_customer_report_handlers
 from handlers.reports.partner_report  import (
     register_partner_report_handlers,
     show_partner_report_menu,
-    save_custom_start,
 )
-from handlers.reports.store_report import (
+from handlers.reports.store_report    import (
     register_store_report_handlers,
     show_store_report_menu,
-    save_custom_start as save_custom_start_store,
 )
+# 🆕 Owner Summary Report Module
+from handlers.reports.owner_report    import register_owner_report_handlers
 
 # 🆕  Owner module ––– enabled now
 from handlers.owner import register_owner_handlers, show_owner_menu
-
 
 # ════════════════════════════════════════════════════════════
 # Admin-only helper commands
@@ -58,13 +55,11 @@ async def restart_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     subprocess.Popen([sys.executable, os.path.abspath(sys.argv[0]), "child"])
     raise SystemExit(0)
 
-
 @require_unlock
 async def kill_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🛑 Bot is shutting down… it will auto-restart.")
     logging.warning("⚠️  Admin issued /kill — shutting down cleanly.")
     raise SystemExit(0)
-
 
 # ════════════════════════════════════════════════════════════
 # Menus
@@ -99,7 +94,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Main Menu: choose a section", reply_markup=kb
         )
 
-
 async def show_report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     kb = InlineKeyboardMarkup(
@@ -107,14 +101,13 @@ async def show_report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("📄 Customer Report", callback_data="rep_cust")],
             [InlineKeyboardButton("📄 Partner Report",  callback_data="rep_part")],
             [InlineKeyboardButton("📄 Store Report",    callback_data="rep_store")],
-            [InlineKeyboardButton("📄 Owner Summary",   callback_data="rep_owner")],
+            [InlineKeyboardButton("📄 Owner Summary",   callback_data="rep_owner")],   # <--- This triggers the new handler
             [InlineKeyboardButton("🔙 Back",            callback_data="main_menu")],
         ]
     )
     await update.callback_query.edit_message_text(
         "Reports: choose a type", reply_markup=kb
     )
-
 
 # ════════════════════════════════════════════════════════════
 # Main bot runner
@@ -158,7 +151,8 @@ async def run_bot():
     app.add_handler(
         CallbackQueryHandler(show_store_report_menu, pattern="^rep_store$")
     )
-    # ⬆️ This ensures only store report menu and flow handle store reports.
+    # 🆕 Register Owner Summary report handler
+    register_owner_report_handlers(app)
 
     # 🆕 Owner module registration
     register_owner_handlers(app)
@@ -167,10 +161,6 @@ async def run_bot():
     # Admin commands
     app.add_handler(CommandHandler("restart", restart_bot))
     app.add_handler(CommandHandler("kill",    kill_bot))
-
-    # --- PATCH: Add these handlers for custom date input in reports ---
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, save_custom_start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, save_custom_start_store))
 
     # Start polling
     await app.initialize()
@@ -182,7 +172,6 @@ async def run_bot():
         await app.updater.stop()
         await app.stop()
         await app.shutdown()
-
 
 # ════════════════════════════════════════════════════════════
 # Simple self-supervisor — restarts on crash
@@ -196,7 +185,6 @@ def main_supervisor():
             break
         logging.warning(f"⚠️  Bot crashed (exit {exit_code}) — restarting in 5 s …")
         time.sleep(5)
-
 
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "child":
