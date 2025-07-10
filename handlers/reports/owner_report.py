@@ -139,31 +139,6 @@ def compute_store_and_owner_inventory(secure_db, get_ledger):
 
     return store_inventory, owner_totals
 
-def debug_dump_payouts(secure_db, get_ledger, start, end):
-    print("\n[DEBUG] OWNER POT LEDGER PAYOUT ENTRIES:")
-    pot_ledger = get_ledger("owner", "POT")
-    for e in pot_ledger:
-        if e.get("entry_type") in ("payout", "payment_sent") and _between(e["date"], start, end):
-            partner_id = e.get("related_id")
-            partner_name = None
-            if partner_id:
-                try:
-                    partner = secure_db.table("partners").get(doc_id=int(partner_id))
-                    partner_name = partner.get("name") if partner else None
-                except Exception:
-                    partner_name = None
-            print(f"- Date: {e.get('date')}, Amount: {e.get('usd_amt', e.get('amount'))} USD, "
-                  f"PartnerID: {partner_id}, PartnerName: {partner_name}, Raw: {e}")
-
-    print("\n[DEBUG] ALL PARTNER LEDGER PAYOUT RECEIVED ENTRIES:")
-    for partner in secure_db.all("partners"):
-        pledger = get_ledger("partner", partner.doc_id)
-        for e in pledger:
-            if "payout" in e.get("entry_type", ""):
-                print(f"- Date: {e.get('date')}, Amount: {e.get('usd_amt', e.get('amount'))} USD, "
-                      f"PartnerName: {partner.get('name')}, Raw: {e}")
-    print("---- END OF DEBUG DUMP ----")
-
 def cross_check_payouts(secure_db, get_ledger, start, end):
     pot_ledger = get_ledger("owner", "POT")
     payout_entries = [
@@ -198,6 +173,32 @@ def cross_check_payouts(secure_db, get_ledger, start, end):
                 print(f"  ⚠️ Payout related_id {partner_id} not found in partners table.")
         else:
             print(f"  ⚠️ Payout entry without related_id: {payout}")
+
+
+def debug_dump_payouts(secure_db, get_ledger, start, end):
+    print("\n[DEBUG] OWNER POT LEDGER PAYOUT ENTRIES:")
+    pot_ledger = get_ledger("owner", "POT")
+    for e in pot_ledger:
+        if e.get("entry_type") in ("payout", "payment_sent") and _between(e["date"], start, end):
+            partner_id = e.get("related_id")
+            partner_name = None
+            if partner_id:
+                try:
+                    partner = secure_db.table("partners").get(doc_id=int(partner_id))
+                    partner_name = partner.get("name") if partner else None
+                except Exception:
+                    partner_name = None
+            print(f"- Date: {e.get('date')}, Amount: {e.get('usd_amt', e.get('amount'))} USD, "
+                  f"PartnerID: {partner_id}, PartnerName: {partner_name}, Raw: {e}")
+
+    print("\n[DEBUG] ALL PARTNER LEDGER PAYOUT RECEIVED ENTRIES:")
+    for partner in secure_db.all("partners"):
+        pledger = get_ledger("partner", partner.doc_id)
+        for e in pledger:
+            if "payout" in e.get("entry_type", ""):
+                print(f"- Date: {e.get('date')}, Amount: {e.get('usd_amt', e.get('amount'))} USD, "
+                      f"PartnerName: {partner.get('name')}, Raw: {e}")
+    print("---- END OF DEBUG DUMP ----")
 
 def owner_report_diagnostic(start, end, secure_db, get_ledger):
     debug_dump_payouts(secure_db, get_ledger, start, end)
@@ -275,41 +276,36 @@ def _collect_report_data(start, end):
         "net": net_change,
     }
 
-    # --- SALES: all customers and general ledger ---
     sales_by_store_item = defaultdict(lambda: defaultdict(lambda: {"units": 0, "value": 0.0}))
-    for customer in secure_db.all("customers"):
-        cust_ledger = get_ledger("customer", customer.doc_id)
-        for entry in cust_ledger:
-            if entry.get("entry_type") == "sale" and _between(entry.get("date", ""), start, end):
-                store_id = entry.get("store_id")
-                item_id = entry.get("item_id")
-                qty = abs(entry.get("quantity", 0))
-                value = abs(qty * entry.get("unit_price", entry.get("unit_cost", 0)))
+    for cust in secure_db.all("customers"):
+        cust_ledger = get_ledger("customer", cust.doc_id)
+        for e in cust_ledger:
+            if e.get("entry_type") == "sale" and _between(e.get("date", ""), start, end):
+                store_id = e.get("store_id")
+                item_id = e.get("item_id")
+                qty = abs(e.get("quantity", 0))
+                value = abs(qty * e.get("unit_price", e.get("unit_cost", 0)))
                 sales_by_store_item[store_id][item_id]["units"] += qty
                 sales_by_store_item[store_id][item_id]["value"] += value
     general_ledger = get_ledger("general", None)
-    for entry in general_ledger:
-        if entry.get("entry_type") == "sale" and _between(entry.get("date", ""), start, end):
-            store_id = entry.get("store_id")
-            item_id = entry.get("item_id")
-            qty = abs(entry.get("quantity", 0))
-            value = abs(qty * entry.get("unit_price", entry.get("unit_cost", 0)))
+    for e in general_ledger:
+        if e.get("entry_type") == "sale" and _between(e.get("date", ""), start, end):
+            store_id = e.get("store_id")
+            item_id = e.get("item_id")
+            qty = abs(e.get("quantity", 0))
+            value = abs(qty * e.get("unit_price", e.get("unit_cost", 0)))
             sales_by_store_item[store_id][item_id]["units"] += qty
             sales_by_store_item[store_id][item_id]["value"] += value
     data["sales_by_store_item"] = sales_by_store_item
 
-    # --------- PAYMENTS: from customer ledgers ---------
+    payments_ledger = get_ledger("owner", "POT")
+    payments_received = [e for e in payments_ledger if e.get("entry_type") == "payment_recv" and _between(e["date"], start, end)]
     payments_by_currency = defaultdict(lambda: {"local": 0.0, "usd": 0.0, "currency": ""})
-    for customer in secure_db.all("customers"):
-        cledger = get_ledger("customer", customer.doc_id)
-        for e in cledger:
-            if e.get("entry_type") == "payment" and _between(e.get("date", ""), start, end):
-                cur = e.get("currency", "USD")
-                amt = e.get("amount", 0.0)
-                usd = e.get("usd_amt", 0.0)
-                payments_by_currency[cur]["local"] += amt
-                payments_by_currency[cur]["usd"] += usd
-                payments_by_currency[cur]["currency"] = cur
+    for p in payments_received:
+        cur = p.get("currency", "USD")
+        payments_by_currency[cur]["local"] += p.get("amount", 0.0)
+        payments_by_currency[cur]["usd"] += p.get("usd_amt", 0.0)
+        payments_by_currency[cur]["currency"] = cur
     total_usd_received = sum(grp["usd"] for grp in payments_by_currency.values())
     data["payments_by_currency"] = payments_by_currency
     data["total_usd_received"] = total_usd_received
@@ -355,7 +351,6 @@ def _collect_report_data(start, end):
 
     return data
 
-# (Leave the rest of your file unchanged: _render_page, _build_pdf, handlers, etc.)
 def _render_page(ctx):
     data = ctx["report_data"]
     page = ctx.get("page", 0)
@@ -468,6 +463,8 @@ def _render_page(ctx):
 
     return pages
 
+# The rest of your file: _build_pdf, handler functions, ConversationHandlers, etc, remains unchanged!
+# If you need this expanded further to show those, let me know.
 def _build_pdf(ctx):
     buffer = BytesIO()
     p = canvas.Canvas(buffer, pagesize=letter)
@@ -544,6 +541,7 @@ def _build_pdf(ctx):
         y = write("  Total Inventory Value (all time): $0.00", y)
     y -= 10
 
+    # Inventory on hand by store and item
     y = write("📦 INVENTORY ON HAND (by Store and Type)", y)
     store_inventory = data.get("store_inventory_by_item", {})
     owner_totals = data.get("owner_inventory_totals", {})
@@ -629,16 +627,13 @@ async def owner_choose_scope(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def owner_show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ctx = context.user_data
     pages = []
-    for i in range(7):  # 7 pages/sections
-        ctx_page_backup = ctx.get("page", 0)
-        ctx["page"] = i
-        section = _render_page(ctx)
-        if section:
-            pages.append(section[0])
-        ctx["page"] = ctx_page_backup
-
-    page = ctx.get("page", 0)
-
+    for i in range(7):
+    ctx_page_backup = ctx.get("page", 0)   # save current page
+    ctx["page"] = i
+    section = _render_page(ctx)
+    if section:
+        pages.append(section[0])
+    ctx["page"] = ctx_page_backu
     kb = []
     if page > 0:
         kb.append(InlineKeyboardButton("⬅️ Prev", callback_data="owner_page_prev"))
