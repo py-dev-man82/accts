@@ -1,4 +1,5 @@
 from collections import defaultdict
+from datetime import datetime
 
 def compute_store_inventory(secure_db, get_ledger):
     inventory = {}
@@ -48,7 +49,6 @@ def compute_store_handling_fees(secure_db, get_ledger, start=None, end=None):
     return fees
 
 def compute_store_payments(secure_db, get_ledger, store_customer_ids=None, start=None, end=None):
-    # store_customer_ids: dict[store_id] = [customer_ids]
     payments = defaultdict(list)
     for store in secure_db.all("stores"):
         cust_ids = []
@@ -117,3 +117,19 @@ def compute_store_stockins(secure_db, get_ledger, start=None, end=None):
                             continue
                     stockins[store.doc_id].append(e)
     return stockins
+
+def compute_payouts(secure_db, get_ledger, start=None, end=None):
+    payouts = []
+    for partner in secure_db.all("partners"):
+        for e in get_ledger("partner", partner.doc_id):
+            if e.get("entry_type") in ("payout", "payment_sent"):
+                if start and end:
+                    dt = e.get("date", "")
+                    try:
+                        dt_obj = datetime.strptime(dt, "%d%m%Y")
+                        if not (start <= dt_obj <= end):
+                            continue
+                    except Exception:
+                        continue
+                payouts.append(e)
+    return payouts
