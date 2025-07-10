@@ -14,6 +14,19 @@ def compute_store_inventory(secure_db, get_ledger):
         inventory[store.doc_id] = dict(stock)
     return inventory
 
+def compute_partner_inventory(secure_db, get_ledger):
+    inventory = {}
+    for partner in secure_db.all("partners"):
+        stock = defaultdict(int)
+        for e in get_ledger("partner", partner.doc_id):
+            item_id = e.get("item_id", "?")
+            if e.get("entry_type") == "stockin":
+                stock[item_id] += e.get("quantity", 0)
+            elif e.get("entry_type") == "sale":
+                stock[item_id] -= abs(e.get("quantity", 0))
+        inventory[partner.doc_id] = dict(stock)
+    return inventory
+
 def compute_store_sales(secure_db, get_ledger, start=None, end=None):
     sales = defaultdict(lambda: defaultdict(list))
     for store in secure_db.all("stores"):
@@ -29,6 +42,23 @@ def compute_store_sales(secure_db, get_ledger, start=None, end=None):
                         continue
                 item_id = e.get("item_id", "?")
                 sales[store.doc_id][item_id].append(e)
+    return sales
+
+def compute_partner_sales(secure_db, get_ledger, start=None, end=None):
+    sales = defaultdict(lambda: defaultdict(list))
+    for partner in secure_db.all("partners"):
+        for e in get_ledger("partner", partner.doc_id):
+            if e.get("entry_type") == "sale":
+                if start and end:
+                    dt = e.get("date", "")
+                    try:
+                        dt_obj = datetime.strptime(dt, "%d%m%Y")
+                        if not (start <= dt_obj <= end):
+                            continue
+                    except Exception:
+                        continue
+                item_id = e.get("item_id", "?")
+                sales[partner.doc_id][item_id].append(e)
     return sales
 
 def compute_store_handling_fees(secure_db, get_ledger, start=None, end=None):
@@ -135,10 +165,6 @@ def compute_payouts(secure_db, get_ledger, start=None, end=None):
     return payouts
 
 def compute_customer_sales(secure_db, get_ledger, start=None, end=None):
-    """
-    Returns: dict[customer_id][item_id] = [sales entries...]
-    Optionally filter by date.
-    """
     sales = defaultdict(lambda: defaultdict(list))
     for customer in secure_db.all("customers"):
         for e in get_ledger("customer", customer.doc_id):
@@ -156,10 +182,6 @@ def compute_customer_sales(secure_db, get_ledger, start=None, end=None):
     return sales
 
 def compute_customer_payments(secure_db, get_ledger, start=None, end=None):
-    """
-    Returns: dict[customer_id] = [payment entries...]
-    Optionally filter by date.
-    """
     payments = defaultdict(list)
     for customer in secure_db.all("customers"):
         for e in get_ledger("customer", customer.doc_id):
