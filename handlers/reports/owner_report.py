@@ -88,7 +88,7 @@ async def show_owner_position(update: Update, context: ContextTypes.DEFAULT_TYPE
         f"• Store Inventory Levels:\n{store_lines_str}"
     )
     kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔄 Refresh", callback_data="owner_pos")],
+        [InlineKeyboardButton("🔄 Refresh", callback_data="rep_owner")],
         [InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu")],
     ])
 
@@ -100,7 +100,7 @@ async def show_owner_position(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     return SHOW_POSITION
 
-def register_owner_position(app):
-    # Callback and command to show owner position
-    app.add_handler(CallbackQueryHandler(show_owner_position, pattern="^owner_pos$"))
+def register_owner_report_handlers(app):
+    # Callback and command to show owner summary from Reports menu
+    app.add_handler(CallbackQueryHandler(show_owner_position, pattern="^rep_owner$"))
     app.add_handler(CommandHandler("owner_position", show_owner_position))
