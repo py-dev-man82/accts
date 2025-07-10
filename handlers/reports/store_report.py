@@ -91,28 +91,26 @@ def store_sales_diagnostic(store_id, secure_db, get_ledger, start=None, end=None
     if not found_payments:
         print("!! No payments found in any customer or store_customer ledger for this store_id.")
 
-    # INVENTORY
+    # INVENTORY (stock-in)
     found_inventory = False
+    # Store ledger
     for e in sledger:
         if e.get("entry_type") == "stockin" and (not start or _between(e.get("date", ""), start, end)):
             if not found_inventory:
-                print("INVENTORY (stock-in) entries in this store's ledger:")
+                print("INVENTORY (stock-in) entries in this store's own ledger:")
                 found_inventory = True
             print("  Ledger:", e)
+    # Partner ledgers
+    for partner in secure_db.all("partners"):
+        pledger = get_ledger("partner", partner.doc_id)
+        for e in pledger:
+            if e.get("entry_type") == "stockin" and e.get("store_id") == store_id and (not start or _between(e.get("date", ""), start, end)):
+                if not found_inventory:
+                    print("INVENTORY (stock-in) entries in partner ledgers for this store_id:")
+                    found_inventory = True
+                print(f"  [partner] Partner: {partner['name']} Ledger:", e)
     if not found_inventory:
-        print("!! No stock-in entries found in this store's ledger.")
-
-    # HANDLING FEES: From store ledger ONLY
-    sledger = get_ledger("store", store_id)
-    found_fees = False
-    for e in sledger:
-        if e.get("entry_type") == "handling_fee" and (not start or _between(e.get("date", ""), start, end)):
-            if not found_fees:
-                print("HANDLING FEES in this store's own ledger (credits):")
-                found_fees = True
-            print("  Ledger:", e)
-    if not found_fees:
-        print("!! No handling fee entries found in this store's own ledger.")
+        print("!! No stock-in entries found in store or partner ledgers for this store_id.")
 
 @require_unlock
 async def show_store_report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -231,7 +229,7 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cur = store["currency"]
     start, end = ctx["start_date"], ctx["end_date"]
 
-    # --- DIAGNOSTIC: Print all sales and fees being pulled for this store ---
+    # --- DIAGNOSTIC: Print all sales, fees, payments, inventory for this store ---
     store_sales_diagnostic(sid, secure_db, get_ledger, start, end)
 
     # SALES: all customer/store_customer sales handled by this store (by store_id on the sale entry)
@@ -267,6 +265,17 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     total_pay_local = sum(p.get('amount', 0) for p in store_payments)
     total_pay_usd = sum(p.get('usd_amt', 0) for p in store_payments)
+
+    # INVENTORY (stock-in): from both store and partner ledgers by store_id
+    stockins = []
+    for e in sledger:
+        if e.get("entry_type") == "stockin" and _between(e.get("date", ""), start, end):
+            stockins.append(e)
+    for partner in secure_db.all("partners"):
+        pledger = get_ledger("partner", partner.doc_id)
+        for e in pledger:
+            if e.get("entry_type") == "stockin" and e.get("store_id") == sid and _between(e.get("date", ""), start, end):
+                stockins.append(e)
 
     # Sort and format sales and fees as separate sections
     sales_sorted = sorted(store_sales, key=lambda x: (x.get("date", ""), x.get("timestamp", "")), reverse=True)
@@ -307,9 +316,8 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     total_fees_only = sum(abs(f.get('amount', 0)) for f in handling_fees)
     grand_total = total_sales_only + total_fees_only
 
-    # ----- EXPENSES -----
+    # EXPENSES
     expenses = [e for e in sledger if e.get("entry_type") == "expense" and _between(e.get("date", ""), start, end)]
-    stockins = [e for e in sledger if e.get("entry_type") == "stockin" and _between(e.get("date", ""), start, end)]
 
     inventory_purchase_lines = []
     total_inventory_purchase = 0
@@ -335,8 +343,8 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if expense_lines:
         expense_lines.append(f"\n📊 Total All Expenses: {fmt_money(total_all_expenses, cur)}")
 
-    # ----- Inventory -----
-    all_stockins = [e for e in sledger if e.get("entry_type") == "stockin"]
+    # ----- Inventory (current stock on hand) -----
+    all_stockins = stockins  # all inventory ever received by this store
     stock_balance = defaultdict(int)
     for s in all_stockins:
         stock_balance[s.get("item_id")] += s.get("quantity", 0)
