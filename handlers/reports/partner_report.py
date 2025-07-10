@@ -236,7 +236,7 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     stockin_lines = []
     for s in sorted(stockins, key=lambda x: (x.get("date", ""), x.get("timestamp", "")), reverse=True):
         qty = s.get('quantity', 0)
-        price = s.get('unit_cost', 0)  # Always use unit_cost for stock-in
+        price = s.get('unit_price', 0)  # Always use unit_cost for stock-in
         total = qty * price
         stockin_lines.append(f"   - {fmt_date(s.get('date', ''))}: [{s.get('item_id')}] {qty} @ {fmt_money(price, cur)} = {fmt_money(total, cur)}")
 
@@ -396,7 +396,7 @@ async def export_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
     stockin_lines = []
     for s in sorted(stockins, key=lambda x: (x.get("date", ""), x.get("timestamp", "")), reverse=True):
         qty = s.get('quantity', 0)
-        price = s.get('unit_cost', 0)
+        price = s.get('unit_price', 0)
         total = qty * price
         stockin_lines.append(f"   - {fmt_date(s.get('date', ''))}: [{s.get('item_id')}] {qty} @ {fmt_money(price, cur)} = {fmt_money(total, cur)}")
 
