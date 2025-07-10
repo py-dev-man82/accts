@@ -49,21 +49,23 @@ def get_last_sale_price(ledger, item_id):
         return latest.get("unit_price", latest.get("unit_cost", 0))
     return 0
 
-def store_sales_diagnostic(store_id, secure_db, get_ledger, start=None, end=None):
+def store_sales_diagnostic(store_id, store_name, secure_db, get_ledger, start=None, end=None):
     print("\n==== STORE REPORT DIAGNOSTIC ====")
     # SALES
     found_sales = False
-    for cust in secure_db.all("customers"):
+    store_customer_ids = [cust.doc_id for cust in secure_db.all("customers") if cust["name"] == store_name]
+    for cust_id in store_customer_ids:
         for acct_type in ["customer", "store_customer"]:
-            cust_ledger = get_ledger(acct_type, cust.doc_id)
+            cust = secure_db.table("customers").get(doc_id=cust_id)
+            cust_ledger = get_ledger(acct_type, cust_id)
             for e in cust_ledger:
-                if e.get("entry_type") == "sale" and e.get("store_id") == store_id and (not start or _between(e.get("date", ""), start, end)):
+                if e.get("entry_type") == "sale" and (not start or _between(e.get("date", ""), start, end)):
                     if not found_sales:
-                        print("SALES found in customer/store_customer ledgers for this store_id:")
+                        print("SALES found in customer/store_customer ledgers for this store_name:")
                         found_sales = True
                     print(f"  [{acct_type}] Customer: {cust['name']} Ledger:", e)
     if not found_sales:
-        print("!! No sales found in any customer or store_customer ledger for this store_id.")
+        print("!! No sales found in any customer/store_customer ledger for this store_name.")
 
     # HANDLING FEES
     sledger = get_ledger("store", store_id)
@@ -79,20 +81,22 @@ def store_sales_diagnostic(store_id, secure_db, get_ledger, start=None, end=None
 
     # PAYMENTS
     found_payments = False
-    for cust in secure_db.all("customers"):
+    for cust_id in store_customer_ids:
         for acct_type in ["customer", "store_customer"]:
-            cust_ledger = get_ledger(acct_type, cust.doc_id)
+            cust = secure_db.table("customers").get(doc_id=cust_id)
+            cust_ledger = get_ledger(acct_type, cust_id)
             for p in cust_ledger:
-                if p.get("entry_type") == "payment" and p.get("store_id") == store_id and (not start or _between(p.get("date", ""), start, end)):
+                if p.get("entry_type") == "payment" and (not start or _between(p.get("date", ""), start, end)):
                     if not found_payments:
-                        print("PAYMENTS found in customer/store_customer ledgers for this store_id:")
+                        print("PAYMENTS found in customer/store_customer ledgers for this store_name:")
                         found_payments = True
                     print(f"  [{acct_type}] Customer: {cust['name']} Ledger:", p)
     if not found_payments:
-        print("!! No payments found in any customer or store_customer ledger for this store_id.")
+        print("!! No payments found in any customer or store_customer ledger for this store_name.")
 
     # INVENTORY (stock-in)
     found_inventory = False
+    sledger = get_ledger("store", store_id)
     for e in sledger:
         if e.get("entry_type") == "stockin" and (not start or _between(e.get("date", ""), start, end)):
             if not found_inventory:
@@ -227,16 +231,20 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cur = store["currency"]
     start, end = ctx["start_date"], ctx["end_date"]
 
-    # --- DIAGNOSTIC: Print all sales, fees, payments, inventory for this store ---
-    store_sales_diagnostic(sid, secure_db, get_ledger, start, end)
+    # NEW: Map store name to customer IDs
+    store_name = store["name"]
+    store_customer_ids = [cust.doc_id for cust in secure_db.all("customers") if cust["name"] == store_name]
 
-    # SALES: all customer/store_customer sales handled by this store (by store_id on the sale entry)
+    # --- DIAGNOSTIC: Print all sales, fees, payments, inventory for this store ---
+    store_sales_diagnostic(sid, store_name, secure_db, get_ledger, start, end)
+
+    # SALES: all sales for store customers (name = store_name)
     store_sales = []
-    for cust in secure_db.all("customers"):
+    for cust_id in store_customer_ids:
         for acct_type in ["customer", "store_customer"]:
-            cust_ledger = get_ledger(acct_type, cust.doc_id)
+            cust_ledger = get_ledger(acct_type, cust_id)
             for e in cust_ledger:
-                if e.get("entry_type") == "sale" and e.get("store_id") == sid and _between(e.get("date", ""), start, end):
+                if e.get("entry_type") == "sale" and _between(e.get("date", ""), start, end):
                     store_sales.append(e)
 
     # HANDLING FEES: from store ledger ONLY (these are credits to the store)
@@ -245,11 +253,11 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # PAYMENTS: all customer/store_customer payments for this store
     store_payments = []
-    for cust in secure_db.all("customers"):
+    for cust_id in store_customer_ids:
         for acct_type in ["customer", "store_customer"]:
-            cust_ledger = get_ledger(acct_type, cust.doc_id)
+            cust_ledger = get_ledger(acct_type, cust_id)
             for p in cust_ledger:
-                if p.get("entry_type") == "payment" and p.get("store_id") == sid and _between(p.get("date", ""), start, end):
+                if p.get("entry_type") == "payment" and _between(p.get("date", ""), start, end):
                     store_payments.append(p)
 
     payment_lines = []
@@ -287,21 +295,21 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # --- ALL-TIME DATA for financial position ---
     # All-time sales
     alltime_sales = []
-    for cust in secure_db.all("customers"):
+    for cust_id in store_customer_ids:
         for acct_type in ["customer", "store_customer"]:
-            cust_ledger = get_ledger(acct_type, cust.doc_id)
+            cust_ledger = get_ledger(acct_type, cust_id)
             for e in cust_ledger:
-                if e.get("entry_type") == "sale" and e.get("store_id") == sid:
+                if e.get("entry_type") == "sale":
                     alltime_sales.append(e)
     # All-time handling fees
     alltime_fees = [e for e in get_ledger("store", sid) if e.get("entry_type") == "handling_fee"]
     # All-time payments
     alltime_payments = []
-    for cust in secure_db.all("customers"):
+    for cust_id in store_customer_ids:
         for acct_type in ["customer", "store_customer"]:
-            cust_ledger = get_ledger(acct_type, cust.doc_id)
+            cust_ledger = get_ledger(acct_type, cust_id)
             for p in cust_ledger:
-                if p.get("entry_type") == "payment" and p.get("store_id") == sid:
+                if p.get("entry_type") == "payment":
                     alltime_payments.append(p)
     # All-time expenses
     alltime_expenses = [e for e in get_ledger("store", sid) if e.get("entry_type") == "expense"]
