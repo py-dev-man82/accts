@@ -207,22 +207,18 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     store_sales_diagnostic(sid, store["name"], secure_db, get_ledger, start, end)
 
     # SALES: store-customer only (store_id+name match)
-    store_sales = []
-    for cust in secure_db.all("customers"):
-        if str(cust.get("store_id")) == str(sid) and cust["name"] == store["name"]:
-            cust_ledger = get_ledger("customer", cust.doc_id)
-            for e in cust_ledger:
-                if e.get("entry_type") == "sale" and _between(e.get("date", ""), start, end):
-                    store_sales.append(e)
+    # SALES: all customer sales handled by this store (by store_id on the sale entry)
+store_sales = []
+for cust in secure_db.all("customers"):
+    cust_ledger = get_ledger("customer", cust.doc_id)
+    for e in cust_ledger:
+        if e.get("entry_type") == "sale" and e.get("store_id") == sid and _between(e.get("date", ""), start, end):
+            store_sales.append(e)
 
-    # HANDLING FEES: all customers with store_id
-    handling_fees = []
-    for cust in secure_db.all("customers"):
-        if str(cust.get("store_id")) == str(sid):
-            cust_ledger = get_ledger("customer", cust.doc_id)
-            for e in cust_ledger:
-                if e.get("entry_type") == "handling_fee" and _between(e.get("date", ""), start, end):
-                    handling_fees.append(e)
+# HANDLING FEES: from store ledger
+sledger = get_ledger("store", sid)
+handling_fees = [e for e in sledger if e.get("entry_type") == "handling_fee" and _between(e.get("date", ""), start, end)]
+)
 
     # Combine, sort latest first
     all_sales = store_sales + handling_fees
