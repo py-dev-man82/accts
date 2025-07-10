@@ -627,12 +627,13 @@ async def owner_choose_scope(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def owner_show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ctx = context.user_data
     pages = []
-    for i in range(7):  # 7 pages/sections
-        ctx["page"] = i
-        section = _render_page(ctx)
-        if section:
-            pages.append(section[0])
-    page = ctx.get("page", 0)
+    for i in range(7):
+    ctx_page_backup = ctx.get("page", 0)   # save current page
+    ctx["page"] = i
+    section = _render_page(ctx)
+    if section:
+        pages.append(section[0])
+    ctx["page"] = ctx_page_backu
     kb = []
     if page > 0:
         kb.append(InlineKeyboardButton("⬅️ Prev", callback_data="owner_page_prev"))
