@@ -158,6 +158,7 @@ async def run_bot():
     app.add_handler(
         CallbackQueryHandler(show_store_report_menu, pattern="^rep_store$")
     )
+    # ⬆️ This ensures only store report menu and flow handle store reports.
 
     # 🆕 Owner module registration
     register_owner_handlers(app)
