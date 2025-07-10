@@ -211,12 +211,20 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     other_expenses = [e for e in pledger if e.get("entry_type") == "expense" and _between(e.get("date", ""), start, end)]
 
     expense_lines = []
-    if handling_fees:
-        expense_lines.append("• 💳 Handling Fees")
-        for h in handling_fees:
-            item = h.get('item_id', '?')
-            expense_lines.append(f"   - {fmt_date(h.get('date', ''))}: [{item}] {fmt_money(abs(h.get('amount', 0)), cur)}")
-        expense_lines.append(f"📊 Total Handling Fees: {fmt_money(sum(abs(h.get('amount', 0)) for h in handling_fees), cur)}")
+if handling_fees:
+    expense_lines.append("• 💳 Handling Fees")
+    for h in handling_fees:
+        item = h.get('item_id', '?')
+        qty = h.get('quantity', 1)
+        amt = abs(h.get('amount', 0))
+        # If a specific per-unit fee field exists, use it; otherwise, calculate
+        if qty and qty != 1:
+            unit_fee = amt / qty
+            expense_lines.append(f"   - {fmt_date(h.get('date', ''))}: [{item} x {qty}] {fmt_money(unit_fee, cur)} = {fmt_money(amt, cur)}")
+        else:
+            expense_lines.append(f"   - {fmt_date(h.get('date', ''))}: [{item}] {fmt_money(amt, cur)}")
+    expense_lines.append(f"📊 Total Handling Fees: {fmt_money(sum(abs(h.get('amount', 0)) for h in handling_fees), cur)}")
+
     if other_expenses:
         expense_lines.append("• 🧾 Other Expenses")
         for e in other_expenses:
@@ -454,11 +462,19 @@ async def export_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if scope == "full":
         if handling_fees:
-            line("Handling Fees", bold=True)
-            for h in handling_fees:
-                item = h.get('item_id', '?')
-                line(f"   - {fmt_date(h.get('date', ''))}: [{item}] {fmt_money(abs(h.get('amount', 0)), cur)}")
-            line(f"Total Handling Fees: {fmt_money(sum(abs(h.get('amount', 0)) for h in handling_fees), cur)}")
+    line("Handling Fees", bold=True)
+    for h in handling_fees:
+        item = h.get('item_id', '?')
+        qty = h.get('quantity', 1)
+        amt = abs(h.get('amount', 0))
+        if qty and qty != 1:
+            unit_fee = amt / qty
+            line(f"   - {fmt_date(h.get('date', ''))}: [{item} x {qty}] {fmt_money(unit_fee, cur)} = {fmt_money(amt, cur)}")
+        else:
+            line(f"   - {fmt_date(h.get('date', ''))}: [{item}] {fmt_money(amt, cur)}")
+    line(f"Total Handling Fees: {fmt_money(sum(abs(h.get('amount', 0)) for h in handling_fees), cur)}")
+
+
         if other_expenses:
             line("Other Expenses", bold=True)
             for e in other_expenses:
