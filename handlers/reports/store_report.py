@@ -166,8 +166,9 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cur = store["currency"]
     start, end = ctx["start_date"], ctx["end_date"]
 
-    # ----- SALES -----
-    # Pull all customer accounts with name == store name (store customer logic)
+    # ----- SALES: Store customer + handling fees -----
+
+    # Find store's customer account (exact name match)
     store_sales = []
     for cust in secure_db.all("customers"):
         if cust["name"] == store["name"]:
@@ -176,15 +177,11 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if e.get("entry_type") == "sale" and _between(e.get("date", ""), start, end):
                     store_sales.append(e)
 
-    # Handling fees from all customer ledgers for this store (by store_id)
-    handling_fees = []
-    for cust in secure_db.all("customers"):
-        cl = get_ledger("customer", cust.doc_id)
-        for e in cl:
-            if e.get("entry_type") == "handling_fee" and e.get("store_id") == sid and _between(e.get("date", ""), start, end):
-                handling_fees.append(e)
+    # Handling fees: pulled from store ledger per schema
+    sledger = get_ledger("store", sid)
+    handling_fees = [e for e in sledger if e.get("entry_type") == "handling_fee" and _between(e.get("date", ""), start, end)]
 
-    # Chronologically combine
+    # Combine, sort latest first
     all_sales = store_sales + handling_fees
     all_sales_sorted = sorted(all_sales, key=lambda x: (x.get("date", ""), x.get("timestamp", "")), reverse=True)
 
@@ -206,7 +203,7 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"• {fmt_date(s['date'])}: [Store Fee] [{item}] {qty} × {fmt_money(unit_fee, cur)} = {fmt_money(amt, cur)}"
             )
 
-    # Units sold
+    # Units sold: just from store customer sales
     unit_summary = []
     item_totals = defaultdict(lambda: {"units": 0, "value": 0.0})
     for s in store_sales:
@@ -223,7 +220,6 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
         + sum(abs(s.get('amount', 0)) for s in handling_fees)
 
     # ----- PAYMENTS -----
-    sledger = get_ledger("store", sid)
     payments = [
         e for e in sledger if e.get("entry_type") in ("payment", "payment_recv") and _between(e.get("date", ""), start, end)
     ]
