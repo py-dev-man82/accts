@@ -161,7 +161,7 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cur = partner["currency"]
     start, end = ctx["start_date"], ctx["end_date"]
 
-    # SALES
+    # SALES (in period, for report lines/units)
     sales = []
     for c in secure_db.all("customers"):
         if c["name"] == partner["name"]:
@@ -229,27 +229,51 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
             expense_lines.append(f"   - {fmt_date(e.get('date', ''))}: {fmt_money(abs(e.get('amount', 0)), cur)}")
         expense_lines.append(f"📊 Total Other Expenses: {fmt_money(sum(abs(e.get('amount', 0)) for e in other_expenses), cur)}")
 
-    # STOCK-INS
+    # STOCK-INS (MOVEMENT) - in period
     stockins = [
         e for e in pledger if e.get("entry_type") == "stockin" and _between(e.get("date", ""), start, end)
     ]
+    stockin_lines = []
+    for s in sorted(stockins, key=lambda x: (x.get("date", ""), x.get("timestamp", "")), reverse=True):
+        qty = s.get('quantity', 0)
+        price = s.get('unit_cost', 0)  # Always use unit_cost for stock-in
+        total = qty * price
+        stockin_lines.append(f"   - {fmt_date(s.get('date', ''))}: [{s.get('item_id')}] {qty} @ {fmt_money(price, cur)} = {fmt_money(total, cur)}")
 
-    # CURRENT STOCK @ MARKET
+    # CURRENT STOCK @ MARKET - ALL TIME (no date filter)
+    all_stockins = [e for e in pledger if e.get("entry_type") == "stockin"]
+    all_sales = []
+    for c in secure_db.all("customers"):
+        if c["name"] == partner["name"]:
+            all_sales += [e for e in get_ledger("customer", c.doc_id) if e.get("entry_type") == "sale"]
+    all_sales += [e for e in pledger if e.get("entry_type") == "sale"]
+
     stock_balance = defaultdict(int)
-    for s in stockins:
+    for s in all_stockins:
         stock_balance[s.get("item_id")] += s.get("quantity", 0)
-    for item, sales_list in sale_items.items():
-        for s in sales_list:
-            stock_balance[item] -= abs(s.get("quantity", 0))
+    for s in all_sales:
+        stock_balance[s.get("item_id")] -= abs(s.get("quantity", 0))
+
+    # Market prices: still use last sale price, fallback to last stock-in cost
     market_prices = {}
     for item in stock_balance:
-        price = get_last_sale_price(sales, item)
+        price = get_last_sale_price(all_sales, item)
         if price == 0:
-            stk = [e for e in stockins if e.get("item_id") == item]
+            stk = [e for e in all_stockins if e.get("item_id") == item]
             if stk:
-                price = sorted(stk, key=lambda x: (x.get("date", ""), x.get("timestamp", "")), reverse=True)[0].get("unit_price", stk[-1].get("unit_cost", 0))
+                price = sorted(stk, key=lambda x: (x.get("date", ""), x.get("timestamp", "")), reverse=True)[0].get("unit_cost", 0)
         market_prices[item] = price or 0
 
+    current_stock_lines = []
+    stock_value = 0
+    for item, qty in stock_balance.items():
+        if qty > 0:
+            mp = market_prices[item]
+            val = qty * mp
+            current_stock_lines.append(f"   - [{item}] {qty} × {fmt_money(mp, cur)} = {fmt_money(val, cur)}")
+            stock_value += val
+
+    # The rest is unchanged (totals, navigation, etc)
     sales_lines = []
     for item_id, entries in sale_items.items():
         for s in sorted(entries, key=lambda x: (x.get("date", ""), x.get("timestamp", "")), reverse=True):
@@ -264,22 +288,6 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
         value = sum(abs(s.get('quantity', 0) * s.get('unit_price', s.get('unit_cost', 0))) for s in entries)
         unit_summary.append(f"- [{item_id}] : {units} units, {fmt_money(value, cur)}")
     total_sales = sum(abs(s.get('quantity', 0) * s.get('unit_price', s.get('unit_cost', 0))) for s in sales)
-
-    stockin_lines = []
-    for s in sorted(stockins, key=lambda x: (x.get("date", ""), x.get("timestamp", "")), reverse=True):
-        qty = s.get('quantity', 0)
-        price = s.get('unit_price', s.get('unit_cost', 0))
-        total = qty * price
-        stockin_lines.append(f"   - {fmt_date(s.get('date', ''))}: [{s.get('item_id')}] {qty} @ {fmt_money(price, cur)} = {fmt_money(total, cur)}")
-
-    current_stock_lines = []
-    stock_value = 0
-    for item, qty in stock_balance.items():
-        if qty > 0:
-            mp = market_prices[item]
-            val = qty * mp
-            current_stock_lines.append(f"   - [{item}] {qty} × {fmt_money(mp, cur)} = {fmt_money(val, cur)}")
-            stock_value += val
 
     total_handling = sum(abs(h.get("amount", 0)) for h in handling_fees)
     total_other_exp = sum(abs(e.get("amount", 0)) for e in other_expenses)
@@ -383,28 +391,53 @@ async def export_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
     total_handling = sum(abs(h.get("amount", 0)) for h in handling_fees)
     total_other_exp = sum(abs(e.get("amount", 0)) for e in other_expenses)
 
+    # Stock-Ins (MOVEMENT) - in period
     stockins = [e for e in pledger if e.get("entry_type") == "stockin" and _between(e.get("date", ""), start, end)]
+    stockin_lines = []
+    for s in sorted(stockins, key=lambda x: (x.get("date", ""), x.get("timestamp", "")), reverse=True):
+        qty = s.get('quantity', 0)
+        price = s.get('unit_cost', 0)
+        total = qty * price
+        stockin_lines.append(f"   - {fmt_date(s.get('date', ''))}: [{s.get('item_id')}] {qty} @ {fmt_money(price, cur)} = {fmt_money(total, cur)}")
+
+    # CURRENT STOCK @ MARKET (ALL TIME, no date filter)
+    all_stockins = [e for e in pledger if e.get("entry_type") == "stockin"]
+    all_sales = []
+    for c in secure_db.all("customers"):
+        if c["name"] == partner["name"]:
+            all_sales += [e for e in get_ledger("customer", c.doc_id) if e.get("entry_type") == "sale"]
+    all_sales += [e for e in pledger if e.get("entry_type") == "sale"]
+
     stock_balance = defaultdict(int)
-    for s in stockins:
+    for s in all_stockins:
         stock_balance[s.get("item_id")] += s.get("quantity", 0)
-    for item, entries in sale_items.items():
-        for s in entries:
-            stock_balance[item] -= abs(s.get("quantity", 0))
+    for s in all_sales:
+        stock_balance[s.get("item_id")] -= abs(s.get("quantity", 0))
+
     def get_last_sale_price(ledger, item_id):
         sales = [e for e in ledger if e.get("entry_type") == "sale" and e.get("item_id") == item_id]
         if sales:
             latest = sorted(sales, key=lambda x: (x.get("date", ""), x.get("timestamp", "")), reverse=True)[0]
             return latest.get("unit_price", latest.get("unit_cost", 0))
         return 0
+
     market_prices = {}
     for item in stock_balance:
-        price = get_last_sale_price(sales, item)
+        price = get_last_sale_price(all_sales, item)
         if price == 0:
-            stk = [e for e in stockins if e.get("item_id") == item]
+            stk = [e for e in all_stockins if e.get("item_id") == item]
             if stk:
-                price = sorted(stk, key=lambda x: (x.get("date", ""), x.get("timestamp", "")), reverse=True)[0].get("unit_price", stk[-1].get("unit_cost", 0))
+                price = sorted(stk, key=lambda x: (x.get("date", ""), x.get("timestamp", "")), reverse=True)[0].get("unit_cost", 0)
         market_prices[item] = price or 0
-    stock_value = sum(qty * market_prices[item] for item, qty in stock_balance.items() if qty > 0)
+
+    current_stock_lines = []
+    stock_value = 0
+    for item, qty in stock_balance.items():
+        if qty > 0:
+            mp = market_prices[item]
+            val = qty * mp
+            current_stock_lines.append(f"   - [{item}] {qty} × {fmt_money(mp, cur)} = {fmt_money(val, cur)}")
+            stock_value += val
 
     balance = total_sales - total_pay_local - total_handling - total_other_exp
 
@@ -478,17 +511,11 @@ async def export_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
             line(f"Total Other Expenses: {fmt_money(total_other_exp, cur)}")
         y -= 10
         line("Stock-Ins", bold=True)
-        for s in sorted(stockins, key=lambda x: (x.get("date", ""), x.get("timestamp", "")), reverse=True):
-            qty = s.get('quantity', 0)
-            price = s.get('unit_price', s.get('unit_cost', 0))
-            total = qty * price
-            line(f"   - {fmt_date(s.get('date', ''))}: [{s.get('item_id')}] {qty} @ {fmt_money(price, cur)} = {fmt_money(total, cur)}")
+        for l in stockin_lines:
+            line(l)
         line("Current Stock @ market:", bold=True)
-        for item, qty in stock_balance.items():
-            if qty > 0:
-                mp = market_prices[item]
-                val = qty * mp
-                line(f"   - [{item}] {qty} × {fmt_money(mp, cur)} = {fmt_money(val, cur)}")
+        for l in current_stock_lines:
+            line(l)
         line(f"Stock Value: {fmt_money(stock_value, cur)}")
         y -= 10
         line("Financial Position", bold=True)
