@@ -14,6 +14,8 @@ from telegram.ext import (
     CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
+    MessageHandler,    # <-- Add
+    filters            # <-- Add
 )
 
 # Core utilities
@@ -34,6 +36,7 @@ from handlers.reports.customer_report import register_customer_report_handlers
 from handlers.reports.partner_report  import (
     register_partner_report_handlers,
     show_partner_report_menu,
+    save_custom_start,         # <-- Add this import
 )
 
 # 🆕  Owner module ––– enabled now
@@ -154,6 +157,9 @@ async def run_bot():
     # Admin commands
     app.add_handler(CommandHandler("restart", restart_bot))
     app.add_handler(CommandHandler("kill",    kill_bot))
+
+    # --- PATCH: Add this handler for custom date input in reports ---
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, save_custom_start))
 
     # Start polling
     await app.initialize()
