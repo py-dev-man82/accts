@@ -166,23 +166,17 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cur = store["currency"]
     start, end = ctx["start_date"], ctx["end_date"]
 
-    # ----- SALES: Store customer + handling fees -----
-
-    # Find store's customer account (exact name match)
-    store_customer = None
+    # ----- SALES -----
+    # Pull all customer accounts with name == store name (store customer logic)
+    store_sales = []
     for cust in secure_db.all("customers"):
         if cust["name"] == store["name"]:
-            store_customer = cust
-            break
+            cust_ledger = get_ledger("customer", cust.doc_id)
+            for e in cust_ledger:
+                if e.get("entry_type") == "sale" and _between(e.get("date", ""), start, end):
+                    store_sales.append(e)
 
-    store_customer_sales = []
-    if store_customer:
-        cl = get_ledger("customer", store_customer.doc_id)
-        for e in cl:
-            if e.get("entry_type") == "sale" and _between(e.get("date", ""), start, end):
-                store_customer_sales.append(e)
-
-    # Handling fees collected by this store from ALL customers (via store_id)
+    # Handling fees from all customer ledgers for this store (by store_id)
     handling_fees = []
     for cust in secure_db.all("customers"):
         cl = get_ledger("customer", cust.doc_id)
@@ -190,8 +184,8 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if e.get("entry_type") == "handling_fee" and e.get("store_id") == sid and _between(e.get("date", ""), start, end):
                 handling_fees.append(e)
 
-    # Combine, sort latest first
-    all_sales = store_customer_sales + handling_fees
+    # Chronologically combine
+    all_sales = store_sales + handling_fees
     all_sales_sorted = sorted(all_sales, key=lambda x: (x.get("date", ""), x.get("timestamp", "")), reverse=True)
 
     # Format sales lines
@@ -212,10 +206,10 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"• {fmt_date(s['date'])}: [Store Fee] [{item}] {qty} × {fmt_money(unit_fee, cur)} = {fmt_money(amt, cur)}"
             )
 
-    # Units sold: just from store customer sales
+    # Units sold
     unit_summary = []
     item_totals = defaultdict(lambda: {"units": 0, "value": 0.0})
-    for s in store_customer_sales:
+    for s in store_sales:
         iid = s.get('item_id', '?')
         qty = abs(s.get('quantity', 0))
         val = abs(s.get('quantity', 0) * s.get('unit_price', s.get('unit_cost', 0)))
@@ -225,7 +219,7 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
         unit_summary.append(f"- [{iid}] : {sums['units']} units, {fmt_money(sums['value'], cur)}")
 
     # Total Sales
-    total_sales = sum(abs(s.get('quantity', 0) * s.get('unit_price', s.get('unit_cost', 0))) for s in store_customer_sales) \
+    total_sales = sum(abs(s.get('quantity', 0) * s.get('unit_price', s.get('unit_cost', 0))) for s in store_sales) \
         + sum(abs(s.get('amount', 0)) for s in handling_fees)
 
     # ----- PAYMENTS -----
@@ -276,16 +270,15 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ----- Inventory -----
     all_stockins = [e for e in sledger if e.get("entry_type") == "stockin"]
-    all_sales_ledger = store_customer_sales
     stock_balance = defaultdict(int)
     for s in all_stockins:
         stock_balance[s.get("item_id")] += s.get("quantity", 0)
-    for s in all_sales_ledger:
+    for s in store_sales:
         stock_balance[s.get("item_id")] -= abs(s.get("quantity", 0))
 
     market_prices = {}
     for item in stock_balance:
-        price = get_last_sale_price(all_sales_ledger, item)
+        price = get_last_sale_price(store_sales, item)
         if price == 0:
             stk = [e for e in all_stockins if e.get("item_id") == item]
             if stk:
