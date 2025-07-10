@@ -166,20 +166,23 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cur = store["currency"]
     start, end = ctx["start_date"], ctx["end_date"]
 
-    # ----- SALES: Store customer + handling fees -----
-
-    # Find store's customer account (exact name match)
+    # ----- SALES: store-customer only (store_id+name match) -----
     store_sales = []
     for cust in secure_db.all("customers"):
-        if cust["name"] == store["name"]:
+        if cust.get("store_id") == sid and cust["name"] == store["name"]:
             cust_ledger = get_ledger("customer", cust.doc_id)
             for e in cust_ledger:
                 if e.get("entry_type") == "sale" and _between(e.get("date", ""), start, end):
                     store_sales.append(e)
 
-    # Handling fees: pulled from store ledger per schema
-    sledger = get_ledger("store", sid)
-    handling_fees = [e for e in sledger if e.get("entry_type") == "handling_fee" and _between(e.get("date", ""), start, end)]
+    # ----- HANDLING FEES: all customers with store_id -----
+    handling_fees = []
+    for cust in secure_db.all("customers"):
+        if cust.get("store_id") == sid:
+            cust_ledger = get_ledger("customer", cust.doc_id)
+            for e in cust_ledger:
+                if e.get("entry_type") == "handling_fee" and _between(e.get("date", ""), start, end):
+                    handling_fees.append(e)
 
     # Combine, sort latest first
     all_sales = store_sales + handling_fees
@@ -220,6 +223,7 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
         + sum(abs(s.get('amount', 0)) for s in handling_fees)
 
     # ----- PAYMENTS -----
+    sledger = get_ledger("store", sid)
     payments = [
         e for e in sledger if e.get("entry_type") in ("payment", "payment_recv") and _between(e.get("date", ""), start, end)
     ]
