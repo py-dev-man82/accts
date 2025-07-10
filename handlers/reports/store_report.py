@@ -4,9 +4,6 @@ import logging
 from datetime import datetime, timedelta
 from typing import List, Dict
 from collections import defaultdict
-from io import BytesIO
-from reportlab.lib.pagesizes import letter
-from reportlab.pdfgen import canvas
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import CallbackQueryHandler, ConversationHandler, ContextTypes
@@ -156,40 +153,74 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ctx.setdefault("page", 0)
     ctx["scope"] = update.callback_query.data.split("_")[-1]
 
+    # Defensive: Make sure store_id is set and store exists
+    if "store_id" not in ctx:
+        await update.callback_query.edit_message_text("⚠️ Please select a store first from the report menu.")
+        return ConversationHandler.END
+
     sid = ctx["store_id"]
     store = secure_db.table("stores").get(doc_id=sid)
+    if not store:
+        await update.callback_query.edit_message_text("⚠️ Store not found.")
+        return ConversationHandler.END
+
     cur = store["currency"]
     start, end = ctx["start_date"], ctx["end_date"]
 
-    # SALES (in period, for report lines/units)
-    sales = []
-    # Only show sales where customer is of type 'store' or matches store name
-    for c in secure_db.all("customers"):
-        if c.get("type") == "store" or c["name"] == store["name"]:
-            sales += [
-                e for e in get_ledger("customer", c.doc_id)
-                if e.get("entry_type") == "sale" and _between(e.get("date", ""), start, end)
-            ]
-    sales += [
-        e for e in get_ledger("store", sid)
-        if e.get("entry_type") == "sale" and _between(e.get("date", ""), start, end)
+    # --- SALES (only direct store sales + handling fees as credits) ---
+    sledger = get_ledger("store", sid)
+    direct_sales = [
+        e for e in sledger if e.get("entry_type") == "sale" and _between(e.get("date", ""), start, end)
     ]
-    sale_items = defaultdict(list)
-    for s in sales:
-        sale_items[s.get("item_id", "?")].append(s)
+    handling_credits = [
+        e for e in sledger if e.get("entry_type") == "handling_fee" and _between(e.get("date", ""), start, end)
+    ]
+    all_sales = direct_sales + handling_credits
 
-    # PAYMENTS (all store_payments ledger entries)
+    # Format sales lines
+    sales_lines = []
+    for s in sorted(all_sales, key=lambda x: (x.get("date", ""), x.get("timestamp", "")), reverse=True):
+        if s.get("entry_type") == "sale":
+            qty = s.get('quantity', 0)
+            price = s.get('unit_price', s.get('unit_cost', 0))
+            sales_lines.append(
+                f"• {fmt_date(s['date'])}: [{s.get('item_id','?')}] {qty} × {fmt_money(price, cur)} = {fmt_money(abs(qty * price), cur)}"
+            )
+        elif s.get("entry_type") == "handling_fee":
+            # Handling fee as Owner Sale (income)
+            amt = s.get('amount', 0)
+            item = s.get('item_id', '')
+            qty = s.get('quantity', '')
+            sales_lines.append(
+                f"• {fmt_date(s['date'])}: [Owner Sale] {fmt_money(amt, cur)}"
+            )
+
+    # Units Sold (by item) - only direct sales
+    unit_summary = []
+    item_totals = defaultdict(lambda: {"units": 0, "value": 0.0})
+    for s in direct_sales:
+        iid = s.get('item_id', '?')
+        qty = abs(s.get('quantity', 0))
+        val = abs(s.get('quantity', 0) * s.get('unit_price', s.get('unit_cost', 0)))
+        item_totals[iid]["units"] += qty
+        item_totals[iid]["value"] += val
+    for iid, sums in item_totals.items():
+        unit_summary.append(f"- [{iid}] : {sums['units']} units, {fmt_money(sums['value'], cur)}")
+
+    # Total Sales: sum direct sales and handling fee credits
+    total_sales = sum(abs(s.get('quantity', 0) * s.get('unit_price', s.get('unit_cost', 0))) for s in direct_sales) \
+        + sum(s.get('amount', 0) for s in handling_credits)
+
+    # --- PAYMENTS (payments *received* by store) ---
     payments = [
-        e for e in get_ledger("store", sid)
-        if e.get("entry_type") in ("payment", "payment_recv") and _between(e.get("date", ""), start, end)
+        e for e in sledger if e.get("entry_type") in ("payment", "payment_recv") and _between(e.get("date", ""), start, end)
     ]
-
     payment_lines = []
     for p in sorted(payments, key=lambda x: (x.get("date", ""), x.get("timestamp", "")), reverse=True):
         amount = p.get('amount', 0)
         fee_perc = p.get('fee_perc', 0)
         fx_rate = p.get('fx_rate', 0)
-        inv_fx = 1/fx_rate if fx_rate else 0
+        inv_fx = 1 / fx_rate if fx_rate else 0
         usd_amt = p.get('usd_amt', 0)
         payment_lines.append(
             f"• {fmt_date(p.get('date', ''))}: {fmt_money(amount, cur)}  |  {fee_perc:g}%  |  {inv_fx:.4f}  |  {fmt_money(usd_amt, 'USD')}"
@@ -197,13 +228,11 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     total_pay_local = sum(p.get('amount', 0) for p in payments)
     total_pay_usd = sum(p.get('usd_amt', 0) for p in payments)
 
-    # EXPENSES - handling fees, other, inventory purchase
-    sledger = get_ledger("store", sid)
-    handling_fees = [e for e in sledger if e.get("entry_type") == "handling_fee" and _between(e.get("date", ""), start, end)]
-    other_expenses = [e for e in sledger if e.get("entry_type") == "expense" and _between(e.get("date", ""), start, end)]
+    # --- EXPENSES (NO handling fees here) ---
+    expenses = [e for e in sledger if e.get("entry_type") == "expense" and _between(e.get("date", ""), start, end)]
     stockins = [e for e in sledger if e.get("entry_type") == "stockin" and _between(e.get("date", ""), start, end)]
 
-    # Inventory summary by item
+    # Inventory purchase (stock-in) lines
     inventory_purchase_lines = []
     total_inventory_purchase = 0
     for s in sorted(stockins, key=lambda x: (x.get("date", ""), x.get("timestamp", "")), reverse=True):
@@ -213,42 +242,25 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
         total_inventory_purchase += total
         inventory_purchase_lines.append(f"   - {fmt_date(s.get('date', ''))}: [{s.get('item_id')}] {qty} @ {fmt_money(price, cur)} = {fmt_money(total, cur)}")
 
+    # Expense lines
     expense_lines = []
-    handling_total = sum(abs(h.get("amount", 0)) for h in handling_fees)
-    other_total = sum(abs(e.get("amount", 0)) for e in other_expenses)
-    if handling_fees:
-        expense_lines.append("• 💳 Handling Fees")
-        for h in handling_fees:
-            item = h.get('item_id', '?')
-            qty = h.get('quantity', 1)
-            amt = abs(h.get('amount', 0))
-            if qty and qty != 1:
-                unit_fee = amt / qty
-                expense_lines.append(f"   - {fmt_date(h.get('date', ''))}: [{item} x {qty}] {fmt_money(unit_fee, cur)} = {fmt_money(amt, cur)}")
-            else:
-                expense_lines.append(f"   - {fmt_date(h.get('date', ''))}: [{item}] {fmt_money(amt, cur)}")
-        expense_lines.append(f"📊 Total Handling Fees: {fmt_money(handling_total, cur)}")
-    if other_expenses:
+    other_total = sum(abs(e.get("amount", 0)) for e in expenses)
+    if expenses:
         expense_lines.append("• 🧾 Other Expenses")
-        for e in other_expenses:
+        for e in expenses:
             expense_lines.append(f"   - {fmt_date(e.get('date', ''))}: {fmt_money(abs(e.get('amount', 0)), cur)}")
         expense_lines.append(f"📊 Total Other Expenses: {fmt_money(other_total, cur)}")
     if inventory_purchase_lines:
         expense_lines.append("📦 Inventory Purchase:")
         expense_lines += inventory_purchase_lines
         expense_lines.append(f"📊 Total Inventory Purchase: {fmt_money(total_inventory_purchase, cur)}")
-    total_all_expenses = handling_total + other_total + total_inventory_purchase
+    total_all_expenses = other_total + total_inventory_purchase
     if expense_lines:
         expense_lines.append(f"\n📊 Total All Expenses: {fmt_money(total_all_expenses, cur)}")
 
-    # CURRENT STOCK @ MARKET (all time, not just in period)
+    # --- CURRENT STOCK (all time, not just in period) ---
     all_stockins = [e for e in sledger if e.get("entry_type") == "stockin"]
-    all_sales = []
-    for c in secure_db.all("customers"):
-        if c.get("type") == "store" or c["name"] == store["name"]:
-            all_sales += [e for e in get_ledger("customer", c.doc_id) if e.get("entry_type") == "sale"]
-    all_sales += [e for e in sledger if e.get("entry_type") == "sale"]
-
+    all_sales = [e for e in sledger if e.get("entry_type") == "sale"]
     stock_balance = defaultdict(int)
     for s in all_stockins:
         stock_balance[s.get("item_id")] += s.get("quantity", 0)
@@ -273,26 +285,10 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
             current_stock_lines.append(f"   - [{item}] {qty} × {fmt_money(mp, cur)} = {fmt_money(val, cur)}")
             stock_value += val
 
-    # The rest is unchanged (totals, navigation, etc)
-    sales_lines = []
-    for item_id, entries in sale_items.items():
-        for s in sorted(entries, key=lambda x: (x.get("date", ""), x.get("timestamp", "")), reverse=True):
-            qty = s.get('quantity', 0)
-            price = s.get('unit_price', s.get('unit_cost', 0))
-            sales_lines.append(
-                f"• {fmt_date(s.get('date', ''))}: [{item_id}] {qty} × {fmt_money(price, cur)} = {fmt_money(abs(qty * price), cur)}"
-            )
-    unit_summary = []
-    for item_id, entries in sale_items.items():
-        units = sum(abs(s.get('quantity', 0)) for s in entries)
-        value = sum(abs(s.get('quantity', 0) * s.get('unit_price', s.get('unit_cost', 0))) for s in entries)
-        unit_summary.append(f"- [{item_id}] : {units} units, {fmt_money(value, cur)}")
-    total_sales = sum(abs(s.get('quantity', 0) * s.get('unit_price', s.get('unit_cost', 0))) for s in sales)
+    # --- FINANCIAL POSITION ---
+    balance = total_sales - total_pay_local - total_all_expenses
 
-    total_handling = handling_total
-    total_other_exp = other_total
-    balance = total_sales - total_pay_local - total_handling - total_other_exp - total_inventory_purchase
-
+    # --- Output lines by scope ---
     lines = []
     if ctx["scope"] in ("full", "sales"):
         lines.append("🛒 Sales")
@@ -323,7 +319,6 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     nav = []
     if ctx["page"] > 0:
         nav.append(InlineKeyboardButton("⬅️ Prev", callback_data="page_prev"))
-    nav.append(InlineKeyboardButton("📄 Export PDF", callback_data="export_pdf"))
     nav.append(InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu"))
 
     await update.callback_query.edit_message_text(
@@ -341,8 +336,6 @@ async def paginate(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["page"] = max(0, context.user_data["page"] - 1)
     return await show_report(update, context)
 
-# Add similar export_pdf logic here as partner_report if desired.
-
 # Register
 def register_store_report_handlers(app):
     app.add_handler(CallbackQueryHandler(show_store_report_menu, pattern="^rep_store$"))
@@ -350,5 +343,5 @@ def register_store_report_handlers(app):
     app.add_handler(CallbackQueryHandler(choose_scope, pattern="^range_"))
     app.add_handler(CallbackQueryHandler(show_report, pattern="^scope_"))
     app.add_handler(CallbackQueryHandler(paginate, pattern="^page_"))
-    # ...add pdf export, etc
+    # Add custom date input if using MessageHandler in your main bot.py
 
