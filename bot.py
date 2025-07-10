@@ -43,15 +43,16 @@ from handlers.reports.store_report    import (
     show_store_report_menu,
     save_custom_start as save_custom_start_store,
 )
+
 # 🆕 Owner Summary Report module
 from handlers.reports.owner_report    import (
     register_owner_report_handlers,
     show_owner_report_menu,
-    save_custom_start as save_custom_start_owner,
+    owner_save_custom_start,
 )
 
-# 🆕  Owner module ––– enabled now
-from handlers.owner import register_owner_handlers, show_owner_menu
+# 🆕 Owner module ––– enabled now
+from handlers.owner                  import register_owner_handlers, show_owner_menu
 
 # ════════════════════════════════════════════════════════════
 # Admin-only helper commands
@@ -78,16 +79,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [
             [InlineKeyboardButton("Customers",     callback_data="customer_menu"),
              InlineKeyboardButton("Stores",        callback_data="store_menu")],
-
             [InlineKeyboardButton("Partners",      callback_data="partner_menu"),
              InlineKeyboardButton("Sales",         callback_data="sales_menu")],
-
             [InlineKeyboardButton("Payments",      callback_data="payment_menu"),
              InlineKeyboardButton("Payouts",       callback_data="payout_menu")],
-
             [InlineKeyboardButton("Stock-In",      callback_data="stockin_menu"),
              InlineKeyboardButton("Partner Sales", callback_data="partner_sales_menu")],
-
             [InlineKeyboardButton("👑 Owner",      callback_data="owner_menu"),
              InlineKeyboardButton("📊 Reports",    callback_data="report_menu")],
         ]
@@ -163,18 +160,23 @@ async def run_bot():
     app.add_handler(
         CallbackQueryHandler(show_store_report_menu, pattern="^rep_store$")
     )
-    # Owner Summary Report
+
+    # 🆕 Owner Summary Report
     register_owner_report_handlers(app)
-    app.add_handler(CallbackQueryHandler(show_owner_report_menu, pattern="^rep_owner$"))
+    app.add_handler(
+        CallbackQueryHandler(show_owner_report_menu, pattern="^rep_owner$")
+    )
 
     # 🆕 Owner module registration
     register_owner_handlers(app)
-    app.add_handler(CallbackQueryHandler(show_owner_menu, pattern="^owner_menu$"))
+    app.add_handler(
+        CallbackQueryHandler(show_owner_menu, pattern="^owner_menu$")
+    )
 
     # --- PATCH: Add these handlers for custom date input in reports ---
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, save_custom_start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, save_custom_start_store))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, save_custom_start_owner))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, owner_save_custom_start))
 
     # Start polling
     await app.initialize()
@@ -189,7 +191,7 @@ async def run_bot():
 
 # ════════════════════════════════════════════════════════════
 # Simple self-supervisor — restarts on crash
-# ════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════
 def main_supervisor():
     while True:
         logging.warning("🔄  Starting bot process…")
