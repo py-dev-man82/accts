@@ -246,7 +246,6 @@ def build_store_report_lines(ctx, start, end, sid, cur, secure_db, get_ledger):
     # --- Payments Section ---
     payment_lines = []
     total_gross = 0
-    total_fees_payments = 0
     total_usd = 0
     for p in sorted(store_payments, key=lambda x: (x.get("date", ""), x.get("timestamp", "")), reverse=True):
         amount = p.get('amount', 0)
@@ -254,7 +253,6 @@ def build_store_report_lines(ctx, start, end, sid, cur, secure_db, get_ledger):
         fx_rate = p.get('fx_rate', 0)
         usd_amt = p.get('usd_amt', 0)
         total_gross += amount
-        total_fees_payments += fee_amt
         total_usd += usd_amt
         payment_lines.append(
             f"• {fmt_date(p.get('date', ''))}: {fmt_money(amount, cur)}\n"
@@ -264,9 +262,7 @@ def build_store_report_lines(ctx, start, end, sid, cur, secure_db, get_ledger):
 
     lines.append("💵 Payments")
     lines += payment_lines if payment_lines else ["(none)"]
-    lines.append(f"\n📊 Total Payments (gross): {fmt_money(total_gross, cur)}")
-    lines.append(f"📊 Total Handling Fees:    -{fmt_money(total_fees_payments, cur)}")
-    lines.append(f"📊 Total Payments (net):   {fmt_money(total_gross - total_fees_payments, cur)} → {fmt_money(total_usd, 'USD')}")
+    lines.append(f"\n📊 Total Payments : {fmt_money(total_gross, cur)}")
     lines.append("──────────────────────────────\n")
 
 
