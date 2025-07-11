@@ -39,6 +39,14 @@ def get_all_sales_payments(secure_db, get_ledger):
                     all_payments.append(e)
     return all_sales, all_payments
 
+def get_all_partner_sales(secure_db, get_ledger):
+    partner_sales = []
+    for partner in secure_db.all("partners"):
+        for e in get_ledger("partner", partner.doc_id):
+            if e.get("entry_type") == "sale":
+                partner_sales.append(e)
+    return partner_sales
+
 def get_all_payouts(secure_db, get_ledger):
     all_payouts = []
     for partner in secure_db.all("partners"):
@@ -99,6 +107,39 @@ async def show_owner_position(update: Update, context: ContextTypes.DEFAULT_TYPE
     else:
         lines.append("   None")
 
+    # --- Partner Sales (All Partners, All Time) ---
+    partner_sales = get_all_partner_sales(secure_db, get_ledger)
+    partner_sales_summary = defaultdict(lambda: {"units": 0, "value": 0.0})
+    for s in partner_sales:
+        iid = s.get("item_id", "?")
+        units = abs(s.get("quantity", 0))
+        value = abs(units * s.get("unit_price", s.get("unit_cost", 0)))
+        partner_sales_summary[iid]["units"] += units
+        partner_sales_summary[iid]["value"] += value
+    total_partner_units = sum(d["units"] for d in partner_sales_summary.values())
+    total_partner_value = sum(d["value"] for d in partner_sales_summary.values())
+
+    lines.append(f"\n• Partner Sales (All Partners, All Time):")
+    if partner_sales_summary:
+        for iid, d in partner_sales_summary.items():
+            lines.append(f"   -  {iid}: {d['units']} units, {fmt_money(d['value'], 'USD')}")
+        lines.append(f"   Total: {total_partner_units} units, {fmt_money(total_partner_value, 'USD')}")
+    else:
+        lines.append("   None")
+
+    # --- Reconciliation (Customer Sales - Partner Sales) ---
+    lines.append(f"\n• Reconciliation (Sales minus Partner Sales):")
+    items_all = set(list(sales_summary.keys()) + list(partner_sales_summary.keys()))
+    any_rec = False
+    for iid in items_all:
+        rec_units = sales_summary[iid]["units"] - partner_sales_summary[iid]["units"]
+        if rec_units != 0:
+            any_rec = True
+            lines.append(f"   -  {iid}: {rec_units} units")
+    if not any_rec:
+        lines.append("   All reconciled (0 units difference)")
+
+    # --- Payments (All Customers, All Time) ---
     lines.append(f"\n• Payments (All Customers, All Time):")
     total_payments_value = sum(e.get("usd_amt", e.get("amount", 0)) for e in all_payments)
     if all_payments:
