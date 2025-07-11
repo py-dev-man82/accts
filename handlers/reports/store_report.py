@@ -61,6 +61,7 @@ def build_formatted_store_report_lines(
     stockin_lines, current_stock_lines, stock_value,
     balance,
 ):
+    total_all_expenses = other_total
     lines = build_formatted_store_report_lines(
     store_name, start, end, cur,
     sales_lines, fee_lines, unit_summary,
@@ -230,6 +231,7 @@ def build_store_report_lines(ctx, start, end, sid, cur, secure_db, get_ledger):
     total_exp = sum(abs(e.get("amount", 0)) for e in alltime_expenses)
     balance = total_sales + total_fees - total_pay - total_exp
 
+    total_all_expenses = other_total
     lines = build_formatted_store_report_lines(
     store_name, start, end, cur,
     sales_lines, fee_lines, unit_summary,
