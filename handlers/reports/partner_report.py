@@ -237,16 +237,16 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 expense_lines.append(f"   - {fmt_date(h.get('date', ''))}: [{item} x {qty}] {fmt_money(unit_fee, cur)} = {fmt_money(amt, cur)}")
             else:
                 expense_lines.append(f"   - {fmt_date(h.get('date', ''))}: [{item}] {fmt_money(amt, cur)}")
-        expense_lines.append(f"📊 Total Handling Fees: {fmt_money(handling_total, cur)}")
+        expense_lines.append(f"\n📊 Total Handling Fees: {fmt_money(handling_total, cur)}")
     if other_expenses:
-        expense_lines.append("• 🧾 Other Expenses")
+        expense_lines.append("\n• 🧾 Other Expenses")
         for e in other_expenses:
             expense_lines.append(f"   - {fmt_date(e.get('date', ''))}: {fmt_money(abs(e.get('amount', 0)), cur)}")
-        expense_lines.append(f"📊 Total Other Expenses: {fmt_money(other_total, cur)}")
+        expense_lines.append(f"\n📊 Total Other Expenses: {fmt_money(other_total, cur)}")
     if inventory_purchase_lines:
-        expense_lines.append("📦 Inventory Purchase:")
+        expense_lines.append("\n📦 Inventory Purchase:")
         expense_lines += inventory_purchase_lines
-        expense_lines.append(f"📊 Total Inventory Purchase: {fmt_money(total_inventory_purchase, cur)}")
+        expense_lines.append(f"\n📊 Total Inventory Purchase: {fmt_money(total_inventory_purchase, cur)}")
     total_all_expenses = handling_total + other_total + total_inventory_purchase
     if expense_lines:
         expense_lines.append(f"\n📊 Total All Expenses: {fmt_money(total_all_expenses, cur)}")
@@ -283,7 +283,6 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
             current_stock_lines.append(f"   - [{item}] {qty} × {fmt_money(mp, cur)} = {fmt_money(val, cur)}")
             stock_value += val
 
-    # The rest is unchanged (totals, navigation, etc)
     sales_lines = []
     for item_id, entries in sale_items.items():
         for s in sorted(entries, key=lambda x: (x.get("date", ""), x.get("timestamp", "")), reverse=True):
@@ -303,27 +302,35 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     total_other_exp = other_total
     balance = total_sales - total_pay_local - total_handling - total_other_exp - total_inventory_purchase
 
-    lines = []
+    # HEADER AND SEPARATORS
+    lines = [
+        f"📄 Account: {partner['name']}",
+        f"🗓️ Period: {fmt_date(start.strftime('%d%m%Y'))} → {fmt_date(end.strftime('%d%m%Y'))}",
+        "──────────────────────────────",
+    ]
     if ctx["scope"] in ("full", "sales"):
         lines.append("🛒 Sales")
         lines += sales_lines
         lines.append("")
         lines.append("📦 Units Sold (by item):")
         lines += unit_summary
-        lines.append(f"\n📊 Total Sales: {fmt_money(total_sales, cur)}\n")
+        lines.append(f"\n📊 Total Sales: {fmt_money(total_sales, cur)}")
+        lines.append("──────────────────────────────")
     if ctx["scope"] in ("full", "payments"):
         lines.append("💵 Payments")
         lines += payment_lines
-        lines.append(f"\n📊 Total Payments: {fmt_money(total_pay_local, cur)} → {fmt_money(total_pay_usd, 'USD')}\n")
+        lines.append(f"\n📊 Total Payments: {fmt_money(total_pay_local, cur)} → {fmt_money(total_pay_usd, 'USD')}")
+        lines.append("──────────────────────────────")
     if ctx["scope"] == "full":
         lines.append("🧾 Expenses")
         lines += expense_lines
-        lines.append("")
+        lines.append("──────────────────────────────")
         lines.append("📦 Inventory")
         if current_stock_lines:
             lines.append("• Current Stock @ market:")
             lines += current_stock_lines
-        lines.append(f"\n📊 Stock Value: {fmt_money(stock_value, cur)}\n")
+        lines.append(f"\n📊 Stock Value: {fmt_money(stock_value, cur)}")
+        lines.append("──────────────────────────────")
         lines.append("📊 Financial Position")
         lines.append(f"Balance (S − P − E): {fmt_money(balance, cur)}")
         lines.append(f"Inventory Value:     {fmt_money(stock_value, cur)}")
@@ -342,6 +349,7 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown"
     )
     return REPORT_PAGE
+
 
 @require_unlock
 async def paginate(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -423,16 +431,16 @@ async def export_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 expense_lines.append(f"   - {fmt_date(h.get('date', ''))}: [{item} x {qty}] {fmt_money(unit_fee, cur)} = {fmt_money(amt, cur)}")
             else:
                 expense_lines.append(f"   - {fmt_date(h.get('date', ''))}: [{item}] {fmt_money(amt, cur)}")
-        expense_lines.append(f"📊 Total Handling Fees: {fmt_money(handling_total, cur)}")
+        expense_lines.append(f"\n📊 Total Handling Fees: {fmt_money(handling_total, cur)}")
     if other_expenses:
-        expense_lines.append("• 🧾 Other Expenses")
+        expense_lines.append("\n• 🧾 Other Expenses")
         for e in other_expenses:
             expense_lines.append(f"   - {fmt_date(e.get('date', ''))}: {fmt_money(abs(e.get('amount', 0)), cur)}")
-        expense_lines.append(f"📊 Total Other Expenses: {fmt_money(other_total, cur)}")
+        expense_lines.append(f"\n📊 Total Other Expenses: {fmt_money(other_total, cur)}")
     if inventory_purchase_lines:
-        expense_lines.append("📦 Inventory Purchase:")
+        expense_lines.append("\n📦 Inventory Purchase:")
         expense_lines += inventory_purchase_lines
-        expense_lines.append(f"📊 Total Inventory Purchase: {fmt_money(total_inventory_purchase, cur)}")
+        expense_lines.append(f"\n📊 Total Inventory Purchase: {fmt_money(total_inventory_purchase, cur)}")
     total_all_expenses = handling_total + other_total + total_inventory_purchase
     if expense_lines:
         expense_lines.append(f"\n📊 Total All Expenses: {fmt_money(total_all_expenses, cur)}")
@@ -476,7 +484,34 @@ async def export_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
             current_stock_lines.append(f"   - [{item}] {qty} × {fmt_money(mp, cur)} = {fmt_money(val, cur)}")
             stock_value += val
 
-    balance = total_sales - total_pay_local - handling_total - other_total - total_inventory_purchase
+    sales_lines = []
+    for item_id, entries in sale_items.items():
+        for s in sorted(entries, key=lambda x: (x.get("date", ""), x.get("timestamp", "")), reverse=True):
+            qty = s.get('quantity', 0)
+            price = s.get('unit_price', s.get('unit_cost', 0))
+            sales_lines.append(
+                f"• {fmt_date(s.get('date', ''))}: [{item_id}] {qty} × {fmt_money(price, cur)} = {fmt_money(abs(qty * price), cur)}"
+            )
+    unit_summary = []
+    for item_id, entries in sale_items.items():
+        units = sum(abs(s.get('quantity', 0)) for s in entries)
+        value = sum(abs(s.get('quantity', 0) * s.get('unit_price', s.get('unit_cost', 0))) for s in entries)
+        unit_summary.append(f"- [{item_id}] : {units} units, {fmt_money(value, cur)}")
+
+    payment_lines = []
+    for p in sorted(payments, key=lambda x: (x.get("date", ""), x.get("timestamp", "")), reverse=True):
+        amount = p.get('amount', 0)
+        fee_perc = p.get('fee_perc', 0)
+        fx_rate = p.get('fx_rate', 0)
+        inv_fx = 1/fx_rate if fx_rate else 0
+        usd_amt = p.get('usd_amt', 0)
+        payment_lines.append(
+            f"• {fmt_date(p.get('date', ''))}: {fmt_money(amount, cur)}  |  {fee_perc:g}%  |  {inv_fx:.4f}  |  {fmt_money(usd_amt, 'USD')}"
+        )
+
+    total_handling = handling_total
+    total_other_exp = other_total
+    balance = total_sales - total_pay_local - total_handling - total_other_exp - total_inventory_purchase
 
     buf = BytesIO()
     pdf = canvas.Canvas(buf, pagesize=letter)
@@ -492,56 +527,48 @@ async def export_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pdf.showPage()
             y = height - 40
 
+    # --- HEADER
     pdf.setFont("Helvetica-Bold", 14)
-    pdf.drawString(50, y, f"Report — {partner['name']}")
+    pdf.drawString(50, y, f"Account: {partner['name']}")
     y -= 20
     pdf.setFont("Helvetica", 10)
     line(f"Period: {fmt_date(start.strftime('%d%m%Y'))} → {fmt_date(end.strftime('%d%m%Y'))}")
-    line(f"Currency: {cur}")
-    y -= 10
+    line("──────────────────────────────")
 
+    # --- SALES
     if scope in ("full", "sales"):
-        line("Sales", bold=True)
-        for item_id, entries in sale_items.items():
-            for s in sorted(entries, key=lambda x: (x.get("date", ""), x.get("timestamp", "")), reverse=True):
-                qty = s.get('quantity', 0)
-                price = s.get('unit_price', s.get('unit_cost', 0))
-                line(f"{fmt_date(s.get('date', ''))}: [{item_id}] {qty} × {fmt_money(price, cur)} = {fmt_money(abs(qty * price), cur)}")
+        line("🛒 Sales", bold=True)
+        for l in sales_lines:
+            line(l)
         line("")
-        line("Units Sold (by item):")
-        for item_id, entries in sale_items.items():
-            units = sum(abs(s.get('quantity', 0)) for s in entries)
-            value = sum(abs(s.get('quantity', 0) * s.get('unit_price', s.get('unit_cost', 0))) for s in entries)
-            line(f"- [{item_id}] : {units} units, {fmt_money(value, cur)}")
-        line(f"Total Sales: {fmt_money(total_sales, cur)}")
-        y -= 10
+        line("📦 Units Sold (by item):")
+        for l in unit_summary:
+            line(l)
+        line(f"📊 Total Sales: {fmt_money(total_sales, cur)}")
+        line("──────────────────────────────")
 
+    # --- PAYMENTS
     if scope in ("full", "payments"):
-        line("Payments", bold=True)
-        for p in sorted(payments, key=lambda x: (x.get("date", ""), x.get("timestamp", "")), reverse=True):
-            amount = p.get('amount', 0)
-            fee_perc = p.get('fee_perc', 0)
-            fx_rate = p.get('fx_rate', 0)
-            inv_fx = 1/fx_rate if fx_rate else 0
-            usd_amt = p.get('usd_amt', 0)
-            line(f"{fmt_date(p.get('date', ''))}: {fmt_money(amount, cur)}  |  {fee_perc:g}%  |  {inv_fx:.4f}  |  {fmt_money(usd_amt, 'USD')}")
-        line(f"Total Payments: {fmt_money(total_pay_local, cur)} → {fmt_money(total_pay_usd, 'USD')}")
-        y -= 10
+        line("💵 Payments", bold=True)
+        for l in payment_lines:
+            line(l)
+        line(f"📊 Total Payments: {fmt_money(total_pay_local, cur)} → {fmt_money(total_pay_usd, 'USD')}")
+        line("──────────────────────────────")
 
+    # --- EXPENSES/INVENTORY/FINANCIALS
     if scope == "full":
-        if expense_lines:
-            line("Expenses", bold=True)
-            for l in expense_lines:
-                line(l)
-            y -= 10
-        line("Inventory", bold=True)
+        line("🧾 Expenses", bold=True)
+        for l in expense_lines:
+            line(l)
+        line("──────────────────────────────")
+        line("📦 Inventory", bold=True)
         if current_stock_lines:
             line("• Current Stock @ market:")
             for l in current_stock_lines:
                 line(l)
-        line(f"Stock Value: {fmt_money(stock_value, cur)}")
-        y -= 10
-        line("Financial Position", bold=True)
+        line(f"📊 Stock Value: {fmt_money(stock_value, cur)}")
+        line("──────────────────────────────")
+        line("📊 Financial Position", bold=True)
         line(f"Balance (S − P − E): {fmt_money(balance, cur)}")
         line(f"Inventory Value:     {fmt_money(stock_value, cur)}")
         line("────────────────────────────────────")
@@ -556,6 +583,7 @@ async def export_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
         caption=f"Report for {partner['name']} ({fmt_date(start.strftime('%d%m%Y'))} → {fmt_date(end.strftime('%d%m%Y'))})"
     )
     return REPORT_PAGE
+
 
 def register_partner_report_handlers(app):
     app.add_handler(CallbackQueryHandler(show_partner_report_menu, pattern="^rep_part$"))
