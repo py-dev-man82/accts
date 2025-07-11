@@ -73,7 +73,7 @@ def build_store_report_lines(ctx, start, end, sid, cur, secure_db, get_ledger):
     store_sales = []
     for cust in secure_db.all("customers"):
         # Try all possible customer account types present in your ledgers
-        for acct_type in ["general", "store", "partner", "store_customer"]:
+        for acct_type in ["store", "store_customer"]:
             ledger = get_ledger(acct_type, cust.doc_id)
             for e in ledger:
                 if (
