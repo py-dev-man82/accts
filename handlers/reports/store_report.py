@@ -74,7 +74,7 @@ def build_store_report_lines(ctx, start, end, sid, cur, secure_db, get_ledger):
 # Find the store's customer account (by name)
     for cust in secure_db.all("customers"):
         if cust["name"] == store_name:
-           ledger = get_ledger("store", cust.doc_id)
+           ledger = get_ledger("store_customer", cust.doc_id)
            for e in ledger:
                if (
                    e.get("entry_type") == "sale"
