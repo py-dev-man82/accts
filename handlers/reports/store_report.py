@@ -282,9 +282,9 @@ def build_store_report_lines(ctx, start, end, sid, cur, secure_db, get_ledger):
     lines.append("──────────────────────────────\n")
 
     # --- Financial Position Section ---
-    balance = total_sales_only - total_fees_only - total_gross - total_all_expenses
+    balance = total_sales_only - total_fees_only - total_gross
     lines.append("📊 Financial Position (ALL TIME)")
-    lines.append(f"Balance (S - Fees − P − E): {fmt_money(balance, cur)}")
+    lines.append(f"Balance (S - Fees − P): {fmt_money(balance, cur)}")
     lines.append(f"Inventory Value:     {fmt_money(stock_value, cur)}")
     lines.append("────────────────────────────────────")
     lines.append(f"Total Position:      {fmt_money(balance + stock_value, cur)}")
