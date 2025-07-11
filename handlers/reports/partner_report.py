@@ -327,7 +327,7 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines.append("──────────────────────────────")
         lines.append("📦 Inventory")
         if current_stock_lines:
-            lines.append("• Current Stock @ market:")
+            lines.append("• Current @ market:")
             lines += current_stock_lines
         lines.append(f"\n📊 Stock Value: {fmt_money(stock_value, cur)}")
         lines.append("──────────────────────────────")
@@ -563,7 +563,7 @@ async def export_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
         line("──────────────────────────────")
         line("📦 Inventory", bold=True)
         if current_stock_lines:
-            line("• Current Stock @ market:")
+            line("• Current @ market:")
             for l in current_stock_lines:
                 line(l)
         line(f"📊 Stock Value: {fmt_money(stock_value, cur)}")
