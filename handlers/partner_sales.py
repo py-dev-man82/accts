@@ -180,7 +180,7 @@ async def psale_choose_partner(update: Update, context: ContextTypes.DEFAULT_TYP
     # --- Display Inventory to Reconcile (matches owner report) ---
     if to_reconcile:
         lines = [f"• {iid}: {qty} units" for iid, qty in to_reconcile.items()]
-        msg = "📋 Inventory to Reconcile (Partner Inventory - Store Inventory):\n" + "\n".join(lines) + "\n\nEnter item_id (or type DONE):"
+        msg = "📋 Inventory to Reconcile:\n" + "\n".join(lines) + "\n\nEnter item_id (or type DONE):"
     else:
         msg = "All inventory reconciled.\n\nEnter item_id (or type DONE):"
 
