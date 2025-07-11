@@ -21,7 +21,9 @@ from tinydb import Query
 from handlers.reports.report_utils import (
     build_sales_summary,
     build_partner_sales_summary,
-    get_unreconciled_units
+    get_global_store_inventory,
+    compute_partner_inventory,
+    get_inventory_to_reconcile
 )
 
 
@@ -158,21 +160,33 @@ async def psale_choose_partner(update: Update, context: ContextTypes.DEFAULT_TYP
     await update.callback_query.answer()
     pid = int(update.callback_query.data.split("_")[-1])
     context.user_data.update({"ps_partner": pid, "ps_items": {}})
-    
-    # --- Calculate unreconciled units for ALL partners/items ---
-    sales_summary = build_sales_summary(secure_db, get_ledger)
-    partner_sales_summary = build_partner_sales_summary(secure_db, get_ledger)
-    to_reconcile = get_unreconciled_units(sales_summary, partner_sales_summary)
-    
-    # --- Display as "Available for Reconciliation (All Partners)" ---
+
+    # --- Compute inventories, just like owner report ---
+    store_inventory = get_global_store_inventory(secure_db, get_ledger)  # {item_id: qty, ...}
+    partner_inventories = compute_partner_inventory(secure_db, get_ledger)  # {partner_id: {item_id: qty, ...}, ...}
+
+    # Combine all partners for system-wide, or just show for this partner:
+    # Here, we'll sum partner inventories (all partners) to match owner report logic:
+    partner_inventory_units = defaultdict(int)
+    for inv in partner_inventories.values():
+        for iid, qty in inv.items():
+            partner_inventory_units[iid] += qty
+    # OR: for just this partner, use partner_inventories[pid]
+
+    store_inventory_units = {iid: qty for iid, qty in store_inventory.items() if qty > 0}
+
+    to_reconcile = get_inventory_to_reconcile(partner_inventory_units, store_inventory_units)
+
+    # --- Display Inventory to Reconcile (matches owner report) ---
     if to_reconcile:
         lines = [f"• {iid}: {qty} units" for iid, qty in to_reconcile.items()]
-        msg = "📋 Available for Reconciliation (All Partners):\n" + "\n".join(lines) + "\n\nEnter item_id (or type DONE):"
+        msg = "📋 Inventory to Reconcile (Partner Inventory - Store Inventory):\n" + "\n".join(lines) + "\n\nEnter item_id (or type DONE):"
     else:
-        msg = "No unreconciled sales available for any partner.\n\nEnter item_id (or type DONE):"
-    
+        msg = "All inventory reconciled.\n\nEnter item_id (or type DONE):"
+
     await update.callback_query.edit_message_text(msg)
     return PS_ITEM_ID
+
 
 
 async def psale_item_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
