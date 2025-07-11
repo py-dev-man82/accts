@@ -27,6 +27,22 @@ def compute_partner_inventory(secure_db, get_ledger):
         inventory[partner.doc_id] = dict(stock)
     return inventory
 
+def get_unreconciled_units(sales_summary, partner_sales_summary):
+    """
+    Returns a dict of item_id -> unreconciled units (customer sales minus partner sales)
+    for all items with nonzero difference.
+
+    sales_summary: dict, e.g. {item_id: {'units': int, ...}, ...}
+    partner_sales_summary: dict, e.g. {item_id: {'units': int, ...}, ...}
+    """
+    items_all = set(list(sales_summary.keys()) + list(partner_sales_summary.keys()))
+    reconciliation = {}
+    for iid in items_all:
+        rec_units = sales_summary.get(iid, {}).get("units", 0) - partner_sales_summary.get(iid, {}).get("units", 0)
+        if rec_units != 0:
+            reconciliation[iid] = rec_units
+    return reconciliation
+
 def compute_store_sales(secure_db, get_ledger, start=None, end=None):
     sales = defaultdict(lambda: defaultdict(list))
     for store in secure_db.all("stores"):
