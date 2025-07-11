@@ -212,3 +212,33 @@ def compute_customer_payments(secure_db, get_ledger, start=None, end=None):
                         continue
                 payments[customer.doc_id].append(e)
     return payments
+
+def build_sales_summary(secure_db, get_ledger):
+    """
+    Returns a dict {item_id: {'units': int}} for all customer sales (all customers, all items).
+    """
+    summary = {}
+    for cust in secure_db.all("customers"):
+        ledger = get_ledger("customer", cust.doc_id)
+        for e in ledger:
+            if e.get("entry_type") == "sale":
+                iid = e.get("item_id")
+                qty = abs(e.get("quantity", 0))
+                d = summary.setdefault(iid, {"units": 0})
+                d["units"] += qty
+    return summary
+
+def build_partner_sales_summary(secure_db, get_ledger):
+    """
+    Returns a dict {item_id: {'units': int}} for all partner sales (all partners, all items).
+    """
+    summary = {}
+    for partner in secure_db.all("partners"):
+        ledger = get_ledger("partner", partner.doc_id)
+        for e in ledger:
+            if e.get("entry_type") == "sale":
+                iid = e.get("item_id")
+                qty = abs(e.get("quantity", 0))
+                d = summary.setdefault(iid, {"units": 0})
+                d["units"] += qty
+    return summary
