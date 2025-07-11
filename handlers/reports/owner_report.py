@@ -7,7 +7,7 @@ from telegram.ext import CallbackQueryHandler, CommandHandler, ContextTypes
 from handlers.utils import require_unlock, fmt_money
 from handlers.ledger import get_balance, get_ledger
 from secure_db import secure_db
-from handlers.reports.report_utils import get_global_store_inventory
+from handlers.reports.report_utils import get_global_store_inventory, get_inventory_to_reconcile
 
 OWNER_ACCOUNT_ID = "POT"
 (
@@ -247,17 +247,18 @@ async def show_owner_position(update: Update, context: ContextTypes.DEFAULT_TYPE
         lines.append("   None")
     lines.append("")
 
-    # --- Inventory reconciliation (sales not yet allocated to partners) ---
-    lines.append(f"• Inventory reconciliation (sales not yet allocated to partners):")
-    items_all = set(list(sales_summary.keys()) + list(partner_sales_summary.keys()))
-    any_rec = False
-    for iid in items_all:
-        rec_units = sales_summary[iid]["units"] - partner_sales_summary[iid]["units"]
-        if rec_units != 0:
-            any_rec = True
-            lines.append(f"   -  {iid}: {rec_units} units")
-    if not any_rec:
-        lines.append("   All reconciled (0 units difference)")
+        # --- Inventory to Reconcile (Partner Inventory - Store Inventory) ---
+    partner_inventory_units = {iid: v['units'] for iid, v in partner_inv.items()}
+    store_inventory_units = {iid: qty for iid, qty in stock_balance.items() if qty > 0}
+    to_reconcile = get_inventory_to_reconcile(partner_inventory_units, store_inventory_units)
+    lines.append("• Inventory to Reconcile:")
+    if to_reconcile:
+        for iid, units in to_reconcile.items():
+            lines.append(f"   - {iid}: {units} units")
+    else:
+        lines.append("   All inventory reconciled.")
+    lines.append("")
+
 
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("🔄 Refresh", callback_data="rep_owner")],
