@@ -269,11 +269,6 @@ def build_store_report_lines(ctx, start, end, sid, cur, secure_db, get_ledger):
     lines.append(f"📊 Total Payments (net):   {fmt_money(total_gross - total_fees_payments, cur)} → {fmt_money(total_usd, 'USD')}")
     lines.append("──────────────────────────────\n")
 
-    # --- Expenses Section ---
-    lines.append("🧾 Expenses")
-    lines += expense_lines if expense_lines else ["(none)"]
-    lines.append(f"\n📊 Total All Expenses: {fmt_money(total_all_expenses, cur)}")
-    lines.append("──────────────────────────────\n")
 
     # --- Inventory Section ---
     lines.append("📦 Inventory")
