@@ -3,6 +3,7 @@
 #  Partner-Sales module  (Owner → Partner reconciliation)
 #  • One record per item (flatter schema, aligns with sales/stock-in).
 #  • Double-entry ledger integration with safeguards / rollback.
+#  • INVENTORY NOW CALCULATED LIVE FROM LEDGER (no reliance on partner_inventory table).
 # ────────────────────────────────────────────────────────────────
 import logging
 from datetime import datetime
@@ -19,7 +20,7 @@ from telegram.ext import (
 from tinydb import Query
 
 from handlers.utils   import require_unlock, fmt_money, fmt_date
-from handlers.ledger  import add_ledger_entry
+from handlers.ledger  import add_ledger_entry, get_ledger
 from secure_db        import secure_db
 
 logger = logging.getLogger("partner_sales")
@@ -40,6 +41,33 @@ def _filter_by_time(rows: list[dict], period: str) -> list[dict]:
         cutoff = datetime.utcnow().timestamp() - days * 86_400
         return [r for r in rows if datetime.fromisoformat(r["timestamp"]).timestamp() >= cutoff]
     return rows
+
+# ╔══════════════════════════════════════════════════════════════╗
+# ║   LEDGER-BASED PARTNER INVENTORY CALCULATION                ║
+# ╚══════════════════════════════════════════════════════════════╝
+def calc_partner_inventory_from_ledger(partner_id):
+    """Return {item_id: available_qty, ...} for this partner from the ledger."""
+    pledger = get_ledger("partner", partner_id)
+    cledger = get_ledger("customer", partner_id)
+
+    stockin = {}
+    # 1. Tally all stockin
+    for e in pledger:
+        if e.get("entry_type") == "stockin":
+            iid = e.get("item_id")
+            stockin[iid] = stockin.get(iid, 0) + e.get("quantity", 0)
+    # 2. Subtract all customer account sales for this partner
+    for e in cledger:
+        if e.get("entry_type") == "sale":
+            iid = e.get("item_id")
+            stockin[iid] = stockin.get(iid, 0) - abs(e.get("quantity", 0))
+    # 3. Subtract all direct partner sales
+    for e in pledger:
+        if e.get("entry_type") == "sale":
+            iid = e.get("item_id")
+            stockin[iid] = stockin.get(iid, 0) - abs(e.get("quantity", 0))
+    # Remove 0/neg items (optional)
+    return {iid: qty for iid, qty in stockin.items() if qty > 0}
 
 # ────────────────────────────────────────────────────────────────
 #  Conversation-state constants
@@ -96,7 +124,18 @@ async def psale_choose_partner(update: Update, context: ContextTypes.DEFAULT_TYP
     await update.callback_query.answer()
     pid = int(update.callback_query.data.split("_")[-1])
     context.user_data.update({"ps_partner": pid, "ps_items": {}})
-    await update.callback_query.edit_message_text("Enter item_id (or type DONE):")
+
+    # CALCULATE & DISPLAY CURRENT INVENTORY FROM LEDGER
+    inv = calc_partner_inventory_from_ledger(pid)
+    if inv:
+        lines = [f"• Item {iid}: {qty} units" for iid, qty in inv.items()]
+        inv_txt = "\n".join(lines)
+    else:
+        inv_txt = "No inventory found for this partner."
+
+    await update.callback_query.edit_message_text(
+        f"📦 Current Inventory (live from ledger):\n{inv_txt}\n\nEnter item_id (or type DONE):"
+    )
     return PS_ITEM_ID
 
 async def psale_item_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -207,10 +246,16 @@ async def psale_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     inserted_ids: list[tuple[str, int, int]] = []   # [(item_id, doc_id, qty)]
     try:
+        inv_now = calc_partner_inventory_from_ledger(pid)
         for iid, det in items.items():
             qty         = det["qty"]
             unit_price  = det["unit_price"]
             total_value = qty * unit_price
+
+            # **LEDGER INVENTORY CHECK**
+            available = inv_now.get(iid, 0)
+            if available < qty:
+                raise Exception(f"Insufficient stock for '{iid}'. Have {available}, need {qty}.")
 
             # 1️⃣  partner_sales row  (one per item)
             sale_doc_id = secure_db.insert("partner_sales", {
@@ -225,17 +270,7 @@ async def psale_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
             })
             inserted_ids.append((iid, sale_doc_id, qty))
 
-            # 2️⃣  partner_inventory decrement
-            Q   = Query()
-            row = secure_db.table("partner_inventory").get(
-                (Q.partner_id == pid) & (Q.item_id == iid)
-            )
-            if not row or row["quantity"] < qty:
-                raise Exception(f"Insufficient stock for '{iid}'. Have {row['quantity'] if row else 0}, need {qty}.")
-
-            secure_db.update("partner_inventory",
-                             {"quantity": row["quantity"] - qty},
-                             [row.doc_id])
+            # 2️⃣  partner_inventory decrement is now purely for legacy/audit—ledger is source of truth!
 
             # 3️⃣  LEDGER — credit partner
             add_ledger_entry(
@@ -271,14 +306,6 @@ async def psale_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for iid, sid, qty in inserted_ids:
             try:
                 secure_db.remove("partner_sales", [sid])
-                Q = Query()
-                row = secure_db.table("partner_inventory").get(
-                    (Q.partner_id == pid) & (Q.item_id == iid)
-                )
-                if row:
-                    secure_db.update("partner_inventory",
-                                     {"quantity": row["quantity"] + qty},
-                                     [row.doc_id])
             except Exception:       # best-effort rollback
                 pass
         await update.callback_query.edit_message_text(
@@ -292,6 +319,7 @@ async def psale_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     return ConversationHandler.END
 
+# (THE REST OF THE FILE IS UNCHANGED)
 # ╔══════════════════════════════════════════════════════════════╗
 # ║                         VIEW                                ║
 # ╚══════════════════════════════════════════════════════════════╝
