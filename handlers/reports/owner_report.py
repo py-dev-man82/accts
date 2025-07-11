@@ -81,7 +81,13 @@ def payments_by_currency(payments):
     for p in payments:
         cur = p.get("currency", "USD")
         amt = p.get("amount", 0.0)
-        usd = p.get("usd_amt", amt if cur == "USD" else 0.0)
+        # Fixed logic: always use usd_amt if set, otherwise for USD use amount, else zero
+        if "usd_amt" in p and p["usd_amt"] is not None:
+            usd = p["usd_amt"]
+        elif cur == "USD":
+            usd = amt
+        else:
+            usd = 0.0  # Optionally add fx logic here if needed
         currency_groups[cur]["local"] += amt
         currency_groups[cur]["usd"] += usd
         currency_groups[cur]["currency"] = cur
@@ -156,13 +162,6 @@ async def show_owner_position(update: Update, context: ContextTypes.DEFAULT_TYPE
     total_usd = 0.0
     if pay_cur:
         for cur, group in pay_cur.items():
-            cur_label = cur
-            if cur == "AUD":
-                cur_label = "A$"
-            elif cur == "GBP":
-                cur_label = "£"
-            elif cur == "USD":
-                cur_label = "$"
             local_str = fmt_money(group["local"], cur)
             usd_str = fmt_money(group["usd"], "USD")
             lines.append(f"   -  {cur}: {local_str} → {usd_str} USD")
@@ -179,13 +178,6 @@ async def show_owner_position(update: Update, context: ContextTypes.DEFAULT_TYPE
     lines.append(f"• Payouts (All Partners, All Time):")
     if payout_cur:
         for cur, group in payout_cur.items():
-            cur_label = cur
-            if cur == "AUD":
-                cur_label = "A$"
-            elif cur == "GBP":
-                cur_label = "£"
-            elif cur == "USD":
-                cur_label = "$"
             local_str = fmt_money(group["local"], cur)
             usd_str = fmt_money(group["usd"], "USD")
             lines.append(f"   -  {cur}: {local_str} → {usd_str} USD")
