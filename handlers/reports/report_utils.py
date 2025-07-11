@@ -261,7 +261,7 @@ def get_global_store_inventory(secure_db, get_ledger):
             if e.get("entry_type") == "stockin" and e.get("store_id") is not None:
                 stock_balance[e.get("item_id")] += e.get("quantity", 0)
     # 2. Subtract all sales for all stores (from any ledger)
-    for ledger_type in ["customer", "store_customer", "partner"]:
+    for ledger_type in ["general", "store", "partner"]:
         for acct in secure_db.all(ledger_type + "s"):
             for e in get_ledger(ledger_type, acct.doc_id):
                 if e.get("entry_type") == "sale" and e.get("store_id") is not None:
