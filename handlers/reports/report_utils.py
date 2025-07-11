@@ -267,3 +267,16 @@ def get_global_store_inventory(secure_db, get_ledger):
                 if e.get("entry_type") == "sale" and e.get("store_id") is not None:
                     stock_balance[e.get("item_id")] -= abs(e.get("quantity", 0))
     return stock_balance
+
+def get_inventory_to_reconcile(partner_inventory, store_inventory):
+    """
+    Returns a dict of item_id -> units to reconcile (partner inventory - store inventory)
+    Only nonzero differences are included.
+    """
+    all_items = set(list(partner_inventory.keys()) + list(store_inventory.keys()))
+    to_reconcile = {}
+    for iid in all_items:
+        units = partner_inventory.get(iid, 0) - store_inventory.get(iid, 0)
+        if units != 0:
+            to_reconcile[iid] = units
+    return to_reconcile
