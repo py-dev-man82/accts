@@ -71,17 +71,21 @@ def build_store_report_lines(ctx, start, end, sid, cur, secure_db, get_ledger):
 
     # SALES
     store_sales = []
-# Find the store's customer account (by name)
-    for cust in secure_db.all("customers"):
-        if cust["name"] == store_name:
-           ledger = get_ledger("store_customer", cust.doc_id)
-           for e in ledger:
-               if (
-                   e.get("entry_type") == "sale"
-                   and e.get("store_id") == sid  # Optionally require store_id to match
-                   and _between(e.get("date", ""), start, end)
-            ):
-                   store_sales.append(e)
+    for c in secure_db.all("customers"):
+        if c["name"] == store["name"]:
+            store_sales += [
+                e for e in get_ledger("store_customer", c.doc_id)
+                if (
+                    e.get("entry_type") == "sale"
+                    and e.get("store_id") == sid
+                    and _between(e.get("date", ""), start, end)
+                )
+            ]
+
+    sale_items = defaultdict(list)
+    for s in store_sales:
+        sale_items[s.get("item_id", "?")].append(s)
+
     sales_sorted = sorted(store_sales, key=lambda x: (x.get("date", ""), x.get("timestamp", "")), reverse=True)
 
     # HANDLING FEES (from store ledger only)
