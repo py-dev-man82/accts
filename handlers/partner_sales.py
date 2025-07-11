@@ -41,38 +41,34 @@ def _filter_by_time(rows: list[dict], period: str) -> list[dict]:
         cutoff = datetime.utcnow().timestamp() - days * 86_400
         return [r for r in rows if datetime.fromisoformat(r["timestamp"]).timestamp() >= cutoff]
     return rows
-def calc_available_for_reconciliation():
-    # Returns a dict {item_id: available_units} for all items,
-    # where available_units = total_customer_sales - total_partner_sales.
-    # Only items with available_units > 0 are included.
-    
+
+def calc_total_reconciliation_needed():
     from handlers.ledger import get_ledger
-    available = {}
-    # Sum all customer sales by item
-    total_customer_sales = {}
+    needed = {}
+    partner_names = set(p["name"] for p in secure_db.all("partners"))
+    partner_cust_sales = {}
     for cust in secure_db.all("customers"):
-        c_ledger = get_ledger("customer", cust.doc_id)
-        for e in c_ledger:
-            if e.get("entry_type") == "sale":
-                iid = e.get("item_id")
-                qty = abs(e.get("quantity", 0))
-                total_customer_sales[iid] = total_customer_sales.get(iid, 0) + qty
-    # Sum all partner sales (reconciled) by item
-    total_partner_sales = {}
-    for partner in secure_db.all("partners"):
-        p_ledger = get_ledger("partner", partner.doc_id)
+        if cust["name"] in partner_names:
+            c_ledger = get_ledger("customer", cust.doc_id)
+            for e in c_ledger:
+                if e.get("entry_type") == "sale":
+                    iid = e.get("item_id")
+                    qty = abs(e.get("quantity", 0))
+                    partner_cust_sales[iid] = partner_cust_sales.get(iid, 0) + qty
+    partner_sales = {}
+    for p in secure_db.all("partners"):
+        p_ledger = get_ledger("partner", p.doc_id)
         for e in p_ledger:
             if e.get("entry_type") == "sale":
                 iid = e.get("item_id")
                 qty = abs(e.get("quantity", 0))
-                total_partner_sales[iid] = total_partner_sales.get(iid, 0) + qty
-    # Calculate available for reconciliation
-    for iid, sold in total_customer_sales.items():
-        reconciled = total_partner_sales.get(iid, 0)
-        avail = sold - reconciled
-        if avail > 0:
-            available[iid] = avail
-    return available
+                partner_sales[iid] = partner_sales.get(iid, 0) + qty
+    for iid, total in partner_cust_sales.items():
+        done = partner_sales.get(iid, 0)
+        unreconciled = total - done
+        if unreconciled > 0:
+            needed[iid] = unreconciled
+    return needed
 
 # ╔══════════════════════════════════════════════════════════════╗
 # ║   LEDGER-BASED PARTNER INVENTORY CALCULATION                ║
@@ -156,15 +152,15 @@ async def psale_choose_partner(update: Update, context: ContextTypes.DEFAULT_TYP
     await update.callback_query.answer()
     pid = int(update.callback_query.data.split("_")[-1])
     context.user_data.update({"ps_partner": pid, "ps_items": {}})
-
-    # CALCULATE & DISPLAY AVAILABLE FOR RECONCILIATION (UNRECONCILED SALES)
-    available = calc_available_for_reconciliation()
-    if available:
-        lines = [f"• {iid}: {qty} units" for iid, qty in available.items()]
+    
+    # Show the system-wide reconciliation backlog for all partners/items
+    unrec = calc_total_reconciliation_needed()
+    if unrec:
+        lines = [f"• {iid}: {qty} units" for iid, qty in unrec.items()]
         avail_txt = "\n".join(lines)
-        msg = f"📋 Available for Reconciliation:\n{avail_txt}\n\nEnter item_id (or type DONE)"
+        msg = f"📋 Available for Reconciliation (All Partners):\n{avail_txt}\n\nEnter item_id (or type DONE):"
     else:
-        msg = "No unreconciled sales available for assignment.\n\nEnter item_id (or type DONE):"
+        msg = "No unreconciled sales available for any partner.\n\nEnter item_id (or type DONE):"
 
     await update.callback_query.edit_message_text(msg)
     return PS_ITEM_ID
