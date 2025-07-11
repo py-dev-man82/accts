@@ -111,7 +111,6 @@ def payments_by_currency(payments):
     return currency_groups
 
 def get_current_partner_inventory_with_value(secure_db, get_ledger):
-    # Inventory = stockin (in) - customer sales (out) - partner sales (out)
     partner_inventory = defaultdict(int)
     all_sales = []
     all_stockins = []
@@ -188,19 +187,6 @@ async def show_owner_position(update: Update, context: ContextTypes.DEFAULT_TYPE
         lines.append("   None")
     lines.append("")
 
-    # --- Inventory reconciliation (sales not yet allocated to partners) ---
-    lines.append(f"• Inventory reconciliation (sales not yet allocated to partners):")
-    items_all = set(list(sales_summary.keys()) + list(partner_sales_summary.keys()))
-    any_rec = False
-    for iid in items_all:
-        rec_units = sales_summary[iid]["units"] - partner_sales_summary[iid]["units"]
-        if rec_units != 0:
-            any_rec = True
-            lines.append(f"   -  {iid}: {rec_units} units")
-    if not any_rec:
-        lines.append("   All reconciled (0 units difference)")
-    lines.append("")
-
     # --- Payments (All Customers, All Time) ---
     lines.append(f"• Payments (All Customers, All Time):")
     pay_cur = payments_by_currency(all_payments)
@@ -263,6 +249,19 @@ async def show_owner_position(update: Update, context: ContextTypes.DEFAULT_TYPE
         lines.append(f"   Total Inventory Market Value: {fmt_money(total_market_value, 'USD')}")
     else:
         lines.append("   None")
+    lines.append("")
+
+    # --- Inventory reconciliation (sales not yet allocated to partners) ---
+    lines.append(f"• Inventory reconciliation (sales not yet allocated to partners):")
+    items_all = set(list(sales_summary.keys()) + list(partner_sales_summary.keys()))
+    any_rec = False
+    for iid in items_all:
+        rec_units = sales_summary[iid]["units"] - partner_sales_summary[iid]["units"]
+        if rec_units != 0:
+            any_rec = True
+            lines.append(f"   -  {iid}: {rec_units} units")
+    if not any_rec:
+        lines.append("   All reconciled (0 units difference)")
 
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("🔄 Refresh", callback_data="rep_owner")],
