@@ -53,6 +53,26 @@ def get_last_sale_price(ledger, item_id):
         return latest.get("unit_price", latest.get("unit_cost", 0))
     return 0
 
+def build_formatted_store_report_lines(
+    store_name, start, end, cur, sales_lines, fee_lines, unit_summary,
+    total_sales_only, total_fees_only, grand_total,
+    payment_lines, total_pay_local, total_pay_usd,
+    expense_lines, total_all_expenses,
+    stockin_lines, current_stock_lines, stock_value,
+    balance,
+):
+    lines = build_formatted_store_report_lines(
+    store_name, start, end, cur,
+    sales_lines, fee_lines, unit_summary,
+    total_sales_only, total_fees_only, grand_total,
+    payment_lines, total_pay_local, total_pay_usd,
+    expense_lines, total_all_expenses,
+    stockin_lines, current_stock_lines, stock_value,
+    balance
+)
+    return lines
+
+
 # === Diagnostics function using shared logic ===
 def store_report_diagnostic(sid, secure_db, get_ledger):
     print(f"\n==== STORE REPORT DIAGNOSTIC (Store {sid}) ====")
@@ -210,40 +230,15 @@ def build_store_report_lines(ctx, start, end, sid, cur, secure_db, get_ledger):
     total_exp = sum(abs(e.get("amount", 0)) for e in alltime_expenses)
     balance = total_sales + total_fees - total_pay - total_exp
 
-    lines = []
-    if ctx["scope"] in ("full", "sales"):
-        lines.append("🛒 Sales")
-        lines += sales_lines
-        lines.append("")
-        lines.append("💳 Handling Fees")
-        lines += fee_lines
-        lines.append("")
-        lines.append("📦 Units Sold (by item):")
-        lines += unit_summary
-        lines.append(f"\n📊 Total Sales: {fmt_money(total_sales_only, cur)}")
-        lines.append(f"📊 Total Handling Fees: {fmt_money(total_fees_only, cur)}")
-        lines.append(f"\n📊 Grand Total (Sales + Fees): {fmt_money(grand_total, cur)}\n")
-    if ctx["scope"] in ("full", "payments"):
-        lines.append("💵 Payments")
-        lines += payment_lines
-        lines.append(f"\n📊 Total Payments: {fmt_money(total_pay_local, cur)} → {fmt_money(total_pay_usd, 'USD')}\n")
-    if ctx["scope"] == "full":
-        lines.append("🧾 Expenses")
-        lines += expense_lines
-        lines.append("")
-        lines.append("📦 Inventory")
-        if stockin_lines:
-            lines.append("• In (filtered by date):")
-            lines += stockin_lines
-        if current_stock_lines:
-            lines.append("• Current Stock @ market:")
-            lines += current_stock_lines
-        lines.append(f"\n📊 Stock Value: {fmt_money(stock_value, cur)}\n")
-        lines.append("📊 Financial Position (ALL TIME)")
-        lines.append(f"Balance (S + Fees − P − E): {fmt_money(balance, cur)}")
-        lines.append(f"Inventory Value:     {fmt_money(stock_value, cur)}")
-        lines.append("────────────────────────────────────")
-        lines.append(f"Total Position:      {fmt_money(balance + stock_value, cur)}")
+    lines = build_formatted_store_report_lines(
+    store_name, start, end, cur,
+    sales_lines, fee_lines, unit_summary,
+    total_sales_only, total_fees_only, grand_total,
+    payment_lines, total_pay_local, total_pay_usd,
+    expense_lines, total_all_expenses,
+    stockin_lines, current_stock_lines, stock_value,
+    balance
+)
     return lines
 
 @require_unlock
