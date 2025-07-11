@@ -5,12 +5,24 @@ def compute_store_inventory(secure_db, get_ledger):
     inventory = {}
     for store in secure_db.all("stores"):
         stock = defaultdict(int)
+        # 1. Add stock-ins from the store's own ledger
         for e in get_ledger("store", store.doc_id):
             item_id = e.get("item_id", "?")
             if e.get("entry_type") == "stockin":
                 stock[item_id] += e.get("quantity", 0)
-            elif e.get("entry_type") == "sale":
-                stock[item_id] -= abs(e.get("quantity", 0))
+        # 2. Add stock-ins from partners
+        for partner in secure_db.all("partners"):
+            for e in get_ledger("partner", partner.doc_id):
+                item_id = e.get("item_id", "?")
+                if e.get("entry_type") == "stockin" and e.get("store_id") == store.doc_id:
+                    stock[item_id] += e.get("quantity", 0)
+        # 3. Subtract sales made by this store's own store-customer account
+        for cust in secure_db.all("customers"):
+            if cust["name"] == store["name"]:
+                for e in get_ledger("store_customer", cust.doc_id):
+                    item_id = e.get("item_id", "?")
+                    if e.get("entry_type") == "sale" and e.get("store_id") == store.doc_id:
+                        stock[item_id] -= abs(e.get("quantity", 0))
         inventory[store.doc_id] = dict(stock)
     return inventory
 
