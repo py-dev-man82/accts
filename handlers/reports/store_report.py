@@ -71,11 +71,16 @@ def build_store_report_lines(ctx, start, end, sid, cur, secure_db, get_ledger):
 
     # SALES
     store_sales = []
-    for cust_id in store_customer_ids:
-        for acct_type in ["general", "store", "partner"]:
-            cust_ledger = get_ledger(acct_type, cust_id)
-            for e in cust_ledger:
-                if e.get("entry_type") == "sale" and _between(e.get("date", ""), start, end):
+    for cust in secure_db.all("customers"):
+        # Try all possible customer account types present in your ledgers
+        for acct_type in ["general", "store", "partner", "store_customer"]:
+            ledger = get_ledger(acct_type, cust.doc_id)
+            for e in ledger:
+                if (
+                    e.get("entry_type") == "sale"
+                    and e.get("store_id") == sid
+                    and _between(e.get("date", ""), start, end)
+               ):
                     store_sales.append(e)
     sales_sorted = sorted(store_sales, key=lambda x: (x.get("date", ""), x.get("timestamp", "")), reverse=True)
 
