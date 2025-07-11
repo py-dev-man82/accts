@@ -172,7 +172,7 @@ async def psale_choose_partner(update: Update, context: ContextTypes.DEFAULT_TYP
 
     await update.callback_query.edit_message_text(msg)
     return PS_ITEM_ID
-D
+
 
 async def psale_item_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
