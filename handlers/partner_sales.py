@@ -18,6 +18,12 @@ from telegram.ext import (
     filters,
 )
 from tinydb import Query
+from handlers.reports.report_utils import (
+    build_sales_summary,
+    build_partner_sales_summary,
+    get_unreconciled_units
+)
+
 
 from handlers.utils   import require_unlock, fmt_money, fmt_date
 from handlers.ledger  import add_ledger_entry, get_ledger
@@ -153,17 +159,20 @@ async def psale_choose_partner(update: Update, context: ContextTypes.DEFAULT_TYP
     pid = int(update.callback_query.data.split("_")[-1])
     context.user_data.update({"ps_partner": pid, "ps_items": {}})
     
-    # Show the system-wide reconciliation backlog for all partners/items
-    unrec = calc_total_reconciliation_needed()
-    if unrec:
-        lines = [f"• {iid}: {qty} units" for iid, qty in unrec.items()]
-        avail_txt = "\n".join(lines)
-        msg = f"📋 Available for Reconciliation (All Partners):\n{avail_txt}\n\nEnter item_id (or type DONE):"
+    # Use the shared utilities for consistent reporting!
+    sales_summary = build_sales_summary(secure_db, get_ledger)
+    partner_sales_summary = build_partner_sales_summary(secure_db, get_ledger)
+    reconciliation = get_unreconciled_units(sales_summary, partner_sales_summary)
+
+    if reconciliation:
+        lines = [f"• {iid}: {qty} units" for iid, qty in reconciliation.items()]
+        msg = "📋 Available for Reconciliation (All Partners):\n" + "\n".join(lines) + "\n\nEnter item_id (or type DONE):"
     else:
         msg = "No unreconciled sales available for any partner.\n\nEnter item_id (or type DONE):"
 
     await update.callback_query.edit_message_text(msg)
     return PS_ITEM_ID
+D
 
 async def psale_item_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
