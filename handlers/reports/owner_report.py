@@ -17,9 +17,6 @@ OWNER_ACCOUNT_ID = "POT"
 logger = logging.getLogger("owner_position")
 
 def get_last_market_price(sales_entries, stockin_entries, item_id):
-    """
-    Returns last sale price for item_id if any, otherwise last stock-in price.
-    """
     relevant_sales = [e for e in sales_entries if e.get("item_id") == item_id]
     if relevant_sales:
         latest = sorted(relevant_sales, key=lambda x: (x.get("date", ""), x.get("timestamp", "")), reverse=True)[0]
@@ -30,32 +27,49 @@ def get_last_market_price(sales_entries, stockin_entries, item_id):
         return latest.get("unit_price", 0)
     return 0
 
-def get_store_inventory(secure_db, get_ledger, store_doc_id):
-    # 1. All stock-ins (store + partner)
-    stock_balance = defaultdict(int)
-    stockin_entries = []
-    # Store ledger stock-ins
-    for e in get_ledger("store", store_doc_id):
-        if e.get("entry_type") == "stockin":
-            stock_balance[e.get("item_id")] += e.get("quantity", 0)
-            stockin_entries.append(e)
-    # Partner ledger stock-ins (where store_id matches this store)
+def get_all_sales_payments(secure_db, get_ledger):
+    all_sales = []
+    all_payments = []
+    for cust in secure_db.all("customers"):
+        for acct_type in ["customer", "store_customer"]:
+            for e in get_ledger(acct_type, cust.doc_id):
+                if e.get("entry_type") == "sale":
+                    all_sales.append(e)
+                elif e.get("entry_type") == "payment":
+                    all_payments.append(e)
+    return all_sales, all_payments
+
+def get_all_payouts(secure_db, get_ledger):
+    all_payouts = []
     for partner in secure_db.all("partners"):
         for e in get_ledger("partner", partner.doc_id):
-            if e.get("entry_type") == "stockin" and e.get("store_id") == store_doc_id:
+            if e.get("entry_type") in ("payout", "payment_sent"):
+                all_payouts.append(e)
+    return all_payouts
+
+def get_combined_inventory(secure_db, get_ledger):
+    # Stock-ins: all stores and all partners (for all stores)
+    stock_balance = defaultdict(int)
+    all_stockins = []
+    for store in secure_db.all("stores"):
+        for e in get_ledger("store", store.doc_id):
+            if e.get("entry_type") == "stockin":
                 stock_balance[e.get("item_id")] += e.get("quantity", 0)
-                stockin_entries.append(e)
-    # 2. All sales out (from customer/store_customer ledgers whose name matches this store)
-    store_name = secure_db.table("stores").get(doc_id=store_doc_id).get("name")
-    store_customer_ids = [c.doc_id for c in secure_db.all("customers") if c.get("name") == store_name]
-    sales_entries = []
-    for cust_id in store_customer_ids:
+                all_stockins.append(e)
+    for partner in secure_db.all("partners"):
+        for e in get_ledger("partner", partner.doc_id):
+            if e.get("entry_type") == "stockin" and e.get("store_id") is not None:
+                stock_balance[e.get("item_id")] += e.get("quantity", 0)
+                all_stockins.append(e)
+    # Sales out: all customers/store_customers
+    all_sales = []
+    for cust in secure_db.all("customers"):
         for acct_type in ["customer", "store_customer"]:
-            for e in get_ledger(acct_type, cust_id):
+            for e in get_ledger(acct_type, cust.doc_id):
                 if e.get("entry_type") == "sale":
                     stock_balance[e.get("item_id")] -= abs(e.get("quantity", 0))
-                    sales_entries.append(e)
-    return stock_balance, sales_entries, stockin_entries
+                    all_sales.append(e)
+    return stock_balance, all_sales, all_stockins
 
 @require_unlock
 async def show_owner_position(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -65,26 +79,68 @@ async def show_owner_position(update: Update, context: ContextTypes.DEFAULT_TYPE
     lines = []
     lines.append(f"📊 **Current Owner Position** 📊")
 
-    for store in secure_db.all("stores"):
-        sid = store.doc_id
-        sname = store.get("name")
-        cur = store.get("currency", "USD")
-        lines.append(f"\n🏬 **Store: {sname} ({cur})**")
-        stock_balance, sales_entries, stockin_entries = get_store_inventory(secure_db, get_ledger, sid)
-        inventory_lines = []
-        total_market_value = 0
-        for item_id, qty in stock_balance.items():
-            if qty > 0:
-                last_price = get_last_market_price(sales_entries, stockin_entries, item_id)
-                item_value = qty * last_price
-                total_market_value += item_value
-                inventory_lines.append(f"   - [{item_id}] {qty} units × {fmt_money(last_price, cur)} = {fmt_money(item_value, cur)}")
-        if inventory_lines:
-            lines.append("  • Inventory:")
-            lines.extend(inventory_lines)
-            lines.append(f"    Total Market Value: {fmt_money(total_market_value, cur)}")
-        else:
-            lines.append("  • Inventory: No inventory")
+    # --- Sales & Payments (All Customers, All Time) ---
+    all_sales, all_payments = get_all_sales_payments(secure_db, get_ledger)
+    sales_summary = defaultdict(lambda: {"units": 0, "value": 0.0})
+    for s in all_sales:
+        iid = s.get("item_id", "?")
+        units = abs(s.get("quantity", 0))
+        value = abs(units * s.get("unit_price", s.get("unit_cost", 0)))
+        sales_summary[iid]["units"] += units
+        sales_summary[iid]["value"] += value
+    total_sales_units = sum(d["units"] for d in sales_summary.values())
+    total_sales_value = sum(d["value"] for d in sales_summary.values())
+
+    lines.append(f"\n• Sales (All Customers, All Time):")
+    if sales_summary:
+        for iid, d in sales_summary.items():
+            lines.append(f"   -  {iid}: {d['units']} units, {fmt_money(d['value'], 'USD')}")
+        lines.append(f"   Total: {total_sales_units} units, {fmt_money(total_sales_value, 'USD')}")
+    else:
+        lines.append("   None")
+
+    lines.append(f"\n• Payments (All Customers, All Time):")
+    total_payments_value = sum(e.get("usd_amt", e.get("amount", 0)) for e in all_payments)
+    if all_payments:
+        lines.append(f"   -  {len(all_payments)} payments, {fmt_money(total_payments_value, 'USD')}")
+    else:
+        lines.append("   None")
+
+    # --- Payouts (All Partners, All Time) ---
+    all_payouts = get_all_payouts(secure_db, get_ledger)
+    total_payouts_value = sum(abs(e.get("usd_amt", e.get("amount", 0))) for e in all_payouts)
+    lines.append(f"\n• Payouts (All Partners, All Time):")
+    if all_payouts:
+        lines.append(f"   -  {len(all_payouts)} payouts, {fmt_money(total_payouts_value, 'USD')}")
+    else:
+        lines.append("   None")
+
+    # --- Inventory (Combined All Stores, All Time) ---
+    stock_balance, all_sales_for_price, all_stockins = get_combined_inventory(secure_db, get_ledger)
+    lines.append(f"\n• Inventory (Combined All Stores, All Time):")
+    inventory_lines = []
+    total_market_value = 0
+    for item_id, qty in stock_balance.items():
+        if qty > 0:
+            last_price = 0
+            # Try last sale price, then last stockin price
+            relevant_sales = [e for e in all_sales_for_price if e.get("item_id") == item_id]
+            relevant_stockins = [e for e in all_stockins if e.get("item_id") == item_id]
+            if relevant_sales:
+                latest = sorted(relevant_sales, key=lambda x: (x.get("date", ""), x.get("timestamp", "")), reverse=True)[0]
+                last_price = latest.get("unit_price", latest.get("unit_cost", 0))
+            elif relevant_stockins:
+                latest = sorted(relevant_stockins, key=lambda x: (x.get("date", ""), x.get("timestamp", "")), reverse=True)[0]
+                last_price = latest.get("unit_price", 0)
+            item_value = qty * last_price
+            total_market_value += item_value
+            inventory_lines.append(f"   -  {item_id}: {qty} units × {fmt_money(last_price, 'USD')} = {fmt_money(item_value, 'USD')}")
+    if inventory_lines:
+        lines.extend(inventory_lines)
+        lines.append(f"   Total Inventory Market Value: {fmt_money(total_market_value, 'USD')}")
+    else:
+        lines.append("   None")
+
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("🔄 Refresh", callback_data="rep_owner")],
         [InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu")],
