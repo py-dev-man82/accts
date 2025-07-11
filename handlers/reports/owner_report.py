@@ -47,7 +47,6 @@ def get_all_partner_sales(secure_db, get_ledger):
     return partner_sales
 
 def get_verified_partner_payouts(secure_db, get_ledger):
-    # Collect all owner payouts (by date, USD, related_id)
     owner_payouts = []
     for e in get_ledger("owner", OWNER_ACCOUNT_ID):
         if e.get("entry_type") in ("payout", "payment_sent", "payout_sent"):
@@ -60,7 +59,6 @@ def get_verified_partner_payouts(secure_db, get_ledger):
         )
         for e in owner_payouts
     )
-    # Now scan partner ledgers for matching payouts
     all_verified_payouts = []
     for partner in secure_db.all("partners"):
         for e in get_ledger("partner", partner.doc_id):
@@ -101,7 +99,6 @@ def payments_by_currency(payments):
     for p in payments:
         cur = p.get("currency", "USD")
         amt = p.get("amount", 0.0)
-        # Use usd_amt if available, otherwise amount if USD, otherwise zero
         if "usd_amt" in p and p["usd_amt"] is not None:
             usd = p["usd_amt"]
         elif cur == "USD":
@@ -112,6 +109,34 @@ def payments_by_currency(payments):
         currency_groups[cur]["usd"] += usd
         currency_groups[cur]["currency"] = cur
     return currency_groups
+
+def get_current_partner_inventory_with_value(secure_db, get_ledger):
+    # Inventory = stockin (in) - customer sales (out) - partner sales (out)
+    partner_inventory = defaultdict(int)
+    all_sales = []
+    all_stockins = []
+    for partner in secure_db.all("partners"):
+        # Stockin (in)
+        for e in get_ledger("partner", partner.doc_id):
+            if e.get("entry_type") == "stockin":
+                partner_inventory[e.get("item_id")] += e.get("quantity", 0)
+                all_stockins.append(e)
+        # Customer sales (out, assigned to partner)
+        for e in get_ledger("customer", partner.doc_id):
+            if e.get("entry_type") == "sale":
+                partner_inventory[e.get("item_id")] -= abs(e.get("quantity", 0))
+                all_sales.append(e)
+        # Partner sales (out)
+        for e in get_ledger("partner", partner.doc_id):
+            if e.get("entry_type") == "sale":
+                partner_inventory[e.get("item_id")] -= abs(e.get("quantity", 0))
+                all_sales.append(e)
+    value_by_item = {}
+    for item_id, qty in partner_inventory.items():
+        if qty > 0:
+            price = get_last_market_price(all_sales, all_stockins, item_id)
+            value_by_item[item_id] = {"units": qty, "value": qty * price, "price": price}
+    return value_by_item
 
 @require_unlock
 async def show_owner_position(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -203,6 +228,21 @@ async def show_owner_position(update: Update, context: ContextTypes.DEFAULT_TYPE
             lines.append(f"   -  {cur}: {local_str} → {usd_str} USD")
             total_payouts_usd += group["usd"]
         lines.append(f"   Total USD paid: {fmt_money(total_payouts_usd, 'USD')}")
+    else:
+        lines.append("   None")
+    lines.append("")
+
+    # --- Current Partner Inventory on hand ---
+    partner_inv = get_current_partner_inventory_with_value(secure_db, get_ledger)
+    lines.append(f"• Current Partner Inventory on hand:")
+    total_partner_inv_value = 0
+    if partner_inv:
+        for iid, v in partner_inv.items():
+            lines.append(
+                f"   -  {iid}: {v['units']} units × {fmt_money(v['price'], 'USD')} = {fmt_money(v['value'], 'USD')}"
+            )
+            total_partner_inv_value += v['value']
+        lines.append(f"   Total Partner Inventory Market Value: {fmt_money(total_partner_inv_value, 'USD')}")
     else:
         lines.append("   None")
     lines.append("")
