@@ -159,17 +159,18 @@ async def psale_choose_partner(update: Update, context: ContextTypes.DEFAULT_TYP
     pid = int(update.callback_query.data.split("_")[-1])
     context.user_data.update({"ps_partner": pid, "ps_items": {}})
     
-    # Use the shared utilities for consistent reporting!
+    # --- Calculate unreconciled units for ALL partners/items ---
     sales_summary = build_sales_summary(secure_db, get_ledger)
     partner_sales_summary = build_partner_sales_summary(secure_db, get_ledger)
-    reconciliation = get_unreconciled_units(sales_summary, partner_sales_summary)
-
-    if reconciliation:
-        lines = [f"• {iid}: {qty} units" for iid, qty in reconciliation.items()]
+    to_reconcile = get_unreconciled_units(sales_summary, partner_sales_summary)
+    
+    # --- Display as "Available for Reconciliation (All Partners)" ---
+    if to_reconcile:
+        lines = [f"• {iid}: {qty} units" for iid, qty in to_reconcile.items()]
         msg = "📋 Available for Reconciliation (All Partners):\n" + "\n".join(lines) + "\n\nEnter item_id (or type DONE):"
     else:
         msg = "No unreconciled sales available for any partner.\n\nEnter item_id (or type DONE):"
-
+    
     await update.callback_query.edit_message_text(msg)
     return PS_ITEM_ID
 
