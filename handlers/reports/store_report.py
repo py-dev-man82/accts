@@ -256,7 +256,6 @@ def build_store_report_lines(ctx, start, end, sid, cur, secure_db, get_ledger):
         total_usd += usd_amt
         payment_lines.append(
             f"• {fmt_date(p.get('date', ''))}: {fmt_money(amount, cur)}\n"
-            f"   - Handling Fee: -{fmt_money(fee_amt, cur)}\n"
             f"   - FX: {fx_rate:.4f}  |  USD: {fmt_money(usd_amt, 'USD')}"
         )
 
