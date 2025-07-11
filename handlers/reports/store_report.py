@@ -210,41 +210,62 @@ def build_store_report_lines(ctx, start, end, sid, cur, secure_db, get_ledger):
     total_exp = sum(abs(e.get("amount", 0)) for e in alltime_expenses)
     balance = total_sales + total_fees - total_pay - total_exp
 
-    lines = []
-    if ctx["scope"] in ("full", "sales"):
-        lines.append("🛒 Sales")
-        lines += sales_lines
-        lines.append("")
-        lines.append("💳 Handling Fees")
-        lines += fee_lines
-        lines.append("")
-        lines.append("📦 Units Sold (by item):")
-        lines += unit_summary
-        lines.append(f"\n📊 Total Sales: {fmt_money(total_sales_only, cur)}")
-        lines.append(f"📊 Total Handling Fees: {fmt_money(total_fees_only, cur)}")
-        lines.append(f"\n📊 Grand Total (Sales + Fees): {fmt_money(grand_total, cur)}\n")
-    if ctx["scope"] in ("full", "payments"):
-        lines.append("💵 Payments")
-        lines += payment_lines
-        lines.append(f"\n📊 Total Payments: {fmt_money(total_pay_local, cur)} → {fmt_money(total_pay_usd, 'USD')}\n")
-    if ctx["scope"] == "full":
-        lines.append("🧾 Expenses")
-        lines += expense_lines
-        lines.append("")
-        lines.append("📦 Inventory")
-        if stockin_lines:
-            lines.append("• In (filtered by date):")
-            lines += stockin_lines
-        if current_stock_lines:
-            lines.append("• Current Stock @ market:")
-            lines += current_stock_lines
-        lines.append(f"\n📊 Stock Value: {fmt_money(stock_value, cur)}\n")
-        lines.append("📊 Financial Position (ALL TIME)")
-        lines.append(f"Balance (S + Fees − P − E): {fmt_money(balance, cur)}")
-        lines.append(f"Inventory Value:     {fmt_money(stock_value, cur)}")
-        lines.append("────────────────────────────────────")
-        lines.append(f"Total Position:      {fmt_money(balance + stock_value, cur)}")
-    return lines
+     lines = []
+lines.append(f"📄 Account: {store_name}")
+lines.append(f"🗓️ Period: {start.strftime('%d/%m/%Y')} → {end.strftime('%d/%m/%Y')}")
+lines.append("──────────────────────────────\n")
+
+# Sales Section
+lines.append("🛒 Sales")
+lines += sales_lines if sales_lines else ["(none)"]
+lines.append("")
+lines.append("💳 Handling Fees")
+lines += fee_lines if fee_lines else ["(none)"]
+lines.append("")
+lines.append("📦 Units Sold (by item):")
+lines += unit_summary if unit_summary else ["(none)"]
+lines.append(f"\n📊 Total Sales: {fmt_money(total_sales_only, cur)}")
+lines.append(f"📊 Total Handling Fees: {fmt_money(total_fees_only, cur)}\n")
+lines.append(f"📊 Grand Total (Sales + Fees): {fmt_money(grand_total, cur)}")
+lines.append("──────────────────────────────\n")
+
+# Payments Section
+lines.append("💵 Payments")
+lines += payment_lines if payment_lines else ["(none)"]
+lines.append(f"\n📊 Total Payments: {fmt_money(total_pay_local, cur)} → {fmt_money(total_pay_usd, 'USD')}")
+lines.append("──────────────────────────────\n")
+
+# Expenses Section
+lines.append("🧾 Expenses")
+lines += expense_lines if expense_lines else ["(none)"]
+total_all_expenses = other_total  # (Sum up all types of expenses as desired)
+lines.append(f"\n📊 Total All Expenses: {fmt_money(total_all_expenses, cur)}")
+lines.append("──────────────────────────────\n")
+
+# Inventory Section
+lines.append("📦 Inventory")
+if stockin_lines:
+    lines.append("• In :  ")
+    lines += stockin_lines
+if current_stock_lines:
+    lines.append("\n• Current Stock On Hand @ market: ")
+    lines += current_stock_lines
+lines.append(f"\n📊 Stock Value: {fmt_money(stock_value, cur)}")
+lines.append("──────────────────────────────\n")
+
+# Financial Position Section
+lines.append("📊 Financial Position (ALL TIME)")
+lines.append(f"Balance (S + Fees − P − E): {fmt_money(balance, cur)}")
+lines.append(f"Inventory Value:     {fmt_money(stock_value, cur)}")
+lines.append("────────────────────────────────────")
+lines.append(f"Total Position:      {fmt_money(balance + stock_value, cur)}")
+
+return lines
+
+
+
+
+
 
 @require_unlock
 async def show_store_report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
