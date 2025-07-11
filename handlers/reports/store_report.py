@@ -72,7 +72,7 @@ def build_store_report_lines(ctx, start, end, sid, cur, secure_db, get_ledger):
     # SALES
     store_sales = []
     for cust_id in store_customer_ids:
-        for acct_type in ["customer", "store_customer"]:
+        for acct_type in ["general", "store", "partner"]:
             cust_ledger = get_ledger(acct_type, cust_id)
             for e in cust_ledger:
                 if e.get("entry_type") == "sale" and _between(e.get("date", ""), start, end):
@@ -87,7 +87,7 @@ def build_store_report_lines(ctx, start, end, sid, cur, secure_db, get_ledger):
     # PAYMENTS
     store_payments = []
     for cust_id in store_customer_ids:
-        for acct_type in ["customer", "store_customer"]:
+        for acct_type in ["customer", "store"]:
             cust_ledger = get_ledger(acct_type, cust_id)
             for p in cust_ledger:
                 if p.get("entry_type") == "payment" and _between(p.get("date", ""), start, end):
@@ -133,7 +133,7 @@ def build_store_report_lines(ctx, start, end, sid, cur, secure_db, get_ledger):
     alltime_fees = [e for e in get_ledger("store", sid) if e.get("entry_type") == "handling_fee"]
     alltime_payments = []
     for cust_id in store_customer_ids:
-        for acct_type in ["customer", "store_customer"]:
+        for acct_type in ["general", "store", "partner"]:
             cust_ledger = get_ledger(acct_type, cust_id)
             for p in cust_ledger:
                 if p.get("entry_type") == "payment":
