@@ -242,3 +242,28 @@ def build_partner_sales_summary(secure_db, get_ledger):
                 d = summary.setdefault(iid, {"units": 0})
                 d["units"] += qty
     return summary
+
+def get_global_store_inventory(secure_db, get_ledger):
+    """
+    Calculates current global inventory across all stores.
+    Sums all stock-ins (store and partner ledgers, all stores)
+    and subtracts all sales (from any ledger, for any store).
+    Returns dict {item_id: total_units_on_hand}
+    """
+    stock_balance = defaultdict(int)
+    # 1. All stock-ins for all stores (store and partner ledgers)
+    for store in secure_db.all("stores"):
+        for e in get_ledger("store", store.doc_id):
+            if e.get("entry_type") == "stockin":
+                stock_balance[e.get("item_id")] += e.get("quantity", 0)
+    for partner in secure_db.all("partners"):
+        for e in get_ledger("partner", partner.doc_id):
+            if e.get("entry_type") == "stockin" and e.get("store_id") is not None:
+                stock_balance[e.get("item_id")] += e.get("quantity", 0)
+    # 2. Subtract all sales for all stores (from any ledger)
+    for ledger_type in ["customer", "store_customer", "partner"]:
+        for acct in secure_db.all(ledger_type + "s"):
+            for e in get_ledger(ledger_type, acct.doc_id):
+                if e.get("entry_type") == "sale" and e.get("store_id") is not None:
+                    stock_balance[e.get("item_id")] -= abs(e.get("quantity", 0))
+    return stock_balance
