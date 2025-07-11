@@ -46,13 +46,33 @@ def get_all_partner_sales(secure_db, get_ledger):
                 partner_sales.append(e)
     return partner_sales
 
-def get_all_payouts(secure_db, get_ledger):
-    all_payouts = []
+def get_verified_partner_payouts(secure_db, get_ledger):
+    # Collect all owner payouts (by date, USD, related_id)
+    owner_payouts = []
+    for e in get_ledger("owner", OWNER_ACCOUNT_ID):
+        if e.get("entry_type") in ("payout", "payment_sent", "payout_sent"):
+            owner_payouts.append(e)
+    owner_set = set(
+        (
+            e.get("date"),
+            round(abs(e.get("usd_amt", e.get("amount", 0))), 2),
+            str(e.get("related_id")),
+        )
+        for e in owner_payouts
+    )
+    # Now scan partner ledgers for matching payouts
+    all_verified_payouts = []
     for partner in secure_db.all("partners"):
         for e in get_ledger("partner", partner.doc_id):
-            if e.get("entry_type") in ("payout", "payment_sent"):
-                all_payouts.append(e)
-    return all_payouts
+            if e.get("entry_type") in ("payout", "payment_sent", "payment"):
+                key = (
+                    e.get("date"),
+                    round(abs(e.get("usd_amt", e.get("amount", 0))), 2),
+                    str(e.get("related_id")),
+                )
+                if key in owner_set:
+                    all_verified_payouts.append(e)
+    return all_verified_payouts
 
 def get_combined_inventory(secure_db, get_ledger):
     stock_balance = defaultdict(int)
@@ -81,13 +101,13 @@ def payments_by_currency(payments):
     for p in payments:
         cur = p.get("currency", "USD")
         amt = p.get("amount", 0.0)
-        # Fixed logic: always use usd_amt if set, otherwise for USD use amount, else zero
+        # Use usd_amt if available, otherwise amount if USD, otherwise zero
         if "usd_amt" in p and p["usd_amt"] is not None:
             usd = p["usd_amt"]
         elif cur == "USD":
             usd = amt
         else:
-            usd = 0.0  # Optionally add fx logic here if needed
+            usd = 0.0
         currency_groups[cur]["local"] += amt
         currency_groups[cur]["usd"] += usd
         currency_groups[cur]["currency"] = cur
@@ -171,8 +191,8 @@ async def show_owner_position(update: Update, context: ContextTypes.DEFAULT_TYPE
         lines.append("   None")
     lines.append("")
 
-    # --- Payouts (All Partners, All Time) ---
-    all_payouts = get_all_payouts(secure_db, get_ledger)
+    # --- Payouts (All Partners, All Time, cross-verified) ---
+    all_payouts = get_verified_partner_payouts(secure_db, get_ledger)
     payout_cur = payments_by_currency(all_payouts)
     total_payouts_usd = 0.0
     lines.append(f"• Payouts (All Partners, All Time):")
