@@ -7,6 +7,8 @@ from telegram.ext import CallbackQueryHandler, CommandHandler, ContextTypes
 from handlers.utils import require_unlock, fmt_money
 from handlers.ledger import get_balance, get_ledger
 from secure_db import secure_db
+from handlers.reports.report_utils import get_global_store_inventory
+
 
 OWNER_ACCOUNT_ID = "POT"
 (
@@ -234,21 +236,38 @@ async def show_owner_position(update: Update, context: ContextTypes.DEFAULT_TYPE
     lines.append("")
 
     # --- Inventory on hand ---
-    stock_balance, all_sales_for_price, all_stockins = get_combined_inventory(secure_db, get_ledger)
-    lines.append(f"• Inventory on hand:")
-    inventory_lines = []
-    total_market_value = 0
-    for item_id, qty in stock_balance.items():
-        if qty > 0:
-            last_price = get_last_market_price(all_sales_for_price, all_stockins, item_id)
-            item_value = qty * last_price
-            total_market_value += item_value
-            inventory_lines.append(f"   -  {item_id}: {qty} units × {fmt_money(last_price, 'USD')} = {fmt_money(item_value, 'USD')}")
-    if inventory_lines:
-        lines.extend(inventory_lines)
-        lines.append(f"   Total Inventory Market Value: {fmt_money(total_market_value, 'USD')}")
-    else:
-        lines.append("   None")
+    # Use new utility for global store inventory
+stock_balance = get_global_store_inventory(secure_db, get_ledger)
+# Gather all sale and stockin entries for price lookup
+all_sales_for_price, all_stockins = [], []
+for store in secure_db.all("stores"):
+    for e in get_ledger("store", store.doc_id):
+        if e.get("entry_type") == "stockin":
+            all_stockins.append(e)
+for partner in secure_db.all("partners"):
+    for e in get_ledger("partner", partner.doc_id):
+        if e.get("entry_type") == "stockin" and e.get("store_id") is not None:
+            all_stockins.append(e)
+for ledger_type in ["customer", "store_customer", "partner"]:
+    for acct in secure_db.all(ledger_type + "s"):
+        for e in get_ledger(ledger_type, acct.doc_id):
+            if e.get("entry_type") == "sale" and e.get("store_id") is not None:
+                all_sales_for_price.append(e)
+
+lines.append(f"• Inventory on hand:")
+inventory_lines = []
+total_market_value = 0
+for item_id, qty in stock_balance.items():
+    if qty > 0:
+        last_price = get_last_market_price(all_sales_for_price, all_stockins, item_id)
+        item_value = qty * last_price
+        total_market_value += item_value
+        inventory_lines.append(f"   -  {item_id}: {qty} units × {fmt_money(last_price, 'USD')} = {fmt_money(item_value, 'USD')}")
+if inventory_lines:
+    lines.extend(inventory_lines)
+    lines.append(f"   Total Inventory Market Value: {fmt_money(total_market_value, 'USD')}")
+else:
+    lines.append("   None")
     lines.append("")
 
     # --- Inventory reconciliation (sales not yet allocated to partners) ---
