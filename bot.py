@@ -9,7 +9,7 @@ import time
 import config
 from secure_db import secure_db, EncryptedJSONStorage
 from tinydb import TinyDB
-from handlers.ledger import seed_tables  # 🌱 For initial table seeding
+from handlers.ledger import seed_tables  # 🌱 Correct import path for seeding
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     ApplicationBuilder,
@@ -55,27 +55,22 @@ from handlers.reports.owner_report    import register_owner_report_handlers
 # Owner module
 from handlers.owner import register_owner_handlers, show_owner_menu
 
-
 # ════════════════════════════════════════════════════════════
 # Admin-only helper commands
 # ════════════════════════════════════════════════════════════
-@require_unlock
 async def restart_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("♻️ Bot is restarting…")
     logging.warning("⚠️ Admin issued /restart — restarting bot.")
     subprocess.Popen([sys.executable, os.path.abspath(sys.argv[0]), "child"])
     raise SystemExit(0)
 
-
-# 🚨 Kill bot does *NOT* require unlock
 async def kill_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🛑 Bot is shutting down… it will auto-restart.")
     logging.warning("⚠️ Admin issued /kill — shutting down cleanly.")
     raise SystemExit(0)
 
-
 # ════════════════════════════════════════════════════════════
-# InitDB flow with secure PIN and hardened salt reset
+# InitDB flow with secure setup script and enforced PIN
 # ════════════════════════════════════════════════════════════
 async def initdb_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Ask for confirmation before resetting DB."""
@@ -89,12 +84,17 @@ async def initdb_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("✅ Yes", callback_data="initdb_yes"),
          InlineKeyboardButton("❌ No",  callback_data="initdb_no")]
     ])
-    await update.message.reply_text(
-        "⚠️ *This will DELETE all data and create a fresh encrypted database.*\n\n"
-        "Are you sure you want to proceed?",
-        parse_mode="Markdown", reply_markup=kb)
+    if update.message:
+        await update.message.reply_text(
+            "⚠️ *This will DELETE all data and create a fresh encrypted database.*\n\n"
+            "Are you sure you want to proceed?",
+            parse_mode="Markdown", reply_markup=kb)
+    elif update.callback_query:
+        await update.callback_query.message.reply_text(
+            "⚠️ *This will DELETE all data and create a fresh encrypted database.*\n\n"
+            "Are you sure you want to proceed?",
+            parse_mode="Markdown", reply_markup=kb)
     return CONFIRM_INITDB
-
 
 async def initdb_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
@@ -102,37 +102,24 @@ async def initdb_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.callback_query.edit_message_text("❌ InitDB cancelled.")
         return ConversationHandler.END
 
-    # If DB exists and is encrypted, ask for old PIN first
-    if os.path.exists(config.DB_PATH):
-        await update.callback_query.edit_message_text("🔑 Enter current DB PIN to confirm:")
+    if secure_db.has_pin():
+        await update.callback_query.edit_message_text("🔒 Enter current DB password (PIN) to reset:")
         return ENTER_OLD_PIN
 
-    # No existing DB → proceed to set new PIN
     await update.callback_query.edit_message_text("🔑 Enter new DB password (PIN):")
     return SET_NEW_PIN
 
-
 async def enter_old_pin(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Verify old PIN before allowing reset."""
     pin = update.message.text.strip()
     try:
         secure_db.unlock(pin)
         secure_db.lock()
-        await update.message.reply_text("✅ Current PIN verified.\nNow enter new DB password (PIN):")
+        context.user_data["old_db_pin"] = pin
+        await update.message.reply_text("🔑 Current PIN accepted. Enter new DB password (PIN):")
         return SET_NEW_PIN
-    except RuntimeError as e:
-        secure_db.failed_attempts += 1
-        if secure_db.failed_attempts >= 7:
-            secure_db._wipe_database()
-            await update.message.reply_text("💣 *Too many failed attempts. DB wiped for security!*", parse_mode="Markdown")
-            raise SystemExit(0)
-        attempts_left = 7 - secure_db.failed_attempts
-        await update.message.reply_text(
-            f"❌ Wrong PIN.\n⚠️ Attempts left before wipe: {attempts_left}\nTry again:",
-            parse_mode="Markdown"
-        )
-        return ENTER_OLD_PIN
-
+    except Exception:
+        await update.message.reply_text("❌ Wrong PIN. InitDB aborted.")
+        return ConversationHandler.END
 
 async def set_new_pin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pin = update.message.text.strip()
@@ -143,15 +130,17 @@ async def set_new_pin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🔑 Confirm PIN by entering it again:")
     return CONFIRM_NEW_PIN
 
-
 async def confirm_new_pin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     confirm_pin = update.message.text.strip()
     if confirm_pin != context.user_data.get("new_db_pin"):
         await update.message.reply_text("❌ PINs do not match. Start over with /initdb.")
         return ConversationHandler.END
 
-    # Now generate salt and initialize DB
-    await update.message.reply_text("⚙️ Setting up secure DB (generating new salt)…")
+    if update.message:
+        await update.message.reply_text("⚙️ Setting up secure DB (generating new salt)…")
+    elif update.callback_query:
+        await update.callback_query.message.reply_text("⚙️ Setting up secure DB (generating new salt)…")
+
     try:
         subprocess.run(["chmod", "+x", "./setup_secure_db.sh"], check=True)
         subprocess.run(["bash", "./setup_secure_db.sh"], check=True)
@@ -161,7 +150,6 @@ async def confirm_new_pin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Failed to run secure DB setup script.")
         return ConversationHandler.END
 
-    # Encrypt DB immediately with confirmed PIN
     pin = context.user_data["new_db_pin"]
     secure_db._passphrase = pin.encode('utf-8')
     secure_db.fernet = secure_db._derive_fernet()
@@ -178,11 +166,8 @@ async def confirm_new_pin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "✅ New PIN set and DB encrypted successfully.\n"
         "♻️ Restarting bot to apply changes…"
     )
-
-    # ♻️ Auto-restart bot to load new salt/PIN
     subprocess.Popen([sys.executable, os.path.abspath(sys.argv[0]), "child"])
     raise SystemExit(0)
-
 
 # ════════════════════════════════════════════════════════════
 # Unlock command flow
@@ -192,32 +177,21 @@ async def unlock_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🔑 *Enter your encryption PIN to unlock:*", parse_mode="Markdown")
     return UNLOCK_PIN
 
-
 async def unlock_process(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Attempt to unlock the database with provided PIN."""
     pin = update.message.text.strip()
     try:
         secure_db.unlock(pin)
-        secure_db.mark_activity()  # update last activity
+        secure_db.mark_activity()
         await update.message.reply_text("✅ *Database unlocked successfully!*", parse_mode="Markdown")
-        return ConversationHandler.END
-    except RuntimeError as e:
-        if "wiped" in str(e).lower():
-            await update.message.reply_text("💣 *Database wiped after too many failed PIN attempts!*", parse_mode="Markdown")
-            raise SystemExit(0)
-        attempts_left = 7 - secure_db.failed_attempts
-        await update.message.reply_text(
-            f"❌ Wrong PIN.\n⚠️ Attempts left before wipe: {attempts_left}\nTry again:",
-            parse_mode="Markdown"
-        )
-        return UNLOCK_PIN
-
+    except Exception as e:
+        logging.error(f"Unlock failed: {e}")
+        await update.message.reply_text(f"❌ *Unlock failed:* {e}", parse_mode="Markdown")
+    return ConversationHandler.END
 
 # ════════════════════════════════════════════════════════════
 # Auto-lock background task
 # ════════════════════════════════════════════════════════════
 async def auto_lock_task():
-    """Background coroutine to auto-lock DB after 3 min inactivity."""
     AUTOLOCK_TIMEOUT = 180  # 3 minutes
     while True:
         await asyncio.sleep(10)
@@ -227,10 +201,8 @@ async def auto_lock_task():
                 secure_db.lock()
                 logging.warning("🔒 Auto-lock triggered after inactivity.")
 
-# (Menus and run_bot remain unchanged)
-
 # ════════════════════════════════════════════════════════════
-# Main Menu
+# Main Menu and Nested Submenus
 # ════════════════════════════════════════════════════════════
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Main menu with DB status indicator."""
@@ -259,6 +231,41 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text, reply_markup=kb, parse_mode="Markdown"
         )
 
+async def show_adduser_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("Customers", callback_data="customer_menu")],
+        [InlineKeyboardButton("Stores",    callback_data="store_menu")],
+        [InlineKeyboardButton("Partners",  callback_data="partner_menu")],
+        [InlineKeyboardButton("🔙 Back",   callback_data="main_menu")],
+    ])
+    await update.callback_query.edit_message_text("ADD USER Menu:", reply_markup=kb)
+
+async def show_addfinancial_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("Sales",          callback_data="sales_menu")],
+        [InlineKeyboardButton("Payments",       callback_data="payment_menu")],
+        [InlineKeyboardButton("Expenses",       callback_data="payout_menu")],
+        [InlineKeyboardButton("Stock-In",       callback_data="stockin_menu")],
+        [InlineKeyboardButton("Partner Sales",  callback_data="partner_sales_menu")],
+        [InlineKeyboardButton("🔙 Back",        callback_data="main_menu")],
+    ])
+    await update.callback_query.edit_message_text("ADD FINANCIAL Menu:", reply_markup=kb)
+
+async def show_report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📄 Customer Report", callback_data="rep_cust")],
+        [InlineKeyboardButton("📄 Partner Report",  callback_data="rep_part")],
+        [InlineKeyboardButton("📄 Store Report",    callback_data="rep_store")],
+        [InlineKeyboardButton("📄 Owner Summary",   callback_data="rep_owner")],
+        [InlineKeyboardButton("🔙 Back",            callback_data="main_menu")],
+    ])
+    await update.callback_query.edit_message_text(
+        "Reports: choose a type", reply_markup=kb
+    )
+
 # ════════════════════════════════════════════════════════════
 # Main bot runner
 # ════════════════════════════════════════════════════════════
@@ -278,9 +285,9 @@ async def run_bot():
         entry_points=[CommandHandler("initdb", initdb_start)],
         states={
             CONFIRM_INITDB: [CallbackQueryHandler(initdb_confirm)],
-            ENTER_OLD_PIN: [MessageHandler(filters.TEXT & ~filters.COMMAND, enter_old_pin)],
-            SET_NEW_PIN: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_new_pin)],
-            CONFIRM_NEW_PIN: [MessageHandler(filters.TEXT & ~filters.COMMAND, confirm_new_pin)],
+            ENTER_OLD_PIN:  [MessageHandler(filters.TEXT & ~filters.COMMAND, enter_old_pin)],
+            SET_NEW_PIN:    [MessageHandler(filters.TEXT & ~filters.COMMAND, set_new_pin)],
+            CONFIRM_NEW_PIN:[MessageHandler(filters.TEXT & ~filters.COMMAND, confirm_new_pin)],
         },
         fallbacks=[],
     ))
@@ -295,6 +302,9 @@ async def run_bot():
     # Root / back
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(start, pattern="^main_menu$"))
+    app.add_handler(CallbackQueryHandler(show_adduser_menu, pattern="^adduser_menu$"))
+    app.add_handler(CallbackQueryHandler(show_addfinancial_menu, pattern="^addfinancial_menu$"))
+    app.add_handler(CallbackQueryHandler(show_report_menu, pattern="^report_menu$"))
 
     # Register feature handlers
     register_customer_handlers(app)
@@ -304,13 +314,18 @@ async def run_bot():
     register_payment_handlers(app)
     register_payout_handlers(app)
     register_stockin_handlers(app)
+    app.add_handler(CallbackQueryHandler(show_stockin_menu, pattern="^stockin_menu$"))
     register_partner_sales_handlers(app)
+    app.add_handler(CallbackQueryHandler(show_partner_sales_menu, pattern="^partner_sales_menu$"))
 
     # Reports
     register_customer_report_handlers(app)
     register_partner_report_handlers(app)
+    app.add_handler(CallbackQueryHandler(show_partner_report_menu, pattern="^rep_part$"))
     register_store_report_handlers(app)
+    app.add_handler(CallbackQueryHandler(show_store_report_menu, pattern="^rep_store$"))
     register_owner_report_handlers(app)
+    app.add_handler(CallbackQueryHandler(show_owner_menu, pattern="^owner_menu$"))
 
     # Start polling and background auto-lock
     asyncio.create_task(auto_lock_task())
@@ -325,7 +340,7 @@ async def run_bot():
         await app.shutdown()
 
 # ════════════════════════════════════════════════════════════
-# Self-supervisor
+# Simple self-supervisor — restarts on crash
 # ════════════════════════════════════════════════════════════
 def main_supervisor():
     while True:
