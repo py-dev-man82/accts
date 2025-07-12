@@ -184,7 +184,10 @@ async def confirm_new_pin(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ════════════════════════════════════════════════════════════
 async def unlock_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["unlock_attempts"] = 0
-    await update.message.reply_text("🔑 *Enter your encryption PIN to unlock:*", parse_mode="Markdown")
+    if update.message:
+        await update.message.reply_text("🔑 *Enter your encryption PIN to unlock:*", parse_mode="Markdown")
+    elif update.callback_query:
+        await update.callback_query.edit_message_text("🔑 *Enter your encryption PIN to unlock:*", parse_mode="Markdown")
     return UNLOCK_PIN
 
 async def unlock_process(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -264,9 +267,11 @@ async def menu_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     qd = update.callback_query.data
     await update.callback_query.answer()
     if qd == "unlock_button":
-        await unlock_start(update.callback_query, context)
+        # Call unlock_start with the callbackquery as the update
+        return await unlock_start(update, context)
     elif qd == "initdb_button":
-        await initdb_start(update.callback_query, context)
+        return await initdb_start(update, context)
+
 
 async def show_adduser_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
