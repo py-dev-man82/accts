@@ -9,7 +9,7 @@ import time
 import config
 from secure_db import secure_db, EncryptedJSONStorage
 from tinydb import TinyDB
-from handlers.ledger import seed_tables
+from handlers.ledger import seed_tables  # 🌱 For initial table seeding
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     ApplicationBuilder,
@@ -55,10 +55,11 @@ from handlers.reports.owner_report    import register_owner_report_handlers
 # Owner module
 from handlers.owner import register_owner_handlers, show_owner_menu
 
+
 # ════════════════════════════════════════════════════════════
 # Admin-only helper commands
 # ════════════════════════════════════════════════════════════
-
+@require_unlock
 async def restart_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("♻️ Bot is restarting…")
     logging.warning("⚠️ Admin issued /restart — restarting bot.")
@@ -66,13 +67,15 @@ async def restart_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     raise SystemExit(0)
 
 
+# 🚨 Kill bot does *NOT* require unlock
 async def kill_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🛑 Bot is shutting down… it will auto-restart.")
     logging.warning("⚠️ Admin issued /kill — shutting down cleanly.")
     raise SystemExit(0)
 
+
 # ════════════════════════════════════════════════════════════
-# InitDB flow with retries + wipe protection
+# InitDB flow with secure PIN and hardened salt reset
 # ════════════════════════════════════════════════════════════
 async def initdb_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Ask for confirmation before resetting DB."""
@@ -92,46 +95,44 @@ async def initdb_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown", reply_markup=kb)
     return CONFIRM_INITDB
 
+
 async def initdb_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     if update.callback_query.data == "initdb_no":
         await update.callback_query.edit_message_text("❌ InitDB cancelled.")
         return ConversationHandler.END
 
+    # If DB exists and is encrypted, ask for old PIN first
     if os.path.exists(config.DB_PATH):
-        # Require current PIN to reset DB
-        await update.callback_query.edit_message_text("🔑 Enter current DB password (PIN) to confirm:")
+        await update.callback_query.edit_message_text("🔑 Enter current DB PIN to confirm:")
         return ENTER_OLD_PIN
-    else:
-        await update.callback_query.edit_message_text("🔑 Set a new DB password (PIN):")
-        return SET_NEW_PIN
+
+    # No existing DB → proceed to set new PIN
+    await update.callback_query.edit_message_text("🔑 Enter new DB password (PIN):")
+    return SET_NEW_PIN
+
 
 async def enter_old_pin(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Check old PIN before allowing reset, retry if wrong."""
+    """Verify old PIN before allowing reset."""
     pin = update.message.text.strip()
     try:
         secure_db.unlock(pin)
         secure_db.lock()
-        await update.message.reply_text("✅ Old PIN verified. Now enter a new PIN for the fresh DB:")
+        await update.message.reply_text("✅ Current PIN verified.\nNow enter new DB password (PIN):")
         return SET_NEW_PIN
     except RuntimeError as e:
-        if "wiped" in str(e).lower():
-            await update.message.reply_text(
-                "💣 *Database wiped after too many failed PIN attempts!*",
-                parse_mode="Markdown"
-            )
-            return ConversationHandler.END
-        else:
-            attempts_left = max(0, 7 - secure_db.failed_attempts)
-            await update.message.reply_text(
-                f"❌ Wrong PIN.\n⚠️ Attempts left before wipe: {attempts_left}",
-                parse_mode="Markdown"
-            )
-            if attempts_left > 0:
-                await update.message.reply_text("🔑 Try again. Enter current DB password (PIN):")
-                return ENTER_OLD_PIN
-            else:
-                return ConversationHandler.END
+        secure_db.failed_attempts += 1
+        if secure_db.failed_attempts >= 7:
+            secure_db._wipe_database()
+            await update.message.reply_text("💣 *Too many failed attempts. DB wiped for security!*", parse_mode="Markdown")
+            raise SystemExit(0)
+        attempts_left = 7 - secure_db.failed_attempts
+        await update.message.reply_text(
+            f"❌ Wrong PIN.\n⚠️ Attempts left before wipe: {attempts_left}\nTry again:",
+            parse_mode="Markdown"
+        )
+        return ENTER_OLD_PIN
+
 
 async def set_new_pin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pin = update.message.text.strip()
@@ -142,12 +143,14 @@ async def set_new_pin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🔑 Confirm PIN by entering it again:")
     return CONFIRM_NEW_PIN
 
+
 async def confirm_new_pin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     confirm_pin = update.message.text.strip()
     if confirm_pin != context.user_data.get("new_db_pin"):
         await update.message.reply_text("❌ PINs do not match. Start over with /initdb.")
         return ConversationHandler.END
 
+    # Now generate salt and initialize DB
     await update.message.reply_text("⚙️ Setting up secure DB (generating new salt)…")
     try:
         subprocess.run(["chmod", "+x", "./setup_secure_db.sh"], check=True)
@@ -175,62 +178,47 @@ async def confirm_new_pin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "✅ New PIN set and DB encrypted successfully.\n"
         "♻️ Restarting bot to apply changes…"
     )
+
+    # ♻️ Auto-restart bot to load new salt/PIN
     subprocess.Popen([sys.executable, os.path.abspath(sys.argv[0]), "child"])
     raise SystemExit(0)
 
+
 # ════════════════════════════════════════════════════════════
-# Unlock command flow (with retries + wipe warning)
+# Unlock command flow
 # ════════════════════════════════════════════════════════════
 async def unlock_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Prompt admin for encryption PIN/key."""
     await update.message.reply_text("🔑 *Enter your encryption PIN to unlock:*", parse_mode="Markdown")
     return UNLOCK_PIN
 
+
 async def unlock_process(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Attempt to unlock the database with provided PIN."""
     pin = update.message.text.strip()
     try:
         secure_db.unlock(pin)
-        secure_db.mark_activity()
+        secure_db.mark_activity()  # update last activity
         await update.message.reply_text("✅ *Database unlocked successfully!*", parse_mode="Markdown")
         return ConversationHandler.END
     except RuntimeError as e:
         if "wiped" in str(e).lower():
-            await update.message.reply_text(
-                "💣 *Database wiped after too many failed PIN attempts!*",
-                parse_mode="Markdown"
-            )
-            return ConversationHandler.END
-        else:
-            attempts_left = 7 - secure_db.failed_attempts
-            warn_msg = (
-                f"❌ Wrong PIN.\n"
-                f"⚠️ Attempts left before wipe: {attempts_left}"
-            )
-            await update.message.reply_text(warn_msg, parse_mode="Markdown")
+            await update.message.reply_text("💣 *Database wiped after too many failed PIN attempts!*", parse_mode="Markdown")
+            raise SystemExit(0)
+        attempts_left = 7 - secure_db.failed_attempts
+        await update.message.reply_text(
+            f"❌ Wrong PIN.\n⚠️ Attempts left before wipe: {attempts_left}\nTry again:",
+            parse_mode="Markdown"
+        )
+        return UNLOCK_PIN
 
-            if attempts_left > 0:
-                await update.message.reply_text("🔑 Try again. Enter your encryption PIN:")
-                return UNLOCK_PIN
-            else:
-                return ConversationHandler.END
-ND
-        else:
-            attempts_left = max(0, 7 - secure_db.failed_attempts)
-            await update.message.reply_text(
-                f"❌ *Unlock failed:* {e}\n"
-                f"⚠️ Attempts left before wipe: {attempts_left}",
-                parse_mode="Markdown"
-            )
-            if attempts_left > 0:
-                await update.message.reply_text("🔑 Try again. Enter your encryption PIN:")
-                return UNLOCK_PIN
-            else:
-                return ConversationHandler.END
 
 # ════════════════════════════════════════════════════════════
 # Auto-lock background task
 # ════════════════════════════════════════════════════════════
 async def auto_lock_task():
-    AUTOLOCK_TIMEOUT = 180
+    """Background coroutine to auto-lock DB after 3 min inactivity."""
+    AUTOLOCK_TIMEOUT = 180  # 3 minutes
     while True:
         await asyncio.sleep(10)
         if secure_db.is_unlocked():
@@ -239,8 +227,7 @@ async def auto_lock_task():
                 secure_db.lock()
                 logging.warning("🔒 Auto-lock triggered after inactivity.")
 
-# (menus & run_bot unchanged)
-# ...
+# (Menus and run_bot remain unchanged)
 
 # ════════════════════════════════════════════════════════════
 # Main Menu
