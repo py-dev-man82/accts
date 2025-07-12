@@ -26,7 +26,7 @@ from handlers.utils import require_unlock
 CONFIRM_INITDB, ENTER_OLD_PIN, SET_NEW_PIN, CONFIRM_NEW_PIN = range(4)
 UNLOCK_PIN = range(1)
 
-# Feature modules already in the project
+# Feature modules
 from handlers.customers         import register_customer_handlers,  show_customer_menu
 from handlers.stores            import register_store_handlers,     show_store_menu
 from handlers.partners          import register_partner_handlers,   show_partner_menu
@@ -68,7 +68,7 @@ async def kill_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     raise SystemExit(0)
 
 # ════════════════════════════════════════════════════════════
-# InitDB flow with secure setup script
+# InitDB flow with secure setup script and enforced PIN
 # ════════════════════════════════════════════════════════════
 async def initdb_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Ask for confirmation before resetting DB."""
@@ -126,6 +126,15 @@ async def run_setup_script_and_set_pin(update: Update, context: ContextTypes.DEF
     )
     return SET_NEW_PIN
 
+async def set_new_pin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    pin = update.message.text.strip()
+    if len(pin) < 4:
+        await update.message.reply_text("❌ PIN must be at least 4 characters. Try again:")
+        return SET_NEW_PIN
+    context.user_data["new_db_pin"] = pin
+    await update.message.reply_text("🔑 Confirm PIN by entering it again:")
+    return CONFIRM_NEW_PIN
+
 async def confirm_new_pin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     confirm_pin = update.message.text.strip()
     if confirm_pin != context.user_data.get("new_db_pin"):
@@ -148,22 +157,6 @@ async def confirm_new_pin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "✅ New PIN set and DB encrypted successfully.\n"
         "Use /unlock and enter your PIN to access the database."
     )
-    return ConversationHandler.END
-
-
-    # Encrypt DB with new PIN
-    pin = context.user_data["new_db_pin"]
-    secure_db._passphrase = pin.encode('utf-8')
-    secure_db.fernet = secure_db._derive_fernet()
-
-    # Create a new encrypted DB
-    secure_db.db = TinyDB(
-        config.DB_PATH,
-        storage=lambda p: EncryptedJSONStorage(p, secure_db.fernet)
-    )
-    secure_db.lock()
-
-    await update.message.reply_text("✅ New PIN set and DB encrypted successfully.\nYou can now /unlock with your PIN.")
     return ConversationHandler.END
 
 # ════════════════════════════════════════════════════════════
@@ -205,7 +198,6 @@ async def auto_lock_task():
 # ════════════════════════════════════════════════════════════
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Root menu / back-to-root callback with DB status indicator."""
-    # Determine DB status
     if not os.path.exists(config.DB_PATH):
         status_icon = "📂 No DB found: run /initdb"
     elif secure_db.is_unlocked():
@@ -213,7 +205,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         status_icon = "🔒 Locked"
 
-    # Main menu buttons
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("Customers",     callback_data="customer_menu"),
          InlineKeyboardButton("Stores",        callback_data="store_menu")],
@@ -227,7 +218,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
          InlineKeyboardButton("📊 Reports",    callback_data="report_menu")],
     ])
 
-    # Show menu with DB status
     text = f"Main Menu: choose a section\n\nStatus: *{status_icon}*"
     if update.callback_query:
         await update.callback_query.answer()
