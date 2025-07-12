@@ -194,7 +194,6 @@ async def auto_lock_task():
 # (Remaining menu logic unchanged)
 # ...
 
-
 # ════════════════════════════════════════════════════════════
 # Main Menu and Nested Submenus
 # ════════════════════════════════════════════════════════════
