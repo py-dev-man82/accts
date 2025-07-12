@@ -172,7 +172,7 @@ async def show_customer_report(update: Update, context: ContextTypes.DEFAULT_TYP
     customer = secure_db.table("customers").get(doc_id=cid)
     currency = customer['currency']
 
-    # PATCH: Pull both customer and general ledger entries for this customer for all-time balance
+    # Pull both customer and general ledger entries for all-time balance
     ledger_entries_all = get_ledger("customer", cid) + get_ledger("general", cid)
     # For current date-range sales/payments display
     filtered_entries = _filter_ledger(ledger_entries_all, start_date, end_date)
@@ -185,7 +185,7 @@ async def show_customer_report(update: Update, context: ContextTypes.DEFAULT_TYP
     sales_page, sales_count = _paginate(sales, page) if scope in ["full", "sales"] else ([], 0)
     payments_page, payments_count = _paginate(payments, page) if scope in ["full", "payments"] else ([], 0)
 
-    # NEW: True all-time balance, using both customer and general ledgers for this customer
+    # All-time balance, using both customer and general ledgers
     balance = sum(e["amount"] for e in ledger_entries_all)
 
     lines = [
@@ -210,27 +210,29 @@ async def show_customer_report(update: Update, context: ContextTypes.DEFAULT_TYP
             lines.append(f"📊 *Total Sales:* {fmt_money(total_sales, currency)}")
 
     if scope in ["full", "payments"]:
-    lines.append("\n💵 *Payments*")
-    if payments_page:
-        for p in payments_page:
-            fee_perc = p.get('fee_perc', 0)
-            fx = p.get('fx_rate', 0)
-            usd_amt = p.get('usd_amt', 0)
-            line = (
-                f"• {fmt_date(p['date'])}: {fmt_money(p['amount'], currency)}"
-                f" | {fee_perc:.2f}%"
-                f" | {fx:.4f}"
-                f" | {fmt_money(usd_amt, 'USD')}"
+        lines.append("\n💵 *Payments*")
+        if payments_page:
+            for p in payments_page:
+                fee_perc = p.get('fee_perc', 0)
+                fx = p.get('fx_rate', 0)
+                usd_amt = p.get('usd_amt', 0)
+                line = (
+                    f"• {fmt_date(p['date'])}: {fmt_money(p['amount'], currency)}"
+                    f" | {fee_perc:.2f}%"
+                    f" | {fx:.4f}"
+                    f" | {fmt_money(usd_amt, 'USD')}"
+                )
+                if p.get('note'):
+                    line += f"  📝 {p['note']}"
+                lines.append(line)
+        else:
+            lines.append("  (No payments on this page)")
+        if page == 0:
+            lines.append(
+                f"📊 *Total Payments:* {fmt_money(total_payments_local, currency)} → {fmt_money(sum(p.get('usd_amt',0) for p in payments), 'USD')}"
             )
-            if p.get('note'):
-                line += f"  📝 {p['note']}"
-            lines.append(line)
-    else:
-        lines.append("  (No payments on this page)")
-    if page == 0:
-        lines.append(
-            f"📊 *Total Payments:* {fmt_money(total_payments_local, currency)} → {fmt_money(sum(p.get('usd_amt',0) for p in payments), 'USD')}"
-        ))
+
+    lines.append(f"\n📊 *Current Balance:* {fmt_money(balance, currency)}")
 
     nav = []
     if page > 0:
@@ -316,16 +318,22 @@ async def export_pdf_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
         y -= 20
         pdf.setFont('Helvetica', 10)
         for p in payments:
-            line = f"{fmt_date(p['date'])}: {fmt_money(p['amount'], currency)}"
-            if p.get('note'):
-                line += f"  Note: {p['note']}"
+            fee_perc = p.get('fee_perc', 0)
+            fx = p.get('fx_rate', 0)
+            usd_amt = p.get('usd_amt', 0)
+            line = (
+                f"{fmt_date(p['date'])}: {fmt_money(p['amount'], currency)}"
+                f" | {fee_perc:.2f}%"
+                f" | {fx:.4f}"
+                f" | {fmt_money(usd_amt, 'USD')}"
+            )
             pdf.drawString(60, y, line)
             y -= 15
             if y<50:
                 pdf.showPage(); y=height-50
         total_local = sum(p['amount'] for p in payments)
         pdf.setFont('Helvetica-Bold',10)
-        pdf.drawString(50, y, f"Total Payments: {fmt_money(total_local, currency)}")
+        pdf.drawString(50, y, f"Total Payments: {fmt_money(total_local, currency)} → {fmt_money(sum(p.get('usd_amt',0) for p in payments), 'USD')}")
         y -= 30
 
     # All-time balance
