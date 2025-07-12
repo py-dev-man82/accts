@@ -1,6 +1,7 @@
 # handlers/expenses.py
 
 import logging
+logger = logging.getLogger(__name__)
 from datetime import datetime
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
@@ -46,168 +47,229 @@ async def show_expense_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ---------- ADD FLOW ----------
 @require_unlock
 async def add_expense(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.answer()
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("Store", callback_data="exp_type_store"),
-         InlineKeyboardButton("Partner", callback_data="exp_type_partner")],
-        [InlineKeyboardButton("Owner", callback_data="exp_type_owner")]
-    ])
-    await update.callback_query.edit_message_text("Expense for which account type?", reply_markup=kb)
-    return E_ADD_TYPE
+    try:
+        logger.info("Entered add_expense (entry point).")
+        await update.callback_query.answer()
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("Store", callback_data="exp_type_store"),
+             InlineKeyboardButton("Partner", callback_data="exp_type_partner")],
+            [InlineKeyboardButton("Owner", callback_data="exp_type_owner")]
+        ])
+        await update.callback_query.edit_message_text("Expense for which account type?", reply_markup=kb)
+        logger.info("Displayed account type options.")
+        return E_ADD_TYPE
+    except Exception:
+        logger.exception("Error in add_expense handler.")
+        await update.callback_query.edit_message_text("An error occurred at expense start.")
+        return ConversationHandler.END
 
 async def get_expense_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.answer()
-    t = update.callback_query.data.split("_")[-1]
-    context.user_data["exp_type"] = t
-    if t == "store":
-        stores = secure_db.all("stores")
-        if not stores:
-            await update.callback_query.edit_message_text("No stores configured.")
-            return ConversationHandler.END
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton(f"{s['name']} ({s['currency']})", callback_data=f"exp_acct_{s.doc_id}")]
-            for s in stores
-        ])
-        await update.callback_query.edit_message_text("Select store:", reply_markup=kb)
-        return E_ADD_ACCT
-    elif t == "partner":
-        partners = secure_db.all("partners")
-        if not partners:
-            await update.callback_query.edit_message_text("No partners configured.")
-            return ConversationHandler.END
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton(f"{p['name']} ({p['currency']})", callback_data=f"exp_acct_{p.doc_id}")]
-            for p in partners
-        ])
-        await update.callback_query.edit_message_text("Select partner:", reply_markup=kb)
-        return E_ADD_ACCT
-    else:  # owner
-        context.user_data["exp_acct_id"] = "POT"
-        await update.callback_query.edit_message_text("Enter amount (numeric):")
-        return E_ADD_AMT
+    try:
+        await update.callback_query.answer()
+        t = update.callback_query.data.split("_")[-1]
+        logger.info(f"get_expense_type fired. User selected: {t}")
+        context.user_data["exp_type"] = t
+        if t == "store":
+            stores = secure_db.all("stores")
+            logger.info(f"Found {len(stores)} stores.")
+            if not stores:
+                await update.callback_query.edit_message_text("No stores configured.")
+                return ConversationHandler.END
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton(f"{s['name']} ({s['currency']})", callback_data=f"exp_acct_{s.doc_id}")]
+                for s in stores
+            ])
+            await update.callback_query.edit_message_text("Select store:", reply_markup=kb)
+            return E_ADD_ACCT
+        elif t == "partner":
+            partners = secure_db.all("partners")
+            logger.info(f"Found {len(partners)} partners.")
+            if not partners:
+                await update.callback_query.edit_message_text("No partners configured.")
+                return ConversationHandler.END
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton(f"{p['name']} ({p['currency']})", callback_data=f"exp_acct_{p.doc_id}")]
+                for p in partners
+            ])
+            await update.callback_query.edit_message_text("Select partner:", reply_markup=kb)
+            return E_ADD_ACCT
+        else:  # owner
+            context.user_data["exp_acct_id"] = "POT"
+            logger.info("Account type: owner. Prompting for amount.")
+            await update.callback_query.edit_message_text("Enter amount (numeric):")
+            return E_ADD_AMT
+    except Exception:
+        logger.exception("Error in get_expense_type handler.")
+        await update.callback_query.edit_message_text("An error occurred choosing account type.")
+        return ConversationHandler.END
 
 async def get_expense_acct(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.answer()
-    acct_id = int(update.callback_query.data.split("_")[-1])
-    context.user_data["exp_acct_id"] = acct_id
-    await update.callback_query.edit_message_text("Enter amount (numeric):")
-    return E_ADD_AMT
+    try:
+        await update.callback_query.answer()
+        acct_id = int(update.callback_query.data.split("_")[-1])
+        logger.info(f"get_expense_acct fired. Account selected: {acct_id}")
+        context.user_data["exp_acct_id"] = acct_id
+        await update.callback_query.edit_message_text("Enter amount (numeric):")
+        return E_ADD_AMT
+    except Exception:
+        logger.exception("Error in get_expense_acct handler.")
+        await update.callback_query.edit_message_text("An error occurred selecting account.")
+        return ConversationHandler.END
 
 async def get_expense_amt(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         amt = float(update.message.text)
         assert amt > 0
+        context.user_data["exp_amt"] = amt
+        logger.info(f"get_expense_amt fired. Amount entered: {amt}")
+        await update.message.reply_text("Enter currency code (e.g. USD):")
+        return E_ADD_CUR
     except Exception:
+        logger.exception("Invalid or non-positive amount in get_expense_amt.")
         await update.message.reply_text("Enter a positive number.")
         return E_ADD_AMT
-    context.user_data["exp_amt"] = amt
-    await update.message.reply_text("Enter currency code (e.g. USD):")
-    return E_ADD_CUR
 
 async def get_expense_cur(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    cur = update.message.text.strip().upper()
-    context.user_data["exp_cur"] = cur
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton("➖ Skip", callback_data="exp_note_skip")]])
-    await update.message.reply_text("Optional note (or Skip):", reply_markup=kb)
-    return E_ADD_NOTE
+    try:
+        cur = update.message.text.strip().upper()
+        context.user_data["exp_cur"] = cur
+        logger.info(f"get_expense_cur fired. Currency entered: {cur}")
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("➖ Skip", callback_data="exp_note_skip")]])
+        await update.message.reply_text("Optional note (or Skip):", reply_markup=kb)
+        return E_ADD_NOTE
+    except Exception:
+        logger.exception("Error in get_expense_cur handler.")
+        await update.message.reply_text("An error occurred. Please try again.")
+        return E_ADD_CUR
 
 async def get_expense_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.callback_query and update.callback_query.data == "exp_note_skip":
-        await update.callback_query.answer()
-        note = ""
-    else:
-        note = update.message.text.strip()
-    context.user_data["exp_note"] = note
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton(cat, callback_data=f"exp_cat_{cat.lower()}")] for cat in EXPENSE_CATS])
-    await update.message.reply_text("Choose category:", reply_markup=kb)
-    return E_ADD_CAT
+    try:
+        if update.callback_query and update.callback_query.data == "exp_note_skip":
+            await update.callback_query.answer()
+            note = ""
+            logger.info("get_expense_note: skipped note.")
+        else:
+            note = update.message.text.strip()
+            logger.info(f"get_expense_note: note entered: {note}")
+        context.user_data["exp_note"] = note
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton(cat, callback_data=f"exp_cat_{cat.lower()}")] for cat in EXPENSE_CATS])
+        await update.message.reply_text("Choose category:", reply_markup=kb)
+        return E_ADD_CAT
+    except Exception:
+        logger.exception("Error in get_expense_note handler.")
+        await update.message.reply_text("An error occurred. Please try again.")
+        return E_ADD_NOTE
 
 async def get_expense_cat(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.answer()
-    cat = update.callback_query.data.split("_")[-1].capitalize()
-    context.user_data["exp_cat"] = cat
-    today = datetime.now().strftime("%d%m%Y")
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton("📅 Skip", callback_data="exp_date_skip")]])
-    prompt = f"Enter expense date DDMMYYYY or Skip for today ({today}):"
-    await update.callback_query.edit_message_text(prompt, reply_markup=kb)
-    return E_ADD_DATE
+    try:
+        await update.callback_query.answer()
+        cat = update.callback_query.data.split("_")[-1].capitalize()
+        context.user_data["exp_cat"] = cat
+        logger.info(f"get_expense_cat fired. Category chosen: {cat}")
+        today = datetime.now().strftime("%d%m%Y")
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("📅 Skip", callback_data="exp_date_skip")]])
+        prompt = f"Enter expense date DDMMYYYY or Skip for today ({today}):"
+        await update.callback_query.edit_message_text(prompt, reply_markup=kb)
+        return E_ADD_DATE
+    except Exception:
+        logger.exception("Error in get_expense_cat handler.")
+        await update.callback_query.edit_message_text("An error occurred. Please try again.")
+        return E_ADD_CAT
 
 async def get_expense_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.callback_query and update.callback_query.data == "exp_date_skip":
-        await update.callback_query.answer()
-        date_str = datetime.now().strftime("%d%m%Y")
-    else:
-        date_str = update.message.text.strip()
-        try:
-            datetime.strptime(date_str, "%d%m%Y")
-        except Exception:
-            await update.message.reply_text("Format DDMMYYYY, please.")
-            return E_ADD_DATE
-    context.user_data["exp_date"] = date_str
+    try:
+        if update.callback_query and update.callback_query.data == "exp_date_skip":
+            await update.callback_query.answer()
+            date_str = datetime.now().strftime("%d%m%Y")
+            logger.info("get_expense_date: skipped, using today.")
+        else:
+            date_str = update.message.text.strip()
+            try:
+                datetime.strptime(date_str, "%d%m%Y")
+                logger.info(f"get_expense_date: entered {date_str}")
+            except Exception:
+                logger.warning("get_expense_date: invalid format.")
+                await update.message.reply_text("Format DDMMYYYY, please.")
+                return E_ADD_DATE
+        context.user_data["exp_date"] = date_str
 
-    d = context.user_data
-    acct_label = d["exp_type"].capitalize()
-    acct_id = d["exp_acct_id"]
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ Yes", callback_data="exp_save_yes"),
-         InlineKeyboardButton("❌ No",  callback_data="exp_save_no")]
-    ])
-    summary = (
-        f"Account: {acct_label}\n"
-        f"Account ID: {acct_id}\n"
-        f"Amount: {fmt_money(d['exp_amt'], d['exp_cur'])}\n"
-        f"Category: {d['exp_cat']}\n"
-        f"Note: {d.get('exp_note','') or '—'}\n"
-        f"Date: {fmt_date(d['exp_date'])}\n\nConfirm?"
-    )
-    await update.message.reply_text(summary, reply_markup=kb)
-    return E_ADD_CONFIRM
+        d = context.user_data
+        acct_label = d["exp_type"].capitalize()
+        acct_id = d["exp_acct_id"]
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ Yes", callback_data="exp_save_yes"),
+             InlineKeyboardButton("❌ No",  callback_data="exp_save_no")]
+        ])
+        summary = (
+            f"Account: {acct_label}\n"
+            f"Account ID: {acct_id}\n"
+            f"Amount: {fmt_money(d['exp_amt'], d['exp_cur'])}\n"
+            f"Category: {d['exp_cat']}\n"
+            f"Note: {d.get('exp_note','') or '—'}\n"
+            f"Date: {fmt_date(d['exp_date'])}\n\nConfirm?"
+        )
+        await update.message.reply_text(summary, reply_markup=kb)
+        return E_ADD_CONFIRM
+    except Exception:
+        logger.exception("Error in get_expense_date handler.")
+        await update.message.reply_text("An error occurred. Please try again.")
+        return ConversationHandler.END
 
 @require_unlock
 async def confirm_expense(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.answer()
-    if update.callback_query.data != "exp_save_yes":
-        await show_expense_menu(update, context)
-        return ConversationHandler.END
-
-    d = context.user_data
-    record = {
-        "account_type": d["exp_type"],
-        "account_id": d["exp_acct_id"],
-        "amount": d["exp_amt"],
-        "currency": d["exp_cur"],
-        "category": d.get("exp_cat", "General"),
-        "note": d.get("exp_note", ""),
-        "date": d["exp_date"],
-        "timestamp": datetime.utcnow().isoformat(),
-    }
-    expense_id = None
     try:
-        expense_id = secure_db.insert("expenses", record)
-        add_ledger_entry(
-            account_type=d["exp_type"],
-            account_id=d["exp_acct_id"],
-            entry_type="expense",
-            related_id=expense_id,
-            amount=-abs(d["exp_amt"]),
-            currency=d["exp_cur"],
-            note=record.get("note", ""),
-            date=d["exp_date"],
-            timestamp=record["timestamp"],
-        )
-    except Exception as e:
-        if expense_id is not None:
-            secure_db.remove("expenses", [expense_id])
+        await update.callback_query.answer()
+        if update.callback_query.data != "exp_save_yes":
+            logger.info("confirm_expense: user cancelled at confirmation.")
+            await show_expense_menu(update, context)
+            return ConversationHandler.END
+
+        d = context.user_data
+        record = {
+            "account_type": d["exp_type"],
+            "account_id": d["exp_acct_id"],
+            "amount": d["exp_amt"],
+            "currency": d["exp_cur"],
+            "category": d.get("exp_cat", "General"),
+            "note": d.get("exp_note", ""),
+            "date": d["exp_date"],
+            "timestamp": datetime.utcnow().isoformat(),
+        }
+        logger.info(f"confirm_expense: saving expense record: {record}")
+        expense_id = None
+        try:
+            expense_id = secure_db.insert("expenses", record)
+            add_ledger_entry(
+                account_type=d["exp_type"],
+                account_id=d["exp_acct_id"],
+                entry_type="expense",
+                related_id=expense_id,
+                amount=-abs(d["exp_amt"]),
+                currency=d["exp_cur"],
+                note=record.get("note", ""),
+                date=d["exp_date"],
+                timestamp=record["timestamp"],
+            )
+        except Exception as e:
+            if expense_id is not None:
+                secure_db.remove("expenses", [expense_id])
+            logger.exception("confirm_expense: failed writing to ledger/DB")
+            await update.callback_query.edit_message_text(
+                f"❌ Expense not recorded, error writing to ledger: {e}"
+            )
+            return ConversationHandler.END
+
         await update.callback_query.edit_message_text(
-            f"❌ Expense not recorded, error writing to ledger: {e}"
+            "✅ Expense recorded.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="expense_menu")]])
         )
+        logger.info("confirm_expense: expense recorded successfully.")
+        return ConversationHandler.END
+    except Exception:
+        logger.exception("Error in confirm_expense handler.")
+        await update.callback_query.edit_message_text("An error occurred. Please try again.")
         return ConversationHandler.END
 
-    await update.callback_query.edit_message_text(
-        "✅ Expense recorded.",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="expense_menu")]])
-    )
-    return ConversationHandler.END
 
 # ---------- VIEW FLOW ----------
 def _months_filter(rows, months: int):
