@@ -181,7 +181,7 @@ async def unlock_process(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ========== Auto-lock background ==========
 async def auto_lock_task():
-    AUTOLOCK_TIMEOUT = 180
+    AUTOLOCK_TIMEOUT = 18000
     while True:
         await asyncio.sleep(10)
         if secure_db.is_unlocked():
