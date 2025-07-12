@@ -47,10 +47,12 @@ class EncryptedJSONStorage(JSONStorage):
             self._handle.seek(0)
             self._handle.truncate()
             self._handle.write(encoded)
+            self._handle.flush()  # <-- This ensures data is written immediately!
             logger.info("💾 DB written and encrypted successfully")
         except Exception as e:
             logger.error(f"❌ Failed to write DB: {e}")
             raise
+
 
 class SecureDB:
     """Handles encryption/decryption and PIN logic for DB."""
