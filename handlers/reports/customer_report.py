@@ -210,29 +210,28 @@ async def show_customer_report(update: Update, context: ContextTypes.DEFAULT_TYP
             lines.append(f"📊 *Total Sales:* {fmt_money(total_sales, currency)}")
 
     if scope in ["full", "payments"]:
-    lines.append("\n💵 *Payments*")
-    if payments_page:
-        for p in payments_page:
-            fee_perc = p.get('fee_perc', 0)
-            fx = p.get('fx_rate', 0)
-            inv_fx = 1 / fx if fx else 0
-            usd_amt = p.get('usd_amt', 0)
-            line = (
-                f"• {fmt_date(p['date'])}: {fmt_money(p['amount'], currency)}"
-                f" | {fee_perc:.2f}%"
-                f" | {inv_fx:.4f}"
-                f" | {fmt_money(usd_amt, 'USD')}"
+        lines.append("\n💵 *Payments*")
+        if payments_page:
+            for p in payments_page:
+                fee_perc = p.get('fee_perc', 0)
+                fx = p.get('fx_rate', 0)
+                inv_fx = 1 / fx if fx else 0
+                usd_amt = p.get('usd_amt', 0)
+                line = (
+                    f"• {fmt_date(p['date'])}: {fmt_money(p['amount'], currency)}"
+                    f" | {fee_perc:.2f}%"
+                    f" | {inv_fx:.4f}"
+                    f" | {fmt_money(usd_amt, 'USD')}"
+                )
+                if p.get('note'):
+                    line += f"  📝 {p['note']}"
+                lines.append(line)
+        else:
+            lines.append("  (No payments on this page)")
+        if page == 0:
+            lines.append(
+                f"📊 *Total Payments:* {fmt_money(total_payments_local, currency)} → {fmt_money(sum(p.get('usd_amt',0) for p in payments), 'USD')}"
             )
-            if p.get('note'):
-                line += f"  📝 {p['note']}"
-            lines.append(line)
-    else:
-        lines.append("  (No payments on this page)")
-    if page == 0:
-        lines.append(
-            f"📊 *Total Payments:* {fmt_money(total_payments_local, currency)} → {fmt_money(sum(p.get('usd_amt',0) for p in payments), 'USD')}"
-        )
-
 
     lines.append(f"\n📊 *Current Balance:* {fmt_money(balance, currency)}")
 
@@ -315,31 +314,29 @@ async def export_pdf_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
         y -= 30
 
     if scope in ('full','payments'):
-    pdf.setFont('Helvetica-Bold', 12)
-    pdf.drawString(50, y, 'Payments:')
-    y -= 20
-    pdf.setFont('Helvetica', 10)
-    for p in payments:
-        fee_perc = p.get('fee_perc', 0)
-        fx = p.get('fx_rate', 0)
-        inv_fx = 1 / fx if fx else 0
-        usd_amt = p.get('usd_amt', 0)
-        line = (
-            f"{fmt_date(p['date'])}: {fmt_money(p['amount'], currency)}"
-            f" | {fee_perc:.2f}%"
-            f" | {inv_fx:.4f}"
-            f" | {fmt_money(usd_amt, 'USD')}"
-        )
-        pdf.drawString(60, y, line)
-        y -= 15
-        if y < 50:
-            pdf.showPage()
-            y = height - 50
-    total_local = sum(p['amount'] for p in payments)
-    pdf.setFont('Helvetica-Bold',10)
-    pdf.drawString(50, y, f"Total Payments: {fmt_money(total_local, currency)} → {fmt_money(sum(p.get('usd_amt',0) for p in payments), 'USD')}")
-    y -= 30
-
+        pdf.setFont('Helvetica-Bold', 12)
+        pdf.drawString(50, y, 'Payments:')
+        y -= 20
+        pdf.setFont('Helvetica', 10)
+        for p in payments:
+            fee_perc = p.get('fee_perc', 0)
+            fx = p.get('fx_rate', 0)
+            inv_fx = 1 / fx if fx else 0
+            usd_amt = p.get('usd_amt', 0)
+            line = (
+                f"{fmt_date(p['date'])}: {fmt_money(p['amount'], currency)}"
+                f" | {fee_perc:.2f}%"
+                f" | {inv_fx:.4f}"
+                f" | {fmt_money(usd_amt, 'USD')}"
+            )
+            pdf.drawString(60, y, line)
+            y -= 15
+            if y<50:
+                pdf.showPage(); y=height-50
+        total_local = sum(p['amount'] for p in payments)
+        pdf.setFont('Helvetica-Bold',10)
+        pdf.drawString(50, y, f"Total Payments: {fmt_money(total_local, currency)} → {fmt_money(sum(p.get('usd_amt',0) for p in payments), 'USD')}")
+        y -= 30
 
     # All-time balance
     balance = sum(e["amount"] for e in ledger_entries)
