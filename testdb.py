@@ -1,7 +1,7 @@
 from secure_db import secure_db
 
 # Unlock with your actual PIN
-if not secure_db.unlock("your-pin"):
+if not secure_db.unlock("1122"):
     print("Unlock failed! Wrong PIN or DB corrupted.")
     exit()
 
