@@ -58,14 +58,14 @@ from handlers.owner import register_owner_handlers, show_owner_menu
 # ════════════════════════════════════════════════════════════
 # Admin-only helper commands
 # ════════════════════════════════════════════════════════════
-@require_unlock
+
 async def restart_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("♻️ Bot is restarting…")
     logging.warning("⚠️ Admin issued /restart — restarting bot.")
     subprocess.Popen([sys.executable, os.path.abspath(sys.argv[0]), "child"])
     raise SystemExit(0)
 
-@require_unlock
+
 async def kill_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🛑 Bot is shutting down… it will auto-restart.")
     logging.warning("⚠️ Admin issued /kill — shutting down cleanly.")
