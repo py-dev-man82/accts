@@ -16,20 +16,19 @@ if [[ ! -f secure_db.py ]]; then
   exit 1
 fi
 
-# 3) Generate a new 16-byte salt (hex encoded)
+# 3) Generate a new 16-byte salt (hex encoded for bytes.fromhex)
 SALT_HEX=$(python3 - << 'EOF'
 import os
 print(os.urandom(16).hex())
 EOF
 )
 
-
-echo "Generated new salt: $SALT_REPR"
+echo "Generated new salt: $SALT_HEX"
 
 # 4) Remove any existing KDF_SALT lines
 sed -i "/^KDF_SALT =/d" secure_db.py
 
-# 5) Insert the new KDF_SALT right below the UNLOCK_TIMEOUT definition
-sed -i "/^UNLOCK_TIMEOUT =/a KDF_SALT = $SALT_REPR" secure_db.py
+# 5) Insert the new KDF_SALT using bytes.fromhex()
+sed -i "/^UNLOCK_TIMEOUT =/a KDF_SALT = bytes.fromhex(\"${SALT_HEX}\")" secure_db.py
 
 echo "Updated secure_db.py with new KDF_SALT. Editing complete."
