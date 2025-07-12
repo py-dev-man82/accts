@@ -1,6 +1,7 @@
 import base64
 import json
 from tinydb import TinyDB
+from tinydb.storages import JSONStorage  # <-- ADD THIS LINE
 from cryptography.fernet import Fernet
 
 # Generate a key for test (do NOT use in prod)
