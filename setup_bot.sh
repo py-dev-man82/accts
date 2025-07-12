@@ -17,16 +17,10 @@ echo "Preparing data directory…"
 mkdir -p data
 chmod 700 data
 
-# 4) Run secure-DB init script if present
-if [ -f setup_secure_db.sh ]; then
-  echo "Running secure DB setup…"
-  chmod +x setup_secure_db.sh
-  ./setup_secure_db.sh
-else
-  echo "⚠️  setup_secure_db.sh not found—skipping DB init"
-fi
+# ⚠️ Removed secure-DB init step
+echo "Skipping secure DB init — DB will be created on first /initdb run in the bot."
 
-# 5) Interactive config.py update (skip blank entries)
+# 4) Interactive config.py update (skip blank entries)
 CONFIG_FILE="config.py"
 if [ -f "$CONFIG_FILE" ]; then
   echo "Configuring $CONFIG_FILE…"
@@ -53,12 +47,12 @@ else
   echo "⚠️  $CONFIG_FILE not found—skipping configuration"
 fi
 
-# 6) Create & activate Python virtualenv
+# 5) Create & activate Python virtualenv
 echo "Creating Python virtualenv…"
 python3 -m venv venv
 source venv/bin/activate
 
-# 7) Install Python dependencies
+# 6) Install Python dependencies
 echo "Installing Python dependencies…"
 pip install --upgrade pip
 pip install \
@@ -69,7 +63,7 @@ pip install \
     xlsxwriter \
     reportlab
 
-# 8) Interactive POT starting balance
+# 7) Interactive POT starting balance
 read -p "Enter initial POT starting balance (leave blank to skip): " POT_START
 if [ -n "$POT_START" ]; then
   echo "Seeding POT with \$${POT_START}…"
@@ -86,10 +80,10 @@ else
   echo "→ Skipping POT initialization"
 fi
 
-# 9) Deactivate venv
+# 8) Deactivate venv
 deactivate
 
-# 10) Create systemd service
+# 9) Create systemd service
 echo "Creating systemd service…"
 SERVICE_FILE="/etc/systemd/system/telegram-bot.service"
 sudo tee "$SERVICE_FILE" > /dev/null <<EOF
@@ -109,7 +103,7 @@ Environment=PYTHONUNBUFFERED=1
 WantedBy=multi-user.target
 EOF
 
-# 11) Enable & start service
+# 10) Enable & start service
 echo "Enabling and starting the service…"
 sudo systemctl daemon-reload
 sudo systemctl enable telegram-bot
