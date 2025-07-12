@@ -160,7 +160,12 @@ async def confirm_new_pin(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ========== Unlock Flow ==========
 async def unlock_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🔑 *Enter your encryption PIN to unlock:*", parse_mode="Markdown")
+    prompt = "🔑 *Enter your encryption PIN to unlock:*"
+    if update.message:
+        await update.message.reply_text(prompt, parse_mode="Markdown")
+    elif update.callback_query:
+        await update.callback_query.answer()
+        await update.callback_query.message.reply_text(prompt, parse_mode="Markdown")
     return UNLOCK_PIN
 
 async def unlock_process(update: Update, context: ContextTypes.DEFAULT_TYPE):
