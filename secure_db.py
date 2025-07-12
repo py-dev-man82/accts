@@ -8,28 +8,38 @@ from tinydb.storages import JSONStorage
 from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 from cryptography.fernet import Fernet, InvalidToken
 
+# Config
 DB_FILE = "data/db.json"
 SALT_FILE = "data/kdf_salt.bin"
 MAX_PIN_ATTEMPTS = 7
 
+# Logger
 logger = logging.getLogger("secure_db")
 logger.setLevel(logging.INFO)
 
 class EncryptedJSONStorage(JSONStorage):
+    """Custom TinyDB storage with encryption that works as intended."""
     def __init__(self, path, fernet: Fernet, **kwargs):
-        super().__init__(path, **kwargs)
         self.fernet = fernet
+        self._path = path
 
     def read(self):
         logger.info("READ CALLED")
         try:
-            raw = self._handle.read()
+            if not os.path.exists(self._path):
+                logger.warning("📂 DB file is empty, returning {}")
+                return {}
+            with open(self._path, "r") as f:
+                raw = f.read()
             if not raw:
                 logger.warning("📂 DB file is empty, returning {}")
                 return {}
             token = base64.urlsafe_b64decode(raw.encode())
             decrypted = self.fernet.decrypt(token)
             return json.loads(decrypted.decode())
+        except FileNotFoundError:
+            logger.warning("📂 DB file missing, returning {}")
+            return {}
         except InvalidToken:
             logger.error("🔒 Decryption failed: wrong key or unencrypted DB")
             raise
@@ -43,16 +53,15 @@ class EncryptedJSONStorage(JSONStorage):
             json_str = json.dumps(data, separators=(",", ":")).encode()
             token = self.fernet.encrypt(json_str)
             encoded = base64.urlsafe_b64encode(token).decode()
-            self._handle.seek(0)
-            self._handle.truncate()
-            self._handle.write(encoded)
-            self._handle.flush()
+            with open(self._path, "w") as f:
+                f.write(encoded)
             logger.info("💾 DB written and encrypted successfully")
         except Exception as e:
             logger.error(f"❌ Failed to write DB: {e}")
             raise
 
 class SecureDB:
+    """Handles encryption/decryption and PIN logic for DB."""
     def __init__(self):
         self.db = None
         self.fernet = None
@@ -96,7 +105,7 @@ class SecureDB:
                 DB_FILE,
                 storage=lambda p: EncryptedJSONStorage(p, self.fernet),
             )
-            _ = self.db.all()
+            _ = self.db.all()  # Test read
             logger.info("✅ Database unlocked successfully")
             self._passphrase = pin
             self._unlocked = True
@@ -127,9 +136,11 @@ class SecureDB:
         return self._unlocked
 
     def has_pin(self) -> bool:
+        # If both DB and SALT files exist, assume DB is initialized
         return os.path.exists(DB_FILE) and os.path.exists(SALT_FILE)
 
     def _wipe_db(self):
+        """Wipe the DB and salt for security."""
         if os.path.exists(DB_FILE):
             os.remove(DB_FILE)
             logger.warning("🗑️ DB file deleted")
@@ -151,10 +162,7 @@ class SecureDB:
 
     def insert(self, table, doc):
         self.ensure_unlocked()
-        result = self.db.table(table).insert(doc)
-        self.db.close()  # force write to disk
-        self.unlock(self._passphrase)  # re-open for next access
-        return result
+        return self.db.table(table).insert(doc)
 
     def all(self, table):
         self.ensure_unlocked()
@@ -166,17 +174,11 @@ class SecureDB:
 
     def update(self, table, fields, cond):
         self.ensure_unlocked()
-        result = self.db.table(table).update(fields, cond)
-        self.db.close()
-        self.unlock(self._passphrase)
-        return result
+        return self.db.table(table).update(fields, cond)
 
     def remove(self, table, cond):
         self.ensure_unlocked()
-        result = self.db.table(table).remove(cond)
-        self.db.close()
-        self.unlock(self._passphrase)
-        return result
+        return self.db.table(table).remove(cond)
 
     def get(self, table, cond):
         self.ensure_unlocked()
