@@ -124,27 +124,7 @@ class SecureDB:
             self._unlocked   = False
             logger.info("🔒 Database locked")
 
-    def has_pin(self) -> bool:
-    """
-    Check if the DB has been initialized with a PIN (system table exists).
-    """
-    if not os.path.exists(self.db_path):
-        logger.info("📂 No DB file found, no PIN set.")
-        return False
-
-    try:
-        temp_db = TinyDB(
-            self.db_path,
-            storage=lambda p: EncryptedJSONStorage(p, self._derive_fernet())
-        )
-        tables = temp_db.tables()
-        temp_db.close()
-        has_system = "system" in tables
-        logger.info(f"📋 DB has PIN: {has_system}")
-        return has_system
-    except Exception:
-        logger.warning("⚠️ Could not verify PIN (probably uninitialized).")
-        return False
+  
 
     def is_unlocked(self) -> bool:
         return self._unlocked
@@ -165,6 +145,41 @@ class SecureDB:
         if not self._unlocked:
             logger.warning("🔒 DB access attempted while locked")
             raise RuntimeError("🔒 Database is locked. Please /unlock first.")
+
+    
+        def mark_activity(self):
+        self._last_access = time.monotonic()
+
+    def table(self, name):
+        self.ensure_unlocked()
+        logger.debug(f"📂 Accessing table: {name}")
+        return self.db.table(name)
+
+    def ensure_unlocked(self):
+        if not self._unlocked:
+            logger.warning("🔒 DB access attempted while locked")
+            raise RuntimeError("🔒 Database is locked. Please /unlock first.")
+
+    def has_pin(self) -> bool:
+        """
+        Check if the DB has been initialized with a PIN (system table exists).
+        """
+        if not os.path.exists(self.db_path):
+            logger.info("📂 No DB file found, no PIN set.")
+            return False
+        try:
+            temp_db = TinyDB(
+                self.db_path,
+                storage=lambda p: EncryptedJSONStorage(p, self._derive_fernet())
+            )
+            tables = temp_db.tables()
+            temp_db.close()
+            has_system = "system" in tables
+            logger.info(f"📋 DB has PIN: {has_system}")
+            return has_system
+        except Exception:
+            logger.warning("⚠️ Could not verify PIN (probably uninitialized).")
+            return False
 
 # Global instance
 secure_db = SecureDB(config.DB_PATH)
