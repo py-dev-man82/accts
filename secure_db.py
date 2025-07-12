@@ -5,6 +5,7 @@ import json
 import base64
 import os
 import time
+import logging
 from tinydb import TinyDB
 from tinydb.storages import JSONStorage
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
@@ -13,6 +14,9 @@ from cryptography.fernet import Fernet, InvalidToken
 from cryptography.hazmat.backends import default_backend
 
 import config
+
+logger = logging.getLogger("secure_db")
+logger.setLevel(logging.INFO)
 
 # Auto-lock timeout in seconds
 UNLOCK_TIMEOUT = 180  # 3 minutes
@@ -29,21 +33,27 @@ class EncryptedJSONStorage(JSONStorage):
             with open(self._handle, 'rb') as f:
                 token = f.read()
             if not token:
+                logger.info("📂 DB file is empty, returning {}")
                 return {}
             data = self.fernet.decrypt(token)
+            logger.info("📥 DB decrypted successfully")
             return json.loads(data.decode('utf-8'))
         except FileNotFoundError:
+            logger.warning("📄 DB file not found, starting fresh")
             return {}
         except InvalidToken:
-            raise RuntimeError("🔒 Decryption failed: Wrong key or unencrypted DB.")
+            logger.error("🔒 Decryption failed: wrong key or unencrypted DB")
+            raise RuntimeError("Failed to decrypt DB. Wrong key or unencrypted?")
         except Exception as e:
-            raise RuntimeError("🔒 Failed to decrypt DB file.") from e
+            logger.exception("❌ Unexpected error while reading DB")
+            raise RuntimeError("Failed to read DB file") from e
 
     def write(self, data):
         raw = json.dumps(data).encode('utf-8')
         token = self.fernet.encrypt(raw)
         with open(self._handle, 'wb') as f:
             f.write(token)
+        logger.info("💾 DB written and encrypted successfully")
 
 class SecureDB:
     def __init__(self, db_path):
@@ -57,8 +67,10 @@ class SecureDB:
 
         if not config.ENABLE_ENCRYPTION:
             self.db = TinyDB(self.db_path, storage=JSONStorage)
+            logger.info("🔓 Encryption disabled: using plaintext DB")
 
     def _derive_fernet(self):
+        logger.debug("🔑 Deriving encryption key from passphrase")
         kdf = PBKDF2HMAC(
             algorithm=hashes.SHA256(),
             length=32,
@@ -71,43 +83,42 @@ class SecureDB:
 
     def unlock(self, passphrase: str):
         if not config.ENABLE_ENCRYPTION:
+            logger.info("🔓 Unlock called but encryption disabled")
             return
 
         with self._lock:
+            logger.info("🔑 Attempting to unlock DB")
             self._passphrase = passphrase.encode('utf-8')
             self.fernet      = self._derive_fernet()
 
             try:
-                # Try to open encrypted DB
                 self.db = TinyDB(
                     self.db_path,
                     storage=lambda p: EncryptedJSONStorage(p, self.fernet)
                 )
-                _ = self.db.tables()  # Force decryption
+                _ = self.db.tables()  # Trigger decryption
                 self._unlocked = True
                 self._last_access = time.monotonic()
-                print("✅ Database unlocked (encrypted).")
+                logger.info("✅ Database unlocked successfully")
             except RuntimeError as e:
-                # If decryption fails, check if DB is plaintext
                 if "unencrypted" in str(e).lower():
-                    print("⚠️ Plaintext DB detected. Migrating to encrypted format…")
+                    logger.warning("⚠️ Plaintext DB detected, migrating to encrypted format")
                     self._migrate_plaintext_to_encrypted()
                     self._unlocked = True
                     self._last_access = time.monotonic()
-                    print("✅ Migration complete. Database now encrypted.")
+                    logger.info("✅ Migration complete: DB now encrypted")
                 else:
                     self._unlocked = False
+                    logger.error(f"❌ Unlock failed: {e}")
                     raise
 
     def _migrate_plaintext_to_encrypted(self):
-        # Load plaintext DB
         plaintext_db = TinyDB(self.db_path, storage=JSONStorage)
         all_data = {}
         for table in plaintext_db.tables():
             all_data[table] = plaintext_db.table(table).all()
         plaintext_db.close()
-
-        # Recreate DB encrypted
+        logger.info(f"📦 Migrating {len(all_data)} tables to encrypted DB")
         self.db = TinyDB(
             self.db_path,
             storage=lambda p: EncryptedJSONStorage(p, self.fernet)
@@ -116,9 +127,11 @@ class SecureDB:
             tbl = self.db.table(table_name)
             for row in rows:
                 tbl.insert(row)
+        logger.info("✅ Data migration completed")
 
     def lock(self):
         if not config.ENABLE_ENCRYPTION:
+            logger.info("🔓 Lock called but encryption disabled")
             return
         with self._lock:
             if self.db:
@@ -127,7 +140,7 @@ class SecureDB:
             self.fernet      = None
             self._passphrase = None
             self._unlocked   = False
-            print("🔒 Database locked.")
+            logger.info("🔒 Database locked")
 
     def is_unlocked(self) -> bool:
         return self._unlocked
@@ -137,10 +150,12 @@ class SecureDB:
 
     def ensure_unlocked(self):
         if config.ENABLE_ENCRYPTION and not self.is_unlocked():
+            logger.warning("🔒 DB access attempted while locked")
             raise RuntimeError("🔒 Database is locked. Please /unlock first.")
         if config.ENABLE_ENCRYPTION and self._unlocked:
             now = time.monotonic()
             if now - self._last_access > UNLOCK_TIMEOUT:
+                logger.warning("⏳ Auto-lock timeout reached, locking DB")
                 self.lock()
                 raise RuntimeError("🔒 Auto-locked after inactivity. Please /unlock again.")
             self._last_access = now
@@ -150,26 +165,32 @@ class SecureDB:
 
     def table(self, name):
         self.ensure_unlocked()
+        logger.debug(f"📂 Accessing table: {name}")
         return self.db.table(name)
 
     def all(self, table_name):
         self.ensure_unlocked()
+        logger.info(f"📄 Reading all rows from table: {table_name}")
         return self.db.table(table_name).all()
 
     def insert(self, table_name, doc):
         self.ensure_unlocked()
+        logger.info(f"➕ Inserting into table {table_name}: {doc}")
         return self.db.table(table_name).insert(doc)
 
     def search(self, table_name, query):
         self.ensure_unlocked()
+        logger.debug(f"🔍 Searching in table {table_name}")
         return self.db.table(table_name).search(query)
 
     def update(self, table_name, fields, doc_ids):
         self.ensure_unlocked()
+        logger.info(f"✏️ Updating table {table_name} on doc_ids {doc_ids}: {fields}")
         return self.db.table(table_name).update(fields, doc_ids=doc_ids)
 
     def remove(self, table_name, doc_ids):
         self.ensure_unlocked()
+        logger.info(f"🗑️ Removing from table {table_name} doc_ids {doc_ids}")
         return self.db.table(table_name).remove(doc_ids=doc_ids)
 
 # Global instance
