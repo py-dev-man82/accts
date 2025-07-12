@@ -12,7 +12,12 @@ from secure_db import secure_db
 from handlers.utils import require_unlock, fmt_money, fmt_date
 from handlers.ledger import get_ledger
 
+def _reset_customer_report_state(context):
+    for k in ['customer_id', 'start_date', 'end_date', 'page', 'scope']:
+        context.user_data.pop(k, None)
+
 async def _goto_main_menu(update, context):
+    _reset_customer_report_state(context)
     from bot import start
     return await start(update, context)
 
@@ -28,8 +33,7 @@ _PAGE_SIZE = 8
 
 @require_unlock
 async def show_customer_report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    for k in ['customer_id', 'start_date', 'end_date', 'page', 'scope']:
-        context.user_data.pop(k, None)
+    _reset_customer_report_state(context)
     logging.info("show_customer_report_menu called")
     customers = [
         c for c in secure_db.all("customers")
@@ -363,8 +367,8 @@ def register_customer_report_handlers(app):
         ],
         states={
             CUST_SELECT: [
-                CallbackQueryHandler(select_date_range, pattern="^custrep_"),
                 CallbackQueryHandler(show_customer_report_menu, pattern="^customer_report_menu$"),
+                CallbackQueryHandler(select_date_range, pattern="^custrep_"),
                 CallbackQueryHandler(_goto_main_menu, pattern="^main_menu$"),
             ],
             DATE_RANGE_SELECT: [
