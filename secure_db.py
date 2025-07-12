@@ -104,9 +104,10 @@ class SecureDB:
             return True
         except InvalidToken:
             self._failed_attempts += 1
+            attempts_left = MAX_PIN_ATTEMPTS - self._failed_attempts
             logger.warning(
                 f"❌ Unlock failed ({self._failed_attempts}/{MAX_PIN_ATTEMPTS}). "
-                f"Attempts left: {MAX_PIN_ATTEMPTS - self._failed_attempts}"
+                f"Attempts left: {attempts_left}"
             )
             if self._failed_attempts >= MAX_PIN_ATTEMPTS:
                 logger.critical("☠️ Maximum PIN attempts exceeded. Wiping DB and salt!")
@@ -118,7 +119,7 @@ class SecureDB:
 
     def lock(self):
         """Lock the DB for inactivity."""
-        if self._unlocked:
+        if self._unlocked and self.db:
             self.db.close()
             self._unlocked = False
             logger.info("🔒 Database locked")
@@ -138,5 +139,20 @@ class SecureDB:
         self._unlocked = False
         self._failed_attempts = 0
         logger.critical("💥 Database and salt wiped due to security policy")
+
+    def has_pin(self) -> bool:
+        """Returns True if DB appears to be encrypted (PIN-protected), False otherwise."""
+        if not os.path.exists(DB_FILE) or not os.path.exists(SALT_FILE):
+            return False
+        try:
+            with open(DB_FILE, "rb") as f:
+                data = f.read()
+            if not data:
+                return False
+            token = base64.urlsafe_b64decode(data)
+            # DB is PIN protected if contents look like Fernet token (length check)
+            return len(token) > 64
+        except Exception:
+            return False
 
 secure_db = SecureDB()
