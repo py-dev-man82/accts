@@ -25,8 +25,12 @@ from telegram.ext import (
 from handlers.utils import require_unlock
 
 # States for initdb conversation
-CONFIRM_INITDB, SET_NEW_PIN, CONFIRM_NEW_PIN = range(3)
+CONFIRM_INITDB, ENTER_OLD_PIN, SET_NEW_PIN, CONFIRM_NEW_PIN = range(4)
 UNLOCK_PIN = range(1)
+
+# Track failed PIN attempts
+failed_attempts = 0
+MAX_FAILED_ATTEMPTS = 7
 
 # Feature modules
 from handlers.customers         import register_customer_handlers,  show_customer_menu
@@ -79,7 +83,7 @@ async def db_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Failed to read DB: {e}")
 
 # ════════════════════════════════════════════════════════════
-# InitDB flow with secure setup script and enforced PIN
+# InitDB flow with old PIN validation and secure wipe
 # ════════════════════════════════════════════════════════════
 async def initdb_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Ask for confirmation before resetting DB."""
@@ -93,16 +97,10 @@ async def initdb_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("✅ Yes", callback_data="initdb_yes"),
          InlineKeyboardButton("❌ No",  callback_data="initdb_no")]
     ])
-    if update.message:
-        await update.message.reply_text(
-            "⚠️ *This will DELETE all data and create a fresh encrypted database.*\n\n"
-            "Are you sure you want to proceed?",
-            parse_mode="Markdown", reply_markup=kb)
-    elif update.callback_query:
-        await update.callback_query.message.reply_text(
-            "⚠️ *This will DELETE all data and create a fresh encrypted database.*\n\n"
-            "Are you sure you want to proceed?",
-            parse_mode="Markdown", reply_markup=kb)
+    await update.message.reply_text(
+        "⚠️ *This will DELETE all data and create a fresh encrypted database.*\n\n"
+        "Are you sure you want to proceed?",
+        parse_mode="Markdown", reply_markup=kb)
     return CONFIRM_INITDB
 
 async def initdb_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -111,9 +109,40 @@ async def initdb_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.callback_query.edit_message_text("❌ InitDB cancelled.")
         return ConversationHandler.END
 
-    # Ask for new PIN first (salt generation delayed until confirmed)
+    if os.path.exists(config.DB_PATH):
+        # Encrypted DB exists, require old PIN first
+        await update.callback_query.edit_message_text("🔑 Enter current DB password (PIN) to confirm reset:")
+        return ENTER_OLD_PIN
+
+    # No DB file → proceed directly
     await update.callback_query.edit_message_text("🔑 Enter new DB password (PIN):")
     return SET_NEW_PIN
+
+async def enter_old_pin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global failed_attempts
+    pin = update.message.text.strip()
+    try:
+        secure_db.unlock(pin)
+        secure_db.lock()
+        failed_attempts = 0  # Reset counter on success
+        await update.message.reply_text("✅ Current PIN validated.\nNow enter new PIN:")
+        return SET_NEW_PIN
+    except Exception:
+        failed_attempts += 1
+        if failed_attempts >= MAX_FAILED_ATTEMPTS:
+            await update.message.reply_text("⚠️ Too many failed attempts. Wiping DB for security.")
+            if os.path.exists(config.DB_PATH):
+                os.remove(config.DB_PATH)
+            subprocess.run(["chmod", "+x", "./setup_secure_db.sh"], check=True)
+            subprocess.run(["bash", "./setup_secure_db.sh"], check=True)
+            logging.warning("⚠️ DB wiped after too many failed attempts.")
+            failed_attempts = 0
+            return ConversationHandler.END
+
+        await update.message.reply_text(
+            f"❌ Wrong PIN. Attempts left: {MAX_FAILED_ATTEMPTS - failed_attempts}\nTry again:"
+        )
+        return ENTER_OLD_PIN
 
 async def set_new_pin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pin = update.message.text.strip()
@@ -121,7 +150,7 @@ async def set_new_pin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ PIN must be at least 4 characters. Try again:")
         return SET_NEW_PIN
     context.user_data["new_db_pin"] = pin
-    await update.message.reply_text("🔑 Confirm PIN by entering it again:")
+    await update.message.reply_text("🔑 Confirm new PIN:")
     return CONFIRM_NEW_PIN
 
 async def confirm_new_pin(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -131,10 +160,7 @@ async def confirm_new_pin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
     # Now generate salt and initialize DB
-    if update.message:
-        await update.message.reply_text("⚙️ Setting up secure DB (generating new salt)…")
-    elif update.callback_query:
-        await update.callback_query.message.reply_text("⚙️ Setting up secure DB (generating new salt)…")
+    await update.message.reply_text("⚙️ Setting up secure DB (generating new salt)…")
     try:
         subprocess.run(["chmod", "+x", "./setup_secure_db.sh"], check=True)
         subprocess.run(["bash", "./setup_secure_db.sh"], check=True)
@@ -171,8 +197,10 @@ async def confirm_new_pin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     subprocess.Popen([sys.executable, os.path.abspath(sys.argv[0]), "child"])
     raise SystemExit(0)
 
-# Unlock, auto-lock, and menu logic unchanged
+# Unlock and auto-lock logic unchanged
 # ...
+
+
 # ════════════════════════════════════════════════════════════
 # Unlock command flow
 # ════════════════════════════════════════════════════════════
