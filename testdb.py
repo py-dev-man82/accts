@@ -13,7 +13,7 @@ print("Customers after insert:", secure_db.all("customers"))
 
 # Lock and unlock again, and read again
 secure_db.lock()
-if not secure_db.unlock("your-pin"):
+if not secure_db.unlock("1122"):
     print("Unlock failed after relock!")
     exit()
 print("Customers after re-unlock:", secure_db.all("customers"))
