@@ -30,10 +30,11 @@ class EncryptedJSONStorage(JSONStorage):
 
     def read(self):
         try:
-            token = self._handle.read()  # Read directly from TinyDB's open file handle
-            if not token:
+            text = self._handle.read()  # Read as text
+            if not text:
                 logger.info("📂 DB file is empty, returning {}")
                 return {}
+            token = base64.b64decode(text.encode('utf-8'))  # Base64 decode → bytes
             data = self.fernet.decrypt(token)
             logger.info("📥 DB decrypted successfully")
             return json.loads(data.decode('utf-8'))
@@ -49,8 +50,9 @@ class EncryptedJSONStorage(JSONStorage):
 
     def write(self, data):
         raw = json.dumps(data).encode('utf-8')
-        token = self.fernet.encrypt(raw)
-        self._handle.write(token)  # Write directly to TinyDB's open file handle
+        token = self.fernet.encrypt(raw)  # Encrypted bytes
+        text = base64.b64encode(token).decode('utf-8')  # Encode as Base64 string
+        self._handle.write(text)  # Write as text
         logger.info("💾 DB written and encrypted successfully")
 
 class SecureDB:
