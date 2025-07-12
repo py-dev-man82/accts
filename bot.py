@@ -191,7 +191,8 @@ async def auto_lock_task():
                 secure_db.lock()
                 logging.warning("🔒 Auto-lock triggered after inactivity.")
 
-# (Remaining menu logic unchanged)
+# ════════════════════════════════════════════════════════════
+# Remaining menus and run_bot() logic unchanged
 # ...
 
 # ════════════════════════════════════════════════════════════
