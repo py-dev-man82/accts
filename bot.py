@@ -9,7 +9,7 @@ import time
 import config
 from secure_db import secure_db, EncryptedJSONStorage
 from tinydb import TinyDB
-from handlers.ledger import seed_tables
+from handlers.ledger import seed_tables  # 🌱 Correct import path for seeding
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     ApplicationBuilder,
