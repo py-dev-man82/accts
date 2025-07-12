@@ -210,19 +210,27 @@ async def show_customer_report(update: Update, context: ContextTypes.DEFAULT_TYP
             lines.append(f"📊 *Total Sales:* {fmt_money(total_sales, currency)}")
 
     if scope in ["full", "payments"]:
-        lines.append("\n💵 *Payments*")
-        if payments_page:
-            for p in payments_page:
-                line = f"• {fmt_date(p['date'])}: {fmt_money(p['amount'], currency)}"
-                if p.get('note'):
-                    line += f"  📝 {p['note']}"
-                lines.append(line)
-        else:
-            lines.append("  (No payments on this page)")
-        if page == 0:
-            lines.append(f"📊 *Total Payments:* {fmt_money(total_payments_local, currency)}")
-
-    lines.append(f"\n📊 *Current Balance:* {fmt_money(balance, currency)}")
+    lines.append("\n💵 *Payments*")
+    if payments_page:
+        for p in payments_page:
+            fee_perc = p.get('fee_perc', 0)
+            fx = p.get('fx_rate', 0)
+            usd_amt = p.get('usd_amt', 0)
+            line = (
+                f"• {fmt_date(p['date'])}: {fmt_money(p['amount'], currency)}"
+                f" | {fee_perc:.2f}%"
+                f" | {fx:.4f}"
+                f" | {fmt_money(usd_amt, 'USD')}"
+            )
+            if p.get('note'):
+                line += f"  📝 {p['note']}"
+            lines.append(line)
+    else:
+        lines.append("  (No payments on this page)")
+    if page == 0:
+        lines.append(
+            f"📊 *Total Payments:* {fmt_money(total_payments_local, currency)} → {fmt_money(sum(p.get('usd_amt',0) for p in payments), 'USD')}"
+        ))
 
     nav = []
     if page > 0:
