@@ -792,7 +792,7 @@ async def del_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def register_expense_handlers(app):
     # Top-level callbacks (menu + main buttons)
     app.add_handler(CallbackQueryHandler(show_expense_menu, pattern="^expense_menu$"))
-    app.add_handler(CallbackQueryHandler(add_expense, pattern="^add_expense$"))
+   # app.add_handler(CallbackQueryHandler(add_expense, pattern="^add_expense$"))
     app.add_handler(CallbackQueryHandler(view_expense_start, pattern="^view_expense$"))
     app.add_handler(CallbackQueryHandler(edit_expense_start, pattern="^edit_expense$"))
     app.add_handler(CallbackQueryHandler(delete_expense_start, pattern="^delete_expense$"))
