@@ -187,7 +187,6 @@ async def run_bot():
     register_store_report_handlers(application)
     application.add_handler(
         CallbackQueryHandler(show_store_report_menu, pattern="^rep_store$")
-)
     )
     register_owner_report_handlers(application)
 
