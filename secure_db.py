@@ -3,18 +3,19 @@
 import threading
 import json
 import base64
+import os
 import time
 from tinydb import TinyDB
 from tinydb.storages import JSONStorage
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.hazmat.primitives import hashes
-from cryptography.fernet import Fernet
+from cryptography.fernet import Fernet, InvalidToken
 from cryptography.hazmat.backends import default_backend
 
 import config
 
 # Auto-lock timeout in seconds
-UNLOCK_TIMEOUT = 180  # 3 min
+UNLOCK_TIMEOUT = 180  # 3 minutes
 SALT_HEX = "9f8a17a401bbcd23456789abcdef0123"
 KDF_SALT = bytes.fromhex(SALT_HEX)
 
@@ -33,8 +34,10 @@ class EncryptedJSONStorage(JSONStorage):
             return json.loads(data.decode('utf-8'))
         except FileNotFoundError:
             return {}
+        except InvalidToken:
+            raise RuntimeError("🔒 Decryption failed: Wrong key or unencrypted DB.")
         except Exception as e:
-            raise RuntimeError("Failed to decrypt DB file. Wrong key or unencrypted file?") from e
+            raise RuntimeError("🔒 Failed to decrypt DB file.") from e
 
     def write(self, data):
         raw = json.dumps(data).encode('utf-8')
@@ -69,20 +72,50 @@ class SecureDB:
     def unlock(self, passphrase: str):
         if not config.ENABLE_ENCRYPTION:
             return
+
         with self._lock:
             self._passphrase = passphrase.encode('utf-8')
             self.fernet      = self._derive_fernet()
+
             try:
+                # Try to open encrypted DB
                 self.db = TinyDB(
                     self.db_path,
                     storage=lambda p: EncryptedJSONStorage(p, self.fernet)
                 )
-                _ = self.db.tables()  # trigger decryption
+                _ = self.db.tables()  # Force decryption
                 self._unlocked = True
                 self._last_access = time.monotonic()
-            except Exception:
-                self._unlocked = False
-                raise RuntimeError("🔒 Unlock failed. Wrong key or corrupted DB.")
+                print("✅ Database unlocked (encrypted).")
+            except RuntimeError as e:
+                # If decryption fails, check if DB is plaintext
+                if "unencrypted" in str(e).lower():
+                    print("⚠️ Plaintext DB detected. Migrating to encrypted format…")
+                    self._migrate_plaintext_to_encrypted()
+                    self._unlocked = True
+                    self._last_access = time.monotonic()
+                    print("✅ Migration complete. Database now encrypted.")
+                else:
+                    self._unlocked = False
+                    raise
+
+    def _migrate_plaintext_to_encrypted(self):
+        # Load plaintext DB
+        plaintext_db = TinyDB(self.db_path, storage=JSONStorage)
+        all_data = {}
+        for table in plaintext_db.tables():
+            all_data[table] = plaintext_db.table(table).all()
+        plaintext_db.close()
+
+        # Recreate DB encrypted
+        self.db = TinyDB(
+            self.db_path,
+            storage=lambda p: EncryptedJSONStorage(p, self.fernet)
+        )
+        for table_name, rows in all_data.items():
+            tbl = self.db.table(table_name)
+            for row in rows:
+                tbl.insert(row)
 
     def lock(self):
         if not config.ENABLE_ENCRYPTION:
@@ -94,20 +127,17 @@ class SecureDB:
             self.fernet      = None
             self._passphrase = None
             self._unlocked   = False
+            print("🔒 Database locked.")
 
     def is_unlocked(self) -> bool:
-        """Return True if DB is unlocked and active."""
         return self._unlocked
 
     def needs_unlock(self) -> bool:
-        """True if encryption enabled and DB is locked."""
         return config.ENABLE_ENCRYPTION and not self._unlocked
 
     def ensure_unlocked(self):
-        """Raise error if DB is locked."""
         if config.ENABLE_ENCRYPTION and not self.is_unlocked():
             raise RuntimeError("🔒 Database is locked. Please /unlock first.")
-        # Auto-lock timeout check
         if config.ENABLE_ENCRYPTION and self._unlocked:
             now = time.monotonic()
             if now - self._last_access > UNLOCK_TIMEOUT:
@@ -116,7 +146,6 @@ class SecureDB:
             self._last_access = now
 
     def mark_activity(self):
-        """Mark last access time for auto-lock."""
         self._last_access = time.monotonic()
 
     def table(self, name):
