@@ -10,4 +10,4 @@ ADMIN_TELEGRAM_ID = 7826749230
 DB_PATH           = "data/db.json"
 
 # Toggle DB encryption/locking (False in test, True in production)
-ENABLE_ENCRYPTION = False
+ENABLE_ENCRYPTION = True
