@@ -8,7 +8,7 @@ import time
 
 import config
 from secure_db import secure_db, EncryptedJSONStorage
-from tinydb import TinyDB  # ✅ Added import for TinyDB
+from tinydb import TinyDB
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     ApplicationBuilder,
@@ -73,6 +73,12 @@ async def kill_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ════════════════════════════════════════════════════════════
 async def initdb_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Ask for confirmation before resetting DB."""
+    if not config.ENABLE_ENCRYPTION:
+        await update.message.reply_text(
+            "❌ Encryption must be enabled to initialize DB. Set ENABLE_ENCRYPTION = True in config.py."
+        )
+        return ConversationHandler.END
+
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("✅ Yes", callback_data="initdb_yes"),
          InlineKeyboardButton("❌ No",  callback_data="initdb_no")]
@@ -130,7 +136,6 @@ async def run_setup_script_and_set_pin(update: Update, context: ContextTypes.DEF
         "🔑 Now set a NEW password (PIN) for the database:"
     )
     return SET_NEW_PIN
-
 
 async def set_new_pin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pin = update.message.text.strip()
@@ -195,15 +200,15 @@ async def auto_lock_task():
         await asyncio.sleep(10)  # check every 10 seconds
         if secure_db.is_unlocked():
             now = time.monotonic()
-            if now - secure_db.last_activity > AUTOLOCK_TIMEOUT:
+            if now - secure_db.get_last_access() > AUTOLOCK_TIMEOUT:
                 secure_db.lock()
                 logging.warning("🔒 Auto-lock triggered after inactivity.")
 
 # ════════════════════════════════════════════════════════════
-# Main menu with DB status
+# Main Menu and Nested Submenus
 # ════════════════════════════════════════════════════════════
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Root menu / back-to-root callback with DB status indicator."""
+    """Main menu with DB status indicator."""
     if not os.path.exists(config.DB_PATH):
         status_icon = "📂 No DB found: run /initdb"
     elif secure_db.is_unlocked():
@@ -212,16 +217,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         status_icon = "🔒 Locked"
 
     kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("Customers",     callback_data="customer_menu"),
-         InlineKeyboardButton("Stores",        callback_data="store_menu")],
-        [InlineKeyboardButton("Partners",      callback_data="partner_menu"),
-         InlineKeyboardButton("Sales",         callback_data="sales_menu")],
-        [InlineKeyboardButton("Payments",      callback_data="payment_menu"),
-         InlineKeyboardButton("Payouts",       callback_data="payout_menu")],
-        [InlineKeyboardButton("Stock-In",      callback_data="stockin_menu"),
-         InlineKeyboardButton("Partner Sales", callback_data="partner_sales_menu")],
-        [InlineKeyboardButton("👑 Owner",      callback_data="owner_menu"),
-         InlineKeyboardButton("📊 Reports",    callback_data="report_menu")],
+        [InlineKeyboardButton("ADD USER", callback_data="adduser_menu"),
+         InlineKeyboardButton("ADD FINANCIAL", callback_data="addfinancial_menu")],
+        [InlineKeyboardButton("👑 Owner", callback_data="owner_menu"),
+         InlineKeyboardButton("📊 Reports", callback_data="report_menu")],
     ])
 
     text = f"Main Menu: choose a section\n\nStatus: *{status_icon}*"
@@ -234,6 +233,41 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             text, reply_markup=kb, parse_mode="Markdown"
         )
+
+async def show_adduser_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("Customers", callback_data="customer_menu")],
+        [InlineKeyboardButton("Stores",    callback_data="store_menu")],
+        [InlineKeyboardButton("Partners",  callback_data="partner_menu")],
+        [InlineKeyboardButton("🔙 Back",   callback_data="main_menu")],
+    ])
+    await update.callback_query.edit_message_text("ADD USER Menu:", reply_markup=kb)
+
+async def show_addfinancial_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("Sales",          callback_data="sales_menu")],
+        [InlineKeyboardButton("Payments",       callback_data="payment_menu")],
+        [InlineKeyboardButton("Expenses",       callback_data="payout_menu")],
+        [InlineKeyboardButton("Stock-In",       callback_data="stockin_menu")],
+        [InlineKeyboardButton("Partner Sales",  callback_data="partner_sales_menu")],
+        [InlineKeyboardButton("🔙 Back",        callback_data="main_menu")],
+    ])
+    await update.callback_query.edit_message_text("ADD FINANCIAL Menu:", reply_markup=kb)
+
+async def show_report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📄 Customer Report", callback_data="rep_cust")],
+        [InlineKeyboardButton("📄 Partner Report",  callback_data="rep_part")],
+        [InlineKeyboardButton("📄 Store Report",    callback_data="rep_store")],
+        [InlineKeyboardButton("📄 Owner Summary",   callback_data="rep_owner")],
+        [InlineKeyboardButton("🔙 Back",            callback_data="main_menu")],
+    ])
+    await update.callback_query.edit_message_text(
+        "Reports: choose a type", reply_markup=kb
+    )
 
 # ════════════════════════════════════════════════════════════
 # Main bot runner
@@ -271,6 +305,9 @@ async def run_bot():
     # Root / back
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(start, pattern="^main_menu$"))
+    app.add_handler(CallbackQueryHandler(show_adduser_menu, pattern="^adduser_menu$"))
+    app.add_handler(CallbackQueryHandler(show_addfinancial_menu, pattern="^addfinancial_menu$"))
+    app.add_handler(CallbackQueryHandler(show_report_menu, pattern="^report_menu$"))
 
     # Register feature handlers
     register_customer_handlers(app)
@@ -284,7 +321,7 @@ async def run_bot():
     register_partner_sales_handlers(app)
     app.add_handler(CallbackQueryHandler(show_partner_sales_menu, pattern="^partner_sales_menu$"))
 
-    # Register report handlers
+    # Reports
     register_customer_report_handlers(app)
     register_partner_report_handlers(app)
     app.add_handler(CallbackQueryHandler(show_partner_report_menu, pattern="^rep_part$"))
