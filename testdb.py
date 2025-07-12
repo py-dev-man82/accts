@@ -10,4 +10,4 @@ print("Before insert:", secure_db.all("customers"))
 secure_db.insert("customers", {"name": "Test User"})
 print("After insert:", secure_db.all("customers"))
 
-secure_db.lock()  # <-- close only when done!
+secure_db.lock()  # ONLY call when finished with all DB ops
