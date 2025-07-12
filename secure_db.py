@@ -19,6 +19,8 @@ logger.setLevel(logging.INFO)
 # Auto-lock timeout in seconds
 UNLOCK_TIMEOUT = 180  # 3 minutes
 KDF_SALT = bytes.fromhex("e62ee68733a7d9cfdfcc20b2e29c416c")
+FAILED_ATTEMPTS = 0
+MAX_FAILED_ATTEMPTS = 7
 
 class EncryptedJSONStorage(JSONStorage):
     def __init__(self, path, fernet: Fernet, **kwargs):
@@ -29,7 +31,6 @@ class EncryptedJSONStorage(JSONStorage):
         try:
             text = self._handle.read()
             if not text:
-                # Allow empty DB for initial seeding
                 logger.warning("📂 DB file is empty, returning {}")
                 return {}
             token = base64.b64decode(text.encode('utf-8'))
@@ -77,6 +78,7 @@ class SecureDB:
         return Fernet(key)
 
     def unlock(self, passphrase: str):
+        global FAILED_ATTEMPTS
         if not config.ENABLE_ENCRYPTION:
             raise RuntimeError("Encryption disabled. Cannot unlock DB.")
 
@@ -95,7 +97,6 @@ class SecureDB:
                     storage=lambda p: EncryptedJSONStorage(p, self.fernet)
                 )
 
-                # 🛡 Validate: ensure system table exists
                 tables = self.db.tables()
                 if not tables or "system" not in tables:
                     logger.error("❌ DB decrypted but no system table found. Wrong PIN?")
@@ -103,13 +104,23 @@ class SecureDB:
 
                 _ = self.db.table("system").all()
                 logger.info("✅ Database unlocked successfully")
-
                 self._unlocked = True
                 self._last_access = time.monotonic()
+                FAILED_ATTEMPTS = 0  # Reset counter on success
 
             except InvalidToken:
-                logger.error("❌ Decryption failed: wrong PIN")
-                self._unlocked = False
+                FAILED_ATTEMPTS += 1
+                logger.error(f"❌ Wrong PIN. Failed attempts: {FAILED_ATTEMPTS}")
+                if FAILED_ATTEMPTS >= MAX_FAILED_ATTEMPTS:
+                    logger.critical("⚠️ Too many failed attempts. Wiping DB.")
+                    if os.path.exists(self.db_path):
+                        os.remove(self.db_path)
+                        logger.warning("📂 DB file wiped.")
+                    # Also wipe salt
+                    subprocess.run(["chmod", "+x", "./setup_secure_db.sh"], check=True)
+                    subprocess.run(["bash", "./setup_secure_db.sh"], check=True)
+                    FAILED_ATTEMPTS = 0
+                    raise RuntimeError("DB wiped after too many failed attempts.")
                 raise RuntimeError("❌ Wrong PIN or corrupted DB.")
 
             except Exception as e:
@@ -138,6 +149,3 @@ class SecureDB:
 
 # Global instance
 secure_db = SecureDB(config.DB_PATH)
-
-# ✅ Export for external use
-__all__ = ["secure_db", "EncryptedJSONStorage", "SecureDB"]
