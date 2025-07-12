@@ -268,9 +268,19 @@ def build_store_report_lines(ctx, start, end, sid, cur, secure_db, get_ledger):
 
 
     # --- Expenses Section (only if there are actual expenses) ---
-    if expense_lines and any(line for line in expense_lines if "(none)" not in line):
+    sledger = get_ledger("store", sid)
+    # DEBUG: show all entries pulled
+    print("DEBUG sledger:", sledger)
+    expenses = [e for e in sledger if e.get("entry_type") == "expense" and _between(e.get("date", ""), start, end)]
+    print("DEBUG filtered expenses:", expenses)
+    expense_lines = []
+    other_total = sum(abs(e.get("amount", 0)) for e in expenses)
+    total_all_expenses = other_total  # Always set, even if zero
+
+    if expenses:
         lines.append("🧾 Expenses")
-        lines += expense_lines
+        for e in expenses:
+            lines.append(f"   - {fmt_date(e.get('date', ''))}: {fmt_money(abs(e.get('amount', 0)), cur)}  {e.get('note', '')}")
         lines.append(f"\n📊 Total All Expenses: {fmt_money(total_all_expenses, cur)}")
         lines.append("──────────────────────────────\n")
 
