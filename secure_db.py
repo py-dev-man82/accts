@@ -1,5 +1,3 @@
-# secure_db.py
-
 import threading
 import json
 import base64
@@ -38,7 +36,7 @@ class EncryptedJSONStorage(JSONStorage):
             logger.info("📥 DB decrypted successfully")
             return json.loads(data.decode('utf-8'))
         except InvalidToken:
-            logger.error("🔒 Decryption failed: wrong key or corrupted DB")
+            logger.error("🔒 Decryption failed: wrong key or unencrypted DB")
             raise RuntimeError("Failed to decrypt DB. Wrong PIN or unencrypted?")
         except Exception as e:
             logger.exception("❌ Unexpected error while reading DB")
@@ -95,16 +93,28 @@ class SecureDB:
                     self.db_path,
                     storage=lambda p: EncryptedJSONStorage(p, self.fernet)
                 )
+
+                # 🛡 Validate: ensure system table exists
                 tables = self.db.tables()
-                if not tables:
-                    logger.error("❌ DB exists but is empty. Run /initdb.")
-                    raise RuntimeError("DB is empty. Run /initdb.")
+                if not tables or "system" not in tables:
+                    logger.error("❌ DB decrypted but no system table found. Wrong PIN?")
+                    raise RuntimeError("Failed to validate PIN: system table missing.")
+
+                _ = self.db.table("system").all()
+                logger.info("✅ Database unlocked successfully")
+
                 self._unlocked = True
                 self._last_access = time.monotonic()
-                logger.info("✅ Database unlocked successfully")
-            except RuntimeError as e:
+
+            except InvalidToken:
+                logger.error("❌ Decryption failed: wrong PIN")
                 self._unlocked = False
-                raise
+                raise RuntimeError("❌ Wrong PIN or corrupted DB.")
+
+            except Exception as e:
+                logger.exception("❌ Unexpected error while unlocking DB")
+                self._unlocked = False
+                raise RuntimeError(f"Unlock failed: {e}")
 
     def lock(self):
         with self._lock:
@@ -124,3 +134,9 @@ class SecureDB:
 
     def mark_activity(self):
         self._last_access = time.monotonic()
+
+# Global instance
+secure_db = SecureDB(config.DB_PATH)
+
+# ✅ Export for external use
+__all__ = ["secure_db", "EncryptedJSONStorage", "SecureDB"]
