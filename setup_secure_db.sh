@@ -16,12 +16,13 @@ if [[ ! -f secure_db.py ]]; then
   exit 1
 fi
 
-# 3) Generate a new 16-byte salt (Python repr)
-SALT_REPR=$(python3 - << 'EOF'
+# 3) Generate a new 16-byte salt (hex encoded)
+SALT_HEX=$(python3 - << 'EOF'
 import os
-print(repr(os.urandom(16)))
+print(os.urandom(16).hex())
 EOF
 )
+
 
 echo "Generated new salt: $SALT_REPR"
 
