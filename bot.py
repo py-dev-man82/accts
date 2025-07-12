@@ -200,6 +200,20 @@ async def unlock_process(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return ConversationHandler.END
         else:
+            attempts_left = 7 - secure_db.failed_attempts
+            warn_msg = (
+                f"❌ Wrong PIN.\n"
+                f"⚠️ Attempts left before wipe: {attempts_left}"
+            )
+            await update.message.reply_text(warn_msg, parse_mode="Markdown")
+
+            if attempts_left > 0:
+                await update.message.reply_text("🔑 Try again. Enter your encryption PIN:")
+                return UNLOCK_PIN
+            else:
+                return ConversationHandler.END
+ND
+        else:
             attempts_left = max(0, 7 - secure_db.failed_attempts)
             await update.message.reply_text(
                 f"❌ *Unlock failed:* {e}\n"
