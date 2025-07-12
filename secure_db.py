@@ -61,10 +61,6 @@ class SecureDB:
         self._unlocked   = False
         self._last_access= 0
 
-        if not config.ENABLE_ENCRYPTION:
-            logger.error("❌ Encryption disabled. Refusing to continue.")
-            raise RuntimeError("Encryption must be enabled in config.py.")
-
     def _derive_fernet(self):
         logger.debug("🔑 Deriving encryption key from passphrase")
         kdf = PBKDF2HMAC(
@@ -97,16 +93,16 @@ class SecureDB:
                     storage=lambda p: EncryptedJSONStorage(p, self.fernet)
                 )
 
-                tables = self.db.tables()
-                if not tables or "system" not in tables:
-                    logger.error("❌ DB decrypted but no system table found. Wrong PIN?")
-                    raise RuntimeError("Failed to validate PIN: system table missing.")
+                # Try to access system table
+                if "system" not in self.db.tables():
+                    logger.error("❌ Salt mismatch or DB corrupted.")
+                    raise RuntimeError("Salt mismatch! DB and secure_db.py out of sync.")
 
                 _ = self.db.table("system").all()
                 logger.info("✅ Database unlocked successfully")
                 self._unlocked = True
                 self._last_access = time.monotonic()
-                FAILED_ATTEMPTS = 0  # Reset counter on success
+                FAILED_ATTEMPTS = 0
 
             except InvalidToken:
                 FAILED_ATTEMPTS += 1
@@ -116,9 +112,8 @@ class SecureDB:
                     if os.path.exists(self.db_path):
                         os.remove(self.db_path)
                         logger.warning("📂 DB file wiped.")
-                    # Also wipe salt
                     subprocess.run(["chmod", "+x", "./setup_secure_db.sh"], check=True)
-                    subprocess.run(["bash", "./setup_secure_db.sh"], check=True)
+                    subprocess.run(["bash", "./setup_secure_db.sh", "--force-reset"], check=True)
                     FAILED_ATTEMPTS = 0
                     raise RuntimeError("DB wiped after too many failed attempts.")
                 raise RuntimeError("❌ Wrong PIN or corrupted DB.")
