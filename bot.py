@@ -22,6 +22,9 @@ from telegram.ext import (
 # Core utilities
 from handlers.utils import require_unlock
 
+# States for initdb conversation
+CONFIRM_INITDB, PASSWORD_INITDB = range(2)
+
 # Feature modules already in the project
 from handlers.customers         import register_customer_handlers,  show_customer_menu
 from handlers.stores            import register_store_handlers,     show_store_menu
@@ -64,6 +67,57 @@ async def kill_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🛑 Bot is shutting down… it will auto-restart.")
     logging.warning("⚠️  Admin issued /kill — shutting down cleanly.")
     raise SystemExit(0)
+
+
+# ════════════════════════════════════════════════════════════
+# Secure InitDB flow
+# ════════════════════════════════════════════════════════════
+async def initdb_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Ask for confirmation before resetting DB."""
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Yes", callback_data="initdb_yes"),
+         InlineKeyboardButton("❌ No",  callback_data="initdb_no")]
+    ])
+    await update.message.reply_text(
+        "⚠️ *WARNING: This will DELETE all data and create a fresh database.*\n\n"
+        "Are you sure you want to proceed?",
+        parse_mode="Markdown", reply_markup=kb)
+    return CONFIRM_INITDB
+
+async def initdb_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+    if update.callback_query.data == "initdb_no":
+        await update.callback_query.edit_message_text("❌ InitDB cancelled.")
+        return ConversationHandler.END
+
+    await update.callback_query.edit_message_text("🔑 Enter database PIN to confirm:")
+    return PASSWORD_INITDB
+
+async def initdb_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Check PIN and reset DB."""
+    pin = update.message.text.strip()
+    try:
+        secure_db.unlock(pin)  # Try to unlock with provided PIN
+        db_path = config.DB_PATH
+
+        # Wipe DB file
+        if os.path.exists(db_path):
+            os.remove(db_path)
+            logging.warning(f"⚠️ Database file {db_path} deleted.")
+
+        # Recreate DB (encrypted if ENABLE_ENCRYPTION is True)
+        secure_db.unlock(pin)
+        secure_db.lock()
+
+        await update.message.reply_text(
+            "✅ Database reset successfully.\nYou can now /unlock to start fresh."
+        )
+    except Exception as e:
+        logging.error(f"InitDB failed: {e}")
+        await update.message.reply_text(
+            f"❌ Wrong PIN or error resetting DB: {e}"
+        )
+    return ConversationHandler.END
 
 # ════════════════════════════════════════════════════════════
 # Unlock command flow
@@ -154,6 +208,16 @@ async def run_bot():
     # Admin commands
     app.add_handler(CommandHandler("restart", restart_bot))
     app.add_handler(CommandHandler("kill",    kill_bot))
+
+    # InitDB handler
+    app.add_handler(ConversationHandler(
+        entry_points=[CommandHandler("initdb", initdb_start)],
+        states={
+            CONFIRM_INITDB: [CallbackQueryHandler(initdb_confirm)],
+            PASSWORD_INITDB: [MessageHandler(filters.TEXT & ~filters.COMMAND, initdb_password)],
+        },
+        fallbacks=[],
+    ))
 
     # Unlock handler
     app.add_handler(ConversationHandler(
