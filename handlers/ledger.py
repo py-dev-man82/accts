@@ -16,6 +16,29 @@ from secure_db import secure_db
 logger = logging.getLogger("ledger")
 LEDGER_TABLE = "ledger_entries"
 
+def seed_tables(secure_db):
+    """
+    Seed minimal tables into DB after /initdb to ensure DB is never empty.
+    """
+    logger.info("📥 Seeding initial tables…")
+    try:
+        # Seed 'system' metadata table
+        system_table = secure_db.db.table("system")
+        system_table.insert({
+            "version": 1,
+            "initialized": True,
+            "timestamp": datetime.utcnow().isoformat()
+        })
+
+        # Create empty ledger, transactions, and accounts tables
+        secure_db.db.table(LEDGER_TABLE)
+        secure_db.db.table("transactions")
+        secure_db.db.table("accounts")
+
+        logger.info("✅ Initial tables seeded successfully.")
+    except Exception as e:
+        logger.error(f"❌ Failed to seed initial tables: {e}")
+
 def add_ledger_entry(
     account_type: str,
     account_id: int | str,
@@ -37,25 +60,6 @@ def add_ledger_entry(
 ):
     """
     Add a new entry to the ledger.
-
-    Args:
-        account_type:   "customer", "partner", "store", or "owner"
-        account_id:     int or str (customer_id, partner_id, store_id, or "POT")
-        entry_type:     "sale", "payment", "expense", "stockin", "payout", "fee", etc.
-        related_id:     int or str, original doc_id of transaction (or None if not applicable)
-        amount:         Signed float (credit +, debit -), in account's currency
-        currency:       e.g. "USD", "GBP"
-        note:           Free-form note
-        date:           Optional: DDMMYYYY string. Defaults to today.
-        timestamp:      Optional: ISO string. Defaults to now.
-        item_id:        Optional: SKU or item code for sales
-        quantity:       Optional: quantity of item
-        unit_price:     Optional: price per unit
-        store_id:       Optional: store account (for multi-store/account systems)
-        fee_perc:       Optional: fee percentage, if applicable
-        fee_amt:        Optional: fee amount, if applicable
-        fx_rate:        Optional: FX rate applied, if applicable
-        usd_amt:        Optional: USD amount, if applicable
     """
     if date is None:
         date = datetime.now().strftime("%d%m%Y")
@@ -100,8 +104,6 @@ def add_ledger_entry(
 def get_ledger(account_type: str, account_id: int | str, start_date: str = None, end_date: str = None) -> list:
     """
     Get all ledger entries for an account, optionally filtered by date (DDMMYYYY).
-
-    Returns: list of dicts, sorted oldest to newest.
     """
     try:
         rows = [r for r in secure_db.all(LEDGER_TABLE)
