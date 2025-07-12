@@ -15,8 +15,6 @@ from handlers.utils import require_unlock, fmt_money, fmt_date
 from handlers.ledger import add_ledger_entry, delete_ledger_entries_by_related
 from secure_db import secure_db
 
-logger = logging.getLogger(__name__)
-
 (
     E_ADD_TYPE, E_ADD_ACCT, E_ADD_AMT, E_ADD_CUR, E_ADD_NOTE, E_ADD_CAT, E_ADD_DATE, E_ADD_CONFIRM,
     E_VIEW_TYPE, E_VIEW_ACCT, E_VIEW_TIME, E_VIEW_PAGE,
@@ -26,6 +24,12 @@ logger = logging.getLogger(__name__)
 
 EXPENSE_CATS = ["General", "Office", "Travel", "Salary", "Maintenance", "Other"]
 ROWS_PER_PAGE = 20
+
+async def send_error(update, msg="An error occurred. Please try again."):
+    if getattr(update, "message", None):
+        await update.message.reply_text(msg)
+    elif getattr(update, "callback_query", None):
+        await update.callback_query.edit_message_text(msg)
 
 # ---------- MENU ----------
 async def show_expense_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -60,7 +64,7 @@ async def add_expense(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return E_ADD_TYPE
     except Exception:
         logger.exception("Error in add_expense handler.")
-        await update.callback_query.edit_message_text("An error occurred at expense start.")
+        await send_error(update)
         return ConversationHandler.END
 
 async def get_expense_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -100,7 +104,7 @@ async def get_expense_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return E_ADD_AMT
     except Exception:
         logger.exception("Error in get_expense_type handler.")
-        await update.callback_query.edit_message_text("An error occurred choosing account type.")
+        await send_error(update)
         return ConversationHandler.END
 
 async def get_expense_acct(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -113,7 +117,7 @@ async def get_expense_acct(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return E_ADD_AMT
     except Exception:
         logger.exception("Error in get_expense_acct handler.")
-        await update.callback_query.edit_message_text("An error occurred selecting account.")
+        await send_error(update)
         return ConversationHandler.END
 
 async def get_expense_amt(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -126,7 +130,7 @@ async def get_expense_amt(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return E_ADD_CUR
     except Exception:
         logger.exception("Invalid or non-positive amount in get_expense_amt.")
-        await update.message.reply_text("Enter a positive number.")
+        await send_error(update, "Enter a positive number.")
         return E_ADD_AMT
 
 async def get_expense_cur(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -139,7 +143,7 @@ async def get_expense_cur(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return E_ADD_NOTE
     except Exception:
         logger.exception("Error in get_expense_cur handler.")
-        await update.message.reply_text("An error occurred. Please try again.")
+        await send_error(update)
         return E_ADD_CUR
 
 async def get_expense_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -157,7 +161,7 @@ async def get_expense_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return E_ADD_CAT
     except Exception:
         logger.exception("Error in get_expense_note handler.")
-        await update.message.reply_text("An error occurred. Please try again.")
+        await send_error(update)
         return E_ADD_NOTE
 
 async def get_expense_cat(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -173,7 +177,7 @@ async def get_expense_cat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return E_ADD_DATE
     except Exception:
         logger.exception("Error in get_expense_cat handler.")
-        await update.callback_query.edit_message_text("An error occurred. Please try again.")
+        await send_error(update)
         return E_ADD_CAT
 
 async def get_expense_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -189,7 +193,10 @@ async def get_expense_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 logger.info(f"get_expense_date: entered {date_str}")
             except Exception:
                 logger.warning("get_expense_date: invalid format.")
-                await update.message.reply_text("Format DDMMYYYY, please.")
+                if update.message:
+                    await update.message.reply_text("Format DDMMYYYY, please.")
+                elif update.callback_query:
+                    await update.callback_query.edit_message_text("Format DDMMYYYY, please.")
                 return E_ADD_DATE
         context.user_data["exp_date"] = date_str
 
@@ -212,7 +219,7 @@ async def get_expense_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return E_ADD_CONFIRM
     except Exception:
         logger.exception("Error in get_expense_date handler.")
-        await update.message.reply_text("An error occurred. Please try again.")
+        await send_error(update)
         return ConversationHandler.END
 
 @require_unlock
@@ -267,9 +274,8 @@ async def confirm_expense(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
     except Exception:
         logger.exception("Error in confirm_expense handler.")
-        await update.callback_query.edit_message_text("An error occurred. Please try again.")
+        await send_error(update)
         return ConversationHandler.END
-
 
 # ---------- VIEW FLOW ----------
 def _months_filter(rows, months: int):
@@ -399,8 +405,7 @@ async def view_paginate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     return await render_expense_page(update, context)
 
-# ========== EDIT FLOW ==========
-
+# ---------- EDIT FLOW ----------
 @require_unlock
 async def edit_expense_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
@@ -520,7 +525,7 @@ async def edit_pick_expense(update: Update, context: ContextTypes.DEFAULT_TYPE):
         rec = secure_db.table("expenses").get(doc_id=eid)
         assert rec and rec["account_type"] == context.user_data["edit_type"] and str(rec["account_id"]) == str(context.user_data["edit_acct_id"])
     except Exception:
-        await update.message.reply_text("❌ Invalid ID; try again:")
+        await send_error(update, "❌ Invalid ID; try again:")
         return E_EDIT_PAGE
     context.user_data["edit_rec"] = rec
     kb = InlineKeyboardMarkup([
@@ -592,7 +597,7 @@ async def edit_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
             assert amt > 0
             update_dict["amount"] = amt
         except Exception:
-            await update.callback_query.edit_message_text("Invalid amount.")
+            await send_error(update, "Invalid amount.")
             return ConversationHandler.END
     elif field == "cur":
         update_dict["currency"] = new.strip().upper()
@@ -605,7 +610,7 @@ async def edit_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
             datetime.strptime(new, "%d%m%Y")
             update_dict["date"] = new
         except Exception:
-            await update.callback_query.edit_message_text("Invalid date format.")
+            await send_error(update, "Invalid date format.")
             return ConversationHandler.END
 
     try:
@@ -627,15 +632,13 @@ async def edit_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     except Exception as e:
         logger.error(f"Failed to update expense: {e}")
-        await update.callback_query.edit_message_text("❌ Error updating expense.")
+        await send_error(update, "❌ Error updating expense.")
         return ConversationHandler.END
 
     await update.callback_query.edit_message_text("✅ Expense updated.")
     return ConversationHandler.END
 
-
-# ========== DELETE FLOW ==========
-
+# ---------- DELETE FLOW ----------
 @require_unlock
 async def delete_expense_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
@@ -755,7 +758,7 @@ async def del_pick_expense(update: Update, context: ContextTypes.DEFAULT_TYPE):
         rec = secure_db.table("expenses").get(doc_id=eid)
         assert rec and rec["account_type"] == context.user_data["del_type"] and str(rec["account_id"]) == str(context.user_data["del_acct_id"])
     except Exception:
-        await update.message.reply_text("❌ Invalid ID; try again:")
+        await send_error(update, "❌ Invalid ID; try again:")
         return E_DEL_PAGE
     context.user_data["del_rec"] = rec
     kb = InlineKeyboardMarkup([
@@ -781,18 +784,16 @@ async def del_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         delete_ledger_entries_by_related(rec["account_type"], rec["account_id"], eid)
     except Exception as e:
         logger.error(f"Failed to delete expense: {e}")
-        await update.callback_query.edit_message_text("❌ Error deleting expense.")
+        await send_error(update, "❌ Error deleting expense.")
         return ConversationHandler.END
 
     await update.callback_query.edit_message_text("✅ Expense deleted.")
     return ConversationHandler.END
 
 
-# ---------- Register Handlers ----------
 def register_expense_handlers(app):
     # Top-level callbacks (menu + main buttons)
     app.add_handler(CallbackQueryHandler(show_expense_menu, pattern="^expense_menu$"))
-   # app.add_handler(CallbackQueryHandler(add_expense, pattern="^add_expense$"))
     app.add_handler(CallbackQueryHandler(view_expense_start, pattern="^view_expense$"))
     app.add_handler(CallbackQueryHandler(edit_expense_start, pattern="^edit_expense$"))
     app.add_handler(CallbackQueryHandler(delete_expense_start, pattern="^delete_expense$"))
@@ -882,3 +883,4 @@ def register_expense_handlers(app):
         allow_reentry=True,
     )
     app.add_handler(del_conv)
+
