@@ -161,6 +161,47 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cur = partner["currency"]
     start, end = ctx["start_date"], ctx["end_date"]
 
+    pledger = get_ledger("partner", pid)
+
+    # 🛠️ DEBUG BLOCK
+    if ctx.get("scope", "") == "full":
+        debug_lines = []
+        debug_lines.append("──────────────────────────────")
+        debug_lines.append("🛠️ [DEBUG] Partner Ledger Entries (ALL TYPES, in report period):")
+        # Sales
+        debug_lines.append("Sales:")
+        for e in pledger:
+            if e.get("entry_type") == "sale" and _between(e.get("date", ""), start, end):
+                debug_lines.append(
+                    f"• {e.get('date','')} id:{e.get('account_id')} amt:{e.get('amount')} cur:{e.get('currency')} item:{e.get('item_id')} qty:{e.get('quantity')} price:{e.get('unit_price', e.get('unit_cost', ''))} note:{e.get('note','')}")
+        # Payments
+        debug_lines.append("Payments:")
+        for e in pledger:
+            if e.get("entry_type") == "payment" and _between(e.get("date", ""), start, end):
+                debug_lines.append(
+                    f"• {e.get('date','')} id:{e.get('account_id')} amt:{e.get('amount')} cur:{e.get('currency')} usd:{e.get('usd_amt','')} fx:{e.get('fx_rate','')} fee%:{e.get('fee_perc','')} fee:{e.get('fee_amt','')} note:{e.get('note','')}")
+        # Handling Fees
+        debug_lines.append("Handling Fees:")
+        for e in pledger:
+            if e.get("entry_type") == "handling_fee" and _between(e.get("date", ""), start, end):
+                debug_lines.append(
+                    f"• {e.get('date','')} id:{e.get('account_id')} amt:{e.get('amount')} cur:{e.get('currency')} item:{e.get('item_id')} qty:{e.get('quantity')} price:{e.get('unit_price', '')} note:{e.get('note','')}")
+        # Stock-ins
+        debug_lines.append("Stock-ins:")
+        for e in pledger:
+            if e.get("entry_type") == "stockin" and _between(e.get("date", ""), start, end):
+                debug_lines.append(
+                    f"• {e.get('date','')} id:{e.get('account_id')} item:{e.get('item_id')} qty:{e.get('quantity')} price:{e.get('unit_price', '')} note:{e.get('note','')}")
+        # Expenses
+        debug_lines.append("Expenses:")
+        for e in pledger:
+            if e.get("entry_type") == "expense" and _between(e.get("date", ""), start, end):
+                debug_lines.append(
+                    f"• {e.get('date','')} id:{e.get('account_id')} amt:{e.get('amount')} cur:{e.get('currency')} note:{e.get('note','')}")
+        debug_lines.append("──────────────────────────────")
+    else:
+        debug_lines = []
+
     # SALES (in period, for report lines/units)
     sales = []
     for c in secure_db.all("customers"):
@@ -206,7 +247,6 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     total_pay_usd = sum(p.get('usd_amt', 0) for p in payments)
 
     # EXPENSES - handling fees, other, inventory purchase
-    pledger = get_ledger("partner", pid)
     handling_fees = [e for e in pledger if e.get("entry_type") == "handling_fee" and _between(e.get("date", ""), start, end)]
     other_expenses = [e for e in pledger if e.get("entry_type") == "expense" and _between(e.get("date", ""), start, end)]
 
@@ -308,6 +348,8 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🗓️ Period: {fmt_date(start.strftime('%d%m%Y'))} → {fmt_date(end.strftime('%d%m%Y'))}",
         "──────────────────────────────",
     ]
+    lines += debug_lines  # Debug diagnostics at the top!
+
     if ctx["scope"] in ("full", "sales"):
         lines.append("🛒 Sales")
         lines += sales_lines
@@ -327,7 +369,7 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines.append("──────────────────────────────")
         lines.append("📦 Inventory")
         if current_stock_lines:
-            lines.append("• Current @ market:")
+            lines.append("• Current Stock @ market:")
             lines += current_stock_lines
         lines.append(f"\n📊 Stock Value: {fmt_money(stock_value, cur)}")
         lines.append("──────────────────────────────")
@@ -349,7 +391,6 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown"
     )
     return REPORT_PAGE
-
 
 @require_unlock
 async def paginate(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -563,7 +604,7 @@ async def export_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
         line("──────────────────────────────")
         line("📦 Inventory", bold=True)
         if current_stock_lines:
-            line("• Current @ market:")
+            line("• Current Stock @ market:")
             for l in current_stock_lines:
                 line(l)
         line(f"📊 Stock Value: {fmt_money(stock_value, cur)}")
@@ -583,7 +624,6 @@ async def export_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
         caption=f"Report for {partner['name']} ({fmt_date(start.strftime('%d%m%Y'))} → {fmt_date(end.strftime('%d%m%Y'))})"
     )
     return REPORT_PAGE
-
 
 def register_partner_report_handlers(app):
     app.add_handler(CallbackQueryHandler(show_partner_report_menu, pattern="^rep_part$"))
