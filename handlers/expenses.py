@@ -215,12 +215,19 @@ async def get_expense_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Note: {d.get('exp_note','') or '—'}\n"
             f"Date: {fmt_date(d['exp_date'])}\n\nConfirm?"
         )
-        await update.message.reply_text(summary, reply_markup=kb)
+        if update.message:
+            await update.message.reply_text(summary, reply_markup=kb)
+        elif update.callback_query:
+            await update.callback_query.edit_message_text(summary, reply_markup=kb)
         return E_ADD_CONFIRM
     except Exception:
         logger.exception("Error in get_expense_date handler.")
-        await send_error(update)
+        if update.message:
+            await update.message.reply_text("An error occurred. Please try again.")
+        elif update.callback_query:
+            await update.callback_query.edit_message_text("An error occurred. Please try again.")
         return ConversationHandler.END
+
 
 @require_unlock
 async def confirm_expense(update: Update, context: ContextTypes.DEFAULT_TYPE):
