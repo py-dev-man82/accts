@@ -92,6 +92,19 @@ class SecureDB:
             self.fernet      = self._derive_fernet()
 
             try:
+                if not os.path.exists(self.db_path):
+                    # No DB file yet → initialize encrypted DB
+                    logger.warning("📄 No DB file found. Creating new encrypted DB.")
+                    self.db = TinyDB(
+                        self.db_path,
+                        storage=lambda p: EncryptedJSONStorage(p, self.fernet)
+                    )
+                    self._unlocked = True
+                    self._last_access = time.monotonic()
+                    logger.info("✅ New encrypted DB initialized.")
+                    return
+
+                # Try to open encrypted DB
                 self.db = TinyDB(
                     self.db_path,
                     storage=lambda p: EncryptedJSONStorage(p, self.fernet)
