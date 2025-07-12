@@ -22,15 +22,15 @@ from telegram.ext import (
 from handlers.utils import require_unlock
 
 # Feature modules
-from handlers.customers         import register_customer_handlers,  show_customer_menu
-from handlers.stores            import register_store_handlers,     show_store_menu
-from handlers.partners          import register_partner_handlers,   show_partner_menu
+from handlers.customers         import register_customer_handlers
+from handlers.stores            import register_store_handlers
+from handlers.partners          import register_partner_handlers
 from handlers.sales             import register_sales_handlers
-from handlers.payments          import register_payment_handlers,   show_payment_menu
-from handlers.expenses          import register_expense_handlers,   show_expense_menu    # <-- Expenses module
-from handlers.payouts           import register_payout_handlers,    show_payout_menu
-from handlers.stockin           import register_stockin_handlers,   show_stockin_menu
-from handlers.partner_sales     import register_partner_sales_handlers, show_partner_sales_menu
+from handlers.payments          import register_payment_handlers
+from handlers.expenses          import register_expense_handlers
+from handlers.payouts           import register_payout_handlers
+from handlers.stockin           import register_stockin_handlers
+from handlers.partner_sales     import register_partner_sales_handlers
 
 # Reports
 from handlers.reports.customer_report import register_customer_report_handlers
@@ -103,7 +103,7 @@ async def show_addfinancial_menu(update: Update, context: ContextTypes.DEFAULT_T
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("Sales",         callback_data="sales_menu")],
         [InlineKeyboardButton("Payments",      callback_data="payment_menu")],
-        [InlineKeyboardButton("Expenses",      callback_data="expense_menu")],  # <-- Expenses button
+        [InlineKeyboardButton("Expenses",      callback_data="expense_menu")],
         [InlineKeyboardButton("Payouts",       callback_data="payout_menu")],
         [InlineKeyboardButton("Stock-In",      callback_data="stockin_menu")],
         [InlineKeyboardButton("Partner Sales", callback_data="partner_sales_menu")],
@@ -153,31 +153,14 @@ async def run_bot():
 
     # Register all feature handlers
     register_customer_handlers(app)
-    app.add_handler(CallbackQueryHandler(show_customer_menu, pattern="^customer_menu$"))
-
     register_store_handlers(app)
-    app.add_handler(CallbackQueryHandler(show_store_menu, pattern="^store_menu$"))
-
     register_partner_handlers(app)
-    app.add_handler(CallbackQueryHandler(show_partner_menu, pattern="^partner_menu$"))
-
     register_sales_handlers(app)
-    app.add_handler(CallbackQueryHandler(show_sales_menu, pattern="^sales_menu$"))
-
     register_payment_handlers(app)
-    app.add_handler(CallbackQueryHandler(show_payment_menu, pattern="^payment_menu$"))
-
-    register_expense_handlers(app)      # <-- Expenses module
-    app.add_handler(CallbackQueryHandler(show_expense_menu, pattern="^expense_menu$"))  # <-- Expenses menu
-
+    register_expense_handlers(app)
     register_payout_handlers(app)
-    app.add_handler(CallbackQueryHandler(show_payout_menu, pattern="^payout_menu$"))
-
     register_stockin_handlers(app)
-    app.add_handler(CallbackQueryHandler(show_stockin_menu, pattern="^stockin_menu$"))
-
     register_partner_sales_handlers(app)
-    app.add_handler(CallbackQueryHandler(show_partner_sales_menu, pattern="^partner_sales_menu$"))
 
     # Reports
     register_customer_report_handlers(app)
