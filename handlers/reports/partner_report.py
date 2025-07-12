@@ -163,9 +163,7 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     pledger = get_ledger("partner", pid)
 
-    
-
-    # SALES (in period, for report lines/units)
+    # --- SALES (in period, for report lines/units)
     sales = []
     for c in secure_db.all("customers"):
         if c["name"] == partner["name"]:
@@ -181,7 +179,7 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for s in sales:
         sale_items[s.get("item_id", "?")].append(s)
 
-    # PAYMENTS (combine payouts and partner-as-customer payments)
+    # --- PAYMENTS
     payouts = [
         e for e in get_ledger("partner", pid)
         if e.get("entry_type") == "payment" and _between(e.get("date", ""), start, end)
@@ -195,7 +193,6 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ]
     payments = payouts + customer_payments
 
-    # --- PAYMENTS: show fee percent and INVERSE FX rate ---
     payment_lines = []
     for p in sorted(payments, key=lambda x: (x.get("date", ""), x.get("timestamp", "")), reverse=True):
         amount = p.get('amount', 0)
@@ -209,7 +206,7 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     total_pay_local = sum(p.get('amount', 0) for p in payments)
     total_pay_usd = sum(p.get('usd_amt', 0) for p in payments)
 
-    # EXPENSES - handling fees, other, inventory purchase
+    # --- EXPENSES
     handling_fees = [e for e in pledger if e.get("entry_type") == "handling_fee" and _between(e.get("date", ""), start, end)]
     other_expenses = [e for e in pledger if e.get("entry_type") == "expense" and _between(e.get("date", ""), start, end)]
 
@@ -257,7 +254,7 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if expense_lines:
         expense_lines.append(f"\n📊 Total All Expenses: {fmt_money(total_all_expenses, cur)}")
 
-    # CURRENT STOCK @ MARKET - ALL TIME (no date filter)
+    # --- CURRENT STOCK @ MARKET (all-time, no date filter)
     all_stockins = [e for e in pledger if e.get("entry_type") == "stockin"]
     all_sales = []
     for c in secure_db.all("customers"):
@@ -308,13 +305,12 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     total_other_exp = other_total
     balance = total_sales - total_pay_local - total_handling - total_other_exp - total_inventory_purchase
 
-    # HEADER AND SEPARATORS
+    # HEADER AND SEPARATORS (no debug lines!)
     lines = [
         f"📄 Account: {partner['name']}",
         f"🗓️ Period: {fmt_date(start.strftime('%d%m%Y'))} → {fmt_date(end.strftime('%d%m%Y'))}",
         "──────────────────────────────",
     ]
-    lines += debug_lines  # Debug diagnostics at the top!
 
     if ctx["scope"] in ("full", "sales"):
         lines.append("🛒 Sales")
@@ -357,6 +353,7 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown"
     )
     return REPORT_PAGE
+
 
 @require_unlock
 async def paginate(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -455,7 +452,7 @@ async def export_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if expense_lines:
         expense_lines.append(f"\n📊 Total All Expenses: {fmt_money(total_all_expenses, cur)}")
 
-    # CURRENT STOCK @ MARKET - ALL TIME (no date filter)
+    # --- CURRENT STOCK @ MARKET (all-time, no date filter)
     all_stockins = [e for e in pledger if e.get("entry_type") == "stockin"]
     all_sales = []
     for c in secure_db.all("customers"):
@@ -507,7 +504,6 @@ async def export_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
         units = sum(abs(s.get('quantity', 0)) for s in entries)
         value = sum(abs(s.get('quantity', 0) * s.get('unit_price', s.get('unit_cost', 0))) for s in entries)
         unit_summary.append(f"- [{item_id}] : {units} units, {fmt_money(value, cur)}")
-    total_sales = sum(abs(s.get('quantity', 0) * s.get('unit_price', s.get('unit_cost', 0))) for s in sales)
 
     payment_lines = []
     for p in sorted(payments, key=lambda x: (x.get("date", ""), x.get("timestamp", "")), reverse=True):
@@ -546,7 +542,6 @@ async def export_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
     line(f"Period: {fmt_date(start.strftime('%d%m%Y'))} → {fmt_date(end.strftime('%d%m%Y'))}")
     line("──────────────────────────────")
 
-    # --- SALES
     if scope in ("full", "sales"):
         line("🛒 Sales", bold=True)
         for l in sales_lines:
@@ -558,7 +553,6 @@ async def export_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
         line(f"📊 Total Sales: {fmt_money(total_sales, cur)}")
         line("──────────────────────────────")
 
-    # --- PAYMENTS
     if scope in ("full", "payments"):
         line("💵 Payments", bold=True)
         for l in payment_lines:
@@ -566,7 +560,6 @@ async def export_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
         line(f"📊 Total Payments: {fmt_money(total_pay_local, cur)} → {fmt_money(total_pay_usd, 'USD')}")
         line("──────────────────────────────")
 
-    # --- EXPENSES/INVENTORY/FINANCIALS
     if scope == "full":
         line("🧾 Expenses", bold=True)
         for l in expense_lines:
@@ -594,6 +587,7 @@ async def export_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
         caption=f"Report for {partner['name']} ({fmt_date(start.strftime('%d%m%Y'))} → {fmt_date(end.strftime('%d%m%Y'))})"
     )
     return REPORT_PAGE
+
 
 def register_partner_report_handlers(app):
     app.add_handler(CallbackQueryHandler(show_partner_report_menu, pattern="^rep_part$"))
