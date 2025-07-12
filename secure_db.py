@@ -1,4 +1,3 @@
-import threading
 import json
 import base64
 import os
@@ -18,9 +17,9 @@ logger.setLevel(logging.INFO)
 
 # Auto-lock timeout in seconds
 UNLOCK_TIMEOUT = 180  # 3 minutes
+
+# Salt for PBKDF2 (this is replaced during setup_secure_db.sh)
 KDF_SALT = bytes.fromhex("e62ee68733a7d9cfdfcc20b2e29c416c")
-FAILED_ATTEMPTS = 0
-MAX_FAILED_ATTEMPTS = 7
 
 class EncryptedJSONStorage(JSONStorage):
     def __init__(self, path, fernet: Fernet, **kwargs):
@@ -37,6 +36,9 @@ class EncryptedJSONStorage(JSONStorage):
             data = self.fernet.decrypt(token)
             logger.info("📥 DB decrypted successfully")
             return json.loads(data.decode('utf-8'))
+        except FileNotFoundError:
+            logger.warning("📄 DB file not found, starting fresh")
+            return {}
         except InvalidToken:
             logger.error("🔒 Decryption failed: wrong key or unencrypted DB")
             raise RuntimeError("Failed to decrypt DB. Wrong PIN or unencrypted?")
@@ -53,13 +55,17 @@ class EncryptedJSONStorage(JSONStorage):
 
 class SecureDB:
     def __init__(self, db_path):
-        self.db_path     = db_path
+        self.db_path = db_path
         self._passphrase = None
-        self.fernet      = None
-        self.db          = None
-        self._lock       = threading.Lock()
-        self._unlocked   = False
-        self._last_access= 0
+        self.fernet = None
+        self.db = None
+        self._unlocked = False
+        self._last_access = 0
+        self.failed_attempts = 0  # Count failed unlocks
+
+        if not config.ENABLE_ENCRYPTION:
+            self.db = TinyDB(self.db_path, storage=JSONStorage)
+            logger.info("🔓 Encryption disabled: using plaintext DB")
 
     def _derive_fernet(self):
         logger.debug("🔑 Deriving encryption key from passphrase")
@@ -74,73 +80,101 @@ class SecureDB:
         return Fernet(key)
 
     def unlock(self, passphrase: str):
-        global FAILED_ATTEMPTS
         if not config.ENABLE_ENCRYPTION:
-            raise RuntimeError("Encryption disabled. Cannot unlock DB.")
+            logger.info("🔓 Unlock called but encryption disabled")
+            return
 
-        with self._lock:
-            logger.info("🔑 Attempting to unlock DB")
-            self._passphrase = passphrase.encode('utf-8')
-            self.fernet      = self._derive_fernet()
+        logger.info("🔑 Attempting to unlock DB")
+        self._passphrase = passphrase.encode('utf-8')
+        self.fernet = self._derive_fernet()
 
-            if not os.path.exists(self.db_path):
-                logger.error("❌ DB file does not exist. Run /initdb first.")
-                raise RuntimeError("DB not found. Run /initdb to create.")
-
-            try:
-                self.db = TinyDB(
-                    self.db_path,
-                    storage=lambda p: EncryptedJSONStorage(p, self.fernet)
-                )
-
-                # Try to access system table
-                if "system" not in self.db.tables():
-                    logger.error("❌ Salt mismatch or DB corrupted.")
-                    raise RuntimeError("Salt mismatch! DB and secure_db.py out of sync.")
-
-                _ = self.db.table("system").all()
-                logger.info("✅ Database unlocked successfully")
-                self._unlocked = True
-                self._last_access = time.monotonic()
-                FAILED_ATTEMPTS = 0
-
-            except InvalidToken:
-                FAILED_ATTEMPTS += 1
-                logger.error(f"❌ Wrong PIN. Failed attempts: {FAILED_ATTEMPTS}")
-                if FAILED_ATTEMPTS >= MAX_FAILED_ATTEMPTS:
-                    logger.critical("⚠️ Too many failed attempts. Wiping DB.")
-                    if os.path.exists(self.db_path):
-                        os.remove(self.db_path)
-                        logger.warning("📂 DB file wiped.")
-                    subprocess.run(["chmod", "+x", "./setup_secure_db.sh"], check=True)
-                    subprocess.run(["bash", "./setup_secure_db.sh", "--force-reset"], check=True)
-                    FAILED_ATTEMPTS = 0
-                    raise RuntimeError("DB wiped after too many failed attempts.")
-                raise RuntimeError("❌ Wrong PIN or corrupted DB.")
-
-            except Exception as e:
-                logger.exception("❌ Unexpected error while unlocking DB")
-                self._unlocked = False
-                raise RuntimeError(f"Unlock failed: {e}")
+        try:
+            self.db = TinyDB(
+                self.db_path,
+                storage=lambda p: EncryptedJSONStorage(p, self.fernet)
+            )
+            _ = self.db.tables()  # Trigger decryption
+            self._unlocked = True
+            self._last_access = time.monotonic()
+            self.failed_attempts = 0  # Reset on success
+            logger.info("✅ Database unlocked successfully")
+        except RuntimeError as e:
+            self.failed_attempts += 1
+            logger.warning(f"❌ Unlock failed ({self.failed_attempts}/7): {e}")
+            if self.failed_attempts >= 7:
+                logger.critical("💣 7 failed PIN attempts — wiping database for security!")
+                if os.path.exists(self.db_path):
+                    os.remove(self.db_path)
+                    logger.info("🗑️ Database wiped from disk")
+                self.failed_attempts = 0  # Reset counter after wipe
+                raise RuntimeError("Database wiped after too many failed attempts.")
+            raise RuntimeError(f"Unlock failed: {e}")
 
     def lock(self):
-        with self._lock:
-            if self.db:
-                self.db.close()
-            self.db          = None
-            self.fernet      = None
-            self._passphrase = None
-            self._unlocked   = False
-            logger.info("🔒 Database locked")
+        if not config.ENABLE_ENCRYPTION:
+            logger.info("🔓 Lock called but encryption disabled")
+            return
+        if self.db:
+            self.db.close()
+        self.db = None
+        self.fernet = None
+        self._passphrase = None
+        self._unlocked = False
+        logger.info("🔒 Database locked")
 
     def is_unlocked(self) -> bool:
         return self._unlocked
 
-    def get_last_access(self):
-        return self._last_access
+    def needs_unlock(self) -> bool:
+        return config.ENABLE_ENCRYPTION and not self._unlocked
+
+    def ensure_unlocked(self):
+        if config.ENABLE_ENCRYPTION and not self.is_unlocked():
+            logger.warning("🔒 DB access attempted while locked")
+            raise RuntimeError("🔒 Database is locked. Please /unlock first.")
+        if config.ENABLE_ENCRYPTION and self._unlocked:
+            now = time.monotonic()
+            if now - self._last_access > UNLOCK_TIMEOUT:
+                logger.warning("⏳ Auto-lock timeout reached, locking DB")
+                self.lock()
+                raise RuntimeError("🔒 Auto-locked after inactivity. Please /unlock again.")
+            self._last_access = now
 
     def mark_activity(self):
         self._last_access = time.monotonic()
+
+    def get_last_access(self):
+        return self._last_access
+
+    def table(self, name):
+        self.ensure_unlocked()
+        logger.debug(f"📂 Accessing table: {name}")
+        return self.db.table(name)
+
+    def all(self, table_name):
+        self.ensure_unlocked()
+        logger.info(f"📄 Reading all rows from table: {table_name}")
+        return self.db.table(table_name).all()
+
+    def insert(self, table_name, doc):
+        self.ensure_unlocked()
+        logger.info(f"➕ Inserting into table {table_name}: {doc}")
+        return self.db.table(table_name).insert(doc)
+
+    def search(self, table_name, query):
+        self.ensure_unlocked()
+        logger.debug(f"🔍 Searching in table {table_name}")
+        return self.db.table(table_name).search(query)
+
+    def update(self, table_name, fields, doc_ids):
+        self.ensure_unlocked()
+        logger.info(f"✏️ Updating table {table_name} on doc_ids {doc_ids}: {fields}")
+        return self.db.table(table_name).update(fields, doc_ids=doc_ids)
+
+    def remove(self, table_name, doc_ids):
+        self.ensure_unlocked()
+        logger.info(f"🗑️ Removing from table {table_name} doc_ids {doc_ids}")
+        return self.db.table(table_name).remove(doc_ids=doc_ids)
 
 # Global instance
 secure_db = SecureDB(config.DB_PATH)
