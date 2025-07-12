@@ -31,4 +31,4 @@ sed -i "/^KDF_SALT =/d" secure_db.py
 # 5) Insert the new KDF_SALT using bytes.fromhex()
 sed -i "/^UNLOCK_TIMEOUT =/a KDF_SALT = bytes.fromhex(\"${SALT_HEX}\")" secure_db.py
 
-echo "Updated secure_db.py with new KDF_SALT. Editing complete."
+echo "✅ Updated secure_db.py with new KDF_SALT in safe format."
