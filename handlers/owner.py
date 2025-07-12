@@ -57,23 +57,30 @@ async def get_pot_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "pot_subtract":"Enter amount to subtract:",
             "pot_set":"Enter new POT balance:"}[update.callback_query.data]
     await update.callback_query.edit_message_text(prompt)
+    # Reset in case someone was halfway through a previous flow
+    context.user_data.pop("pot_amount", None)
+    context.user_data.pop("pot_note", None)
+    context.user_data.pop("pot_old_balance", None)
     return O_POT_INPUT
 
+@require_unlock
 async def get_pot_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        amt = float(update.message.text.strip())
-    except:
-        await update.message.reply_text("Enter a valid number:")
-        return O_POT_INPUT
+    # If we don't have an amount yet, expect number input here
+    if "pot_amount" not in context.user_data:
+        try:
+            amt = float(update.message.text.strip())
+        except:
+            await update.message.reply_text("Enter a valid number:")
+            return O_POT_INPUT
 
-    context.user_data["pot_amount"] = amt
-    # For pot_set, store the current balance
-    if context.user_data["pot_action"] == "pot_set":
-        context.user_data["pot_old_balance"] = get_balance("owner", "POT")
-    await update.message.reply_text("Enter a note for this adjustment (or skip):")
-    return O_POT_NOTE
+        context.user_data["pot_amount"] = amt
+        # For pot_set, store the current balance
+        if context.user_data.get("pot_action") == "pot_set":
+            context.user_data["pot_old_balance"] = get_balance("owner", "POT")
+        await update.message.reply_text("Enter a note for this adjustment (or skip):")
+        return O_POT_NOTE
 
-async def confirm_pot(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Else, this is the note input step
     note = update.message.text.strip()
     context.user_data["pot_note"] = note
     kb = InlineKeyboardMarkup([
@@ -100,9 +107,9 @@ async def save_pot(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_owner_menu(update, context)
         return ConversationHandler.END
 
-    action = context.user_data["pot_action"]
-    amt    = context.user_data["pot_amount"]
-    note   = context.user_data.get("pot_note","")
+    action = context.user_data.get("pot_action")
+    amt    = context.user_data.get("pot_amount", 0.0)
+    note   = context.user_data.get("pot_note", "")
     if action == "pot_set":
         old = context.user_data.get("pot_old_balance", 0.0)
         adj = amt - old
@@ -129,6 +136,11 @@ async def save_pot(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "✅ POT adjustment recorded.",
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="owner_menu")]])
     )
+    # Clean up so another flow can start fresh if desired
+    context.user_data.pop("pot_action", None)
+    context.user_data.pop("pot_amount", None)
+    context.user_data.pop("pot_note", None)
+    context.user_data.pop("pot_old_balance", None)
     return ConversationHandler.END
 
 def register_owner_handlers(app):
@@ -136,5 +148,4 @@ def register_owner_handlers(app):
     app.add_handler(CallbackQueryHandler(adjust_pot_balance, pattern="^owner_adjust_pot$"))
     app.add_handler(CallbackQueryHandler(get_pot_amount, pattern="^pot_add|^pot_subtract|^pot_set$"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, get_pot_note))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, confirm_pot))
     app.add_handler(CallbackQueryHandler(save_pot, pattern="^pot_conf_yes|^pot_conf_no$"))
