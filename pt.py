@@ -27,10 +27,11 @@ class EncryptedJSONStorage(JSONStorage):
         self._handle.truncate()
         self._handle.write(encoded)
 
-db = TinyDB("data/test_enc.json", storage=lambda p: EncryptedJSONStorage(p, fernet))
 db.insert({"foo": "bar"})
+db.storage.flush()         # <--- Add this line!
 print("After insert:", db.all())
 db.close()
+
 
 # Try to re-open (same key)
 db2 = TinyDB("data/test_enc.json", storage=lambda p: EncryptedJSONStorage(p, fernet))
