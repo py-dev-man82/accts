@@ -8,7 +8,7 @@ import time
 
 import config
 from secure_db import secure_db
-from tinydb import TinyDB
+from tinydb import TinyDB  # ✅ Add this line
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     ApplicationBuilder,
@@ -19,6 +19,7 @@ from telegram.ext import (
     filters,
     ConversationHandler,
 )
+
 
 # Core utilities
 from handlers.utils import require_unlock
