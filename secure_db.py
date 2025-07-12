@@ -18,12 +18,12 @@ logger = logging.getLogger("secure_db")
 logger.setLevel(logging.INFO)
 
 class EncryptedJSONStorage(JSONStorage):
-    """Custom TinyDB storage with encryption."""
     def __init__(self, path, fernet: Fernet, **kwargs):
         super().__init__(path, **kwargs)
         self.fernet = fernet
 
     def read(self):
+        print("READ CALLED")  # <--- Debug print
         try:
             raw = self._handle.read()
             if not raw:
@@ -40,6 +40,7 @@ class EncryptedJSONStorage(JSONStorage):
             raise
 
     def write(self, data):
+        print("WRITE CALLED")  # <--- Debug print
         try:
             json_str = json.dumps(data, separators=(",", ":")).encode()
             token = self.fernet.encrypt(json_str)
@@ -47,11 +48,12 @@ class EncryptedJSONStorage(JSONStorage):
             self._handle.seek(0)
             self._handle.truncate()
             self._handle.write(encoded)
-            self._handle.flush()  # <-- This ensures data is written immediately!
+            self._handle.flush()
             logger.info("💾 DB written and encrypted successfully")
         except Exception as e:
             logger.error(f"❌ Failed to write DB: {e}")
             raise
+
 
 
 class SecureDB:
