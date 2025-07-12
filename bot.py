@@ -21,11 +21,14 @@ from telegram.ext import (
     ConversationHandler,
 )
 
+# Core utilities
 from handlers.utils import require_unlock
 
+# States for initdb conversation
 CONFIRM_INITDB, ENTER_OLD_PIN, SET_NEW_PIN, CONFIRM_NEW_PIN = range(4)
 UNLOCK_PIN = range(1)
 
+# Feature modules
 from handlers.customers         import register_customer_handlers,  show_customer_menu
 from handlers.stores            import register_store_handlers,     show_store_menu
 from handlers.partners          import register_partner_handlers,   show_partner_menu
@@ -35,6 +38,7 @@ from handlers.payouts           import register_payout_handlers,    show_payout_
 from handlers.stockin           import register_stockin_handlers,   show_stockin_menu
 from handlers.partner_sales     import register_partner_sales_handlers, show_partner_sales_menu
 
+# Reports
 from handlers.reports.customer_report import register_customer_report_handlers
 from handlers.reports.partner_report  import (
     register_partner_report_handlers,
@@ -48,8 +52,12 @@ from handlers.reports.store_report    import (
 )
 from handlers.reports.owner_report    import register_owner_report_handlers
 
+# Owner module
 from handlers.owner import register_owner_handlers, show_owner_menu
 
+# ════════════════════════════════════════════════════════════
+# Admin-only helper commands
+# ════════════════════════════════════════════════════════════
 async def restart_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("♻️ Bot is restarting…")
     logging.warning("⚠️ Admin issued /restart — restarting bot.")
@@ -61,7 +69,11 @@ async def kill_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logging.warning("⚠️ Admin issued /kill — shutting down cleanly.")
     raise SystemExit(0)
 
+# ════════════════════════════════════════════════════════════
+# InitDB flow with secure setup script and enforced PIN
+# ════════════════════════════════════════════════════════════
 async def initdb_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Ask for confirmation before resetting DB."""
     if not config.ENABLE_ENCRYPTION:
         await update.message.reply_text(
             "❌ Encryption must be enabled to initialize DB. Set ENABLE_ENCRYPTION = True in config.py."
@@ -90,6 +102,7 @@ async def initdb_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.callback_query.edit_message_text("❌ InitDB cancelled.")
         return ConversationHandler.END
 
+    context.user_data["old_pin_attempts"] = 0
     if secure_db.has_pin():
         await update.callback_query.edit_message_text("🔒 Enter current DB password (PIN) to reset:")
         return ENTER_OLD_PIN
@@ -99,19 +112,24 @@ async def initdb_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def enter_old_pin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pin = update.message.text.strip()
-    if not secure_db.unlock(pin):
-        fails = secure_db._failed_attempts
-        if fails >= 7:
-            await update.message.reply_text(
-                "☠️ Too many wrong attempts! Database and salt wiped for security. Start again with /initdb."
-            )
-        else:
-            await update.message.reply_text(f"❌ Wrong PIN. {7-fails} tries left.")
-        return ConversationHandler.END
-    secure_db.lock()
-    context.user_data["old_db_pin"] = pin
-    await update.message.reply_text("🔑 Current PIN accepted. Enter new DB password (PIN):")
-    return SET_NEW_PIN
+    context.user_data["old_pin_attempts"] = context.user_data.get("old_pin_attempts", 0)
+    try:
+        if not secure_db.unlock(pin):
+            raise Exception("Wrong PIN")
+        secure_db.lock()
+        context.user_data["old_db_pin"] = pin
+        context.user_data["old_pin_attempts"] = 0
+        await update.message.reply_text("🔑 Current PIN accepted. Enter new DB password (PIN):")
+        return SET_NEW_PIN
+    except Exception:
+        context.user_data["old_pin_attempts"] += 1
+        attempts = context.user_data["old_pin_attempts"]
+        left = secure_db.MAX_PIN_ATTEMPTS - attempts
+        if attempts >= secure_db.MAX_PIN_ATTEMPTS:
+            await update.message.reply_text("☠️ 7 failed PIN attempts. DB and salt wiped for security.")
+            return ConversationHandler.END
+        await update.message.reply_text(f"❌ Wrong PIN. Attempts left: {left}\n\nPlease enter the current PIN:")
+        return ENTER_OLD_PIN
 
 async def set_new_pin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pin = update.message.text.strip()
@@ -150,6 +168,7 @@ async def confirm_new_pin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         storage=lambda p: EncryptedJSONStorage(p, secure_db.fernet)
     )
 
+    # 🌱 Seed initial tables
     seed_tables(secure_db)
     secure_db.lock()
 
@@ -160,49 +179,75 @@ async def confirm_new_pin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     subprocess.Popen([sys.executable, os.path.abspath(sys.argv[0]), "child"])
     raise SystemExit(0)
 
+# ════════════════════════════════════════════════════════════
+# Unlock command flow with retry up to MAX_PIN_ATTEMPTS
+# ════════════════════════════════════════════════════════════
 async def unlock_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["unlock_attempts"] = 0
     await update.message.reply_text("🔑 *Enter your encryption PIN to unlock:*", parse_mode="Markdown")
     return UNLOCK_PIN
 
 async def unlock_process(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pin = update.message.text.strip()
-    if not secure_db.unlock(pin):
-        fails = secure_db._failed_attempts
-        if fails >= 7:
-            await update.message.reply_text(
-                "☠️ Too many wrong attempts! Database and salt wiped for security. Start again with /initdb."
-            )
-        else:
-            await update.message.reply_text(f"❌ Wrong PIN. {7-fails} tries left.")
+    context.user_data["unlock_attempts"] = context.user_data.get("unlock_attempts", 0)
+    if secure_db.unlock(pin):
+        await update.message.reply_text("✅ *Database unlocked successfully!*", parse_mode="Markdown")
+        context.user_data["unlock_attempts"] = 0
         return ConversationHandler.END
-    secure_db.mark_activity()
-    await update.message.reply_text("✅ *Database unlocked successfully!*", parse_mode="Markdown")
-    return ConversationHandler.END
+    else:
+        context.user_data["unlock_attempts"] += 1
+        attempts = context.user_data["unlock_attempts"]
+        left = secure_db.MAX_PIN_ATTEMPTS - attempts
+        if attempts >= secure_db.MAX_PIN_ATTEMPTS:
+            await update.message.reply_text("☠️ 7 failed PIN attempts. DB and salt wiped for security.")
+            return ConversationHandler.END
+        await update.message.reply_text(f"❌ Unlock failed. Attempts left: {left}\n\nPlease try again:")
+        return UNLOCK_PIN
 
+# ════════════════════════════════════════════════════════════
+# Auto-lock background task
+# ════════════════════════════════════════════════════════════
 async def auto_lock_task():
-    AUTOLOCK_TIMEOUT = 180
+    AUTOLOCK_TIMEOUT = 180  # 3 minutes
     while True:
         await asyncio.sleep(10)
         if secure_db.is_unlocked():
             now = time.monotonic()
-            if now - secure_db.get_last_access() > AUTOLOCK_TIMEOUT:
-                secure_db.lock()
-                logging.warning("🔒 Auto-lock triggered after inactivity.")
+            if hasattr(secure_db, "get_last_access") and secure_db.get_last_access:
+                try:
+                    if now - secure_db.get_last_access() > AUTOLOCK_TIMEOUT:
+                        secure_db.lock()
+                        logging.warning("🔒 Auto-lock triggered after inactivity.")
+                except Exception:
+                    pass
 
+# ════════════════════════════════════════════════════════════
+# Main Menu and Nested Submenus
+# ════════════════════════════════════════════════════════════
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Main menu with DB status indicator and unlock/initdb buttons."""
     if not os.path.exists(config.DB_PATH):
         status_icon = "📂 No DB found: run /initdb"
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔑 InitDB", callback_data="initdb_button")],
+        ])
     elif secure_db.is_unlocked():
         status_icon = "🔓 Unlocked"
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("ADD USER", callback_data="adduser_menu"),
+             InlineKeyboardButton("ADD FINANCIAL", callback_data="addfinancial_menu")],
+            [InlineKeyboardButton("👑 Owner", callback_data="owner_menu"),
+             InlineKeyboardButton("📊 Reports", callback_data="report_menu")],
+        ])
     else:
         status_icon = "🔒 Locked"
-
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("ADD USER", callback_data="adduser_menu"),
-         InlineKeyboardButton("ADD FINANCIAL", callback_data="addfinancial_menu")],
-        [InlineKeyboardButton("👑 Owner", callback_data="owner_menu"),
-         InlineKeyboardButton("📊 Reports", callback_data="report_menu")],
-    ])
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔓 Unlock", callback_data="unlock_button")],
+            [InlineKeyboardButton("ADD USER", callback_data="adduser_menu"),
+             InlineKeyboardButton("ADD FINANCIAL", callback_data="addfinancial_menu")],
+            [InlineKeyboardButton("👑 Owner", callback_data="owner_menu"),
+             InlineKeyboardButton("📊 Reports", callback_data="report_menu")],
+        ])
     text = f"Main Menu: choose a section\n\nStatus: *{status_icon}*"
     if update.callback_query:
         await update.callback_query.answer()
@@ -213,6 +258,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             text, reply_markup=kb, parse_mode="Markdown"
         )
+
+# Optional: Handle main menu unlock/initdb buttons
+async def menu_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    qd = update.callback_query.data
+    await update.callback_query.answer()
+    if qd == "unlock_button":
+        await unlock_start(update.callback_query, context)
+    elif qd == "initdb_button":
+        await initdb_start(update.callback_query, context)
 
 async def show_adduser_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
@@ -249,6 +303,9 @@ async def show_report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Reports: choose a type", reply_markup=kb
     )
 
+# ════════════════════════════════════════════════════════════
+# Main bot runner
+# ════════════════════════════════════════════════════════════
 async def run_bot():
     logging.basicConfig(
         format="%(asctime)s — %(name)s — %(levelname)s — %(message)s",
@@ -256,9 +313,14 @@ async def run_bot():
     )
     app = ApplicationBuilder().token(config.BOT_TOKEN).build()
 
+    # Admin commands
     app.add_handler(CommandHandler("restart", restart_bot))
     app.add_handler(CommandHandler("kill",    kill_bot))
 
+    # Menu button short-cuts
+    app.add_handler(CallbackQueryHandler(menu_button_handler, pattern="^(unlock_button|initdb_button)$"))
+
+    # InitDB handler
     app.add_handler(ConversationHandler(
         entry_points=[CommandHandler("initdb", initdb_start)],
         states={
@@ -270,18 +332,21 @@ async def run_bot():
         fallbacks=[],
     ))
 
+    # Unlock handler
     app.add_handler(ConversationHandler(
         entry_points=[CommandHandler("unlock", unlock_start)],
         states={UNLOCK_PIN: [MessageHandler(filters.TEXT & ~filters.COMMAND, unlock_process)]},
         fallbacks=[],
     ))
 
+    # Root / back
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(start, pattern="^main_menu$"))
     app.add_handler(CallbackQueryHandler(show_adduser_menu, pattern="^adduser_menu$"))
     app.add_handler(CallbackQueryHandler(show_addfinancial_menu, pattern="^addfinancial_menu$"))
     app.add_handler(CallbackQueryHandler(show_report_menu, pattern="^report_menu$"))
 
+    # Register feature handlers
     register_customer_handlers(app)
     register_store_handlers(app)
     register_partner_handlers(app)
@@ -293,6 +358,7 @@ async def run_bot():
     register_partner_sales_handlers(app)
     app.add_handler(CallbackQueryHandler(show_partner_sales_menu, pattern="^partner_sales_menu$"))
 
+    # Reports
     register_customer_report_handlers(app)
     register_partner_report_handlers(app)
     app.add_handler(CallbackQueryHandler(show_partner_report_menu, pattern="^rep_part$"))
@@ -301,6 +367,7 @@ async def run_bot():
     register_owner_report_handlers(app)
     app.add_handler(CallbackQueryHandler(show_owner_menu, pattern="^owner_menu$"))
 
+    # Start polling and background auto-lock
     asyncio.create_task(auto_lock_task())
     await app.initialize()
     await app.start()
@@ -312,6 +379,9 @@ async def run_bot():
         await app.stop()
         await app.shutdown()
 
+# ════════════════════════════════════════════════════════════
+# Simple self-supervisor — restarts on crash
+# ════════════════════════════════════════════════════════════
 def main_supervisor():
     while True:
         logging.warning("🔄 Starting bot process…")
