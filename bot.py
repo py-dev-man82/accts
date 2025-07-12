@@ -110,7 +110,7 @@ async def enter_old_pin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
 async def run_setup_script_and_set_pin(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Call setup_secure_db.sh to generate new salt and prompt for new PIN."""
+    """Run setup script and require admin to set a new PIN."""
     update_msg = await update.message.reply_text("⚙️ Setting up secure DB (generating new salt)…")
     try:
         subprocess.run(["bash", "./setup_secure_db.sh"], check=True)
@@ -126,20 +126,30 @@ async def run_setup_script_and_set_pin(update: Update, context: ContextTypes.DEF
     )
     return SET_NEW_PIN
 
-async def set_new_pin(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    pin = update.message.text.strip()
-    if len(pin) < 4:
-        await update.message.reply_text("❌ PIN must be at least 4 characters. Try again:")
-        return SET_NEW_PIN
-    context.user_data["new_db_pin"] = pin
-    await update.message.reply_text("🔑 Confirm PIN by entering it again:")
-    return CONFIRM_NEW_PIN
-
 async def confirm_new_pin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     confirm_pin = update.message.text.strip()
     if confirm_pin != context.user_data.get("new_db_pin"):
         await update.message.reply_text("❌ PINs do not match. Start over with /initdb.")
         return ConversationHandler.END
+
+    # Encrypt DB immediately with new PIN
+    pin = context.user_data["new_db_pin"]
+    secure_db._passphrase = pin.encode('utf-8')
+    secure_db.fernet = secure_db._derive_fernet()
+
+    # Create and encrypt an empty DB
+    secure_db.db = TinyDB(
+        config.DB_PATH,
+        storage=lambda p: EncryptedJSONStorage(p, secure_db.fernet)
+    )
+    secure_db.lock()  # Lock after creating
+
+    await update.message.reply_text(
+        "✅ New PIN set and DB encrypted successfully.\n"
+        "Use /unlock and enter your PIN to access the database."
+    )
+    return ConversationHandler.END
+
 
     # Encrypt DB with new PIN
     pin = context.user_data["new_db_pin"]
