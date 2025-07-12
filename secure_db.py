@@ -124,6 +124,28 @@ class SecureDB:
             self._unlocked   = False
             logger.info("🔒 Database locked")
 
+    def has_pin(self) -> bool:
+    """
+    Check if the DB has been initialized with a PIN (system table exists).
+    """
+    if not os.path.exists(self.db_path):
+        logger.info("📂 No DB file found, no PIN set.")
+        return False
+
+    try:
+        temp_db = TinyDB(
+            self.db_path,
+            storage=lambda p: EncryptedJSONStorage(p, self._derive_fernet())
+        )
+        tables = temp_db.tables()
+        temp_db.close()
+        has_system = "system" in tables
+        logger.info(f"📋 DB has PIN: {has_system}")
+        return has_system
+    except Exception:
+        logger.warning("⚠️ Could not verify PIN (probably uninitialized).")
+        return False
+
     def is_unlocked(self) -> bool:
         return self._unlocked
 
