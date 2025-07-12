@@ -29,29 +29,26 @@ class EncryptedJSONStorage(JSONStorage):
 
     def read(self):
         try:
-            text = self._handle.read()  # Read as text
+            text = self._handle.read()
             if not text:
-                logger.info("📂 DB file is empty, returning {}")
-                return {}
-            token = base64.b64decode(text.encode('utf-8'))  # Base64 decode → bytes
+                logger.error("❌ DB file exists but is empty.")
+                raise RuntimeError("DB exists but is empty. Run /initdb to initialize.")
+            token = base64.b64decode(text.encode('utf-8'))
             data = self.fernet.decrypt(token)
             logger.info("📥 DB decrypted successfully")
             return json.loads(data.decode('utf-8'))
-        except FileNotFoundError:
-            logger.warning("📄 DB file not found, starting fresh")
-            return {}
         except InvalidToken:
-            logger.error("🔒 Decryption failed: wrong key or unencrypted DB")
-            raise RuntimeError("Failed to decrypt DB. Wrong key or unencrypted?")
+            logger.error("🔒 Decryption failed: wrong key or corrupted DB")
+            raise RuntimeError("Failed to decrypt DB. Wrong PIN or unencrypted?")
         except Exception as e:
             logger.exception("❌ Unexpected error while reading DB")
             raise RuntimeError("Failed to read DB file") from e
 
     def write(self, data):
         raw = json.dumps(data).encode('utf-8')
-        token = self.fernet.encrypt(raw)  # Encrypted bytes
-        text = base64.b64encode(token).decode('utf-8')  # Encode as Base64 string
-        self._handle.write(text)  # Write as text
+        token = self.fernet.encrypt(raw)
+        text = base64.b64encode(token).decode('utf-8')
+        self._handle.write(text)
         logger.info("💾 DB written and encrypted successfully")
 
 class SecureDB:
@@ -65,8 +62,8 @@ class SecureDB:
         self._last_access= 0
 
         if not config.ENABLE_ENCRYPTION:
-            logger.error("❌ Encryption must be enabled. Refusing to load plaintext DB.")
-            raise RuntimeError("Encryption disabled. Set ENABLE_ENCRYPTION = True in config.py.")
+            logger.error("❌ Encryption disabled. Refusing to continue.")
+            raise RuntimeError("Encryption must be enabled in config.py.")
 
     def _derive_fernet(self):
         logger.debug("🔑 Deriving encryption key from passphrase")
@@ -82,8 +79,7 @@ class SecureDB:
 
     def unlock(self, passphrase: str):
         if not config.ENABLE_ENCRYPTION:
-            logger.error("❌ Encryption disabled. Cannot unlock DB.")
-            raise RuntimeError("Encryption is disabled. Cannot unlock DB.")
+            raise RuntimeError("Encryption disabled. Cannot unlock DB.")
 
         with self._lock:
             logger.info("🔑 Attempting to unlock DB")
@@ -91,36 +87,26 @@ class SecureDB:
             self.fernet      = self._derive_fernet()
 
             if not os.path.exists(self.db_path):
-                # No DB file yet → initialize encrypted DB
-                logger.warning("📄 No DB file found. Creating new encrypted DB.")
-                self.db = TinyDB(
-                    self.db_path,
-                    storage=lambda p: EncryptedJSONStorage(p, self.fernet)
-                )
-                self._unlocked = True
-                self._last_access = time.monotonic()
-                logger.info("✅ New encrypted DB initialized.")
-                return
+                logger.error("❌ DB file does not exist. Run /initdb first.")
+                raise RuntimeError("DB not found. Run /initdb to create.")
 
-            # Try to open encrypted DB and validate PIN
             try:
                 self.db = TinyDB(
                     self.db_path,
                     storage=lambda p: EncryptedJSONStorage(p, self.fernet)
                 )
-                _ = self.db.tables()  # Force decryption
+                tables = self.db.tables()
+                if not tables:
+                    logger.error("❌ DB exists but is empty. Run /initdb.")
+                    raise RuntimeError("DB is empty. Run /initdb.")
                 self._unlocked = True
                 self._last_access = time.monotonic()
                 logger.info("✅ Database unlocked successfully")
-            except RuntimeError:
-                logger.error("❌ Unlock failed: wrong PIN or corrupted DB")
+            except RuntimeError as e:
                 self._unlocked = False
-                raise RuntimeError("❌ Wrong PIN or corrupted DB.")
+                raise
 
     def lock(self):
-        if not config.ENABLE_ENCRYPTION:
-            logger.info("🔓 Lock called but encryption disabled")
-            return
         with self._lock:
             if self.db:
                 self.db.close()
