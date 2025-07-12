@@ -207,4 +207,4 @@ class SecureDB:
         return self.db.table(table_name).remove(doc_ids=doc_ids)
 
 # Global instance
-secure_db = SecureDB(config.DB_PATH)
+secure_db = SecureDB(config.DB_PATH) 
