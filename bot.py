@@ -16,21 +16,21 @@ from telegram.ext import (
     ContextTypes,
     MessageHandler,
     filters,
+    ConversationHandler,
 )
 
 # Core utilities
 from handlers.utils import require_unlock
 
-# Feature modules
-from handlers.customers         import register_customer_handlers
-from handlers.stores            import register_store_handlers
-from handlers.partners          import register_partner_handlers
+# Feature modules already in the project
+from handlers.customers         import register_customer_handlers,  show_customer_menu
+from handlers.stores            import register_store_handlers,     show_store_menu
+from handlers.partners          import register_partner_handlers,   show_partner_menu
 from handlers.sales             import register_sales_handlers
-from handlers.payments          import register_payment_handlers
-from handlers.expenses          import register_expense_handlers
-from handlers.payouts           import register_payout_handlers
-from handlers.stockin           import register_stockin_handlers
-from handlers.partner_sales     import register_partner_sales_handlers
+from handlers.payments          import register_payment_handlers,   show_payment_menu
+from handlers.payouts           import register_payout_handlers,    show_payout_menu
+from handlers.stockin           import register_stockin_handlers,   show_stockin_menu
+from handlers.partner_sales     import register_partner_sales_handlers, show_partner_sales_menu
 
 # Reports
 from handlers.reports.customer_report import register_customer_report_handlers
@@ -66,13 +66,55 @@ async def kill_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     raise SystemExit(0)
 
 # ════════════════════════════════════════════════════════════
+# Unlock command flow
+# ════════════════════════════════════════════════════════════
+UNLOCK_PIN = range(1)  # conversation state
+
+async def unlock_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Prompt admin for encryption PIN/key."""
+    await update.message.reply_text("🔑 *Enter your encryption PIN to unlock:*", parse_mode="Markdown")
+    return UNLOCK_PIN
+
+async def unlock_process(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Attempt to unlock the database with provided PIN."""
+    pin = update.message.text.strip()
+    try:
+        secure_db.unlock(pin)
+        secure_db.mark_activity()  # update last activity
+        await update.message.reply_text("✅ *Database unlocked successfully!*", parse_mode="Markdown")
+    except Exception as e:
+        logging.error(f"Unlock failed: {e}")
+        await update.message.reply_text(f"❌ *Unlock failed:* {e}", parse_mode="Markdown")
+    return ConversationHandler.END
+
+# ════════════════════════════════════════════════════════════
+# Auto-lock background task
+# ════════════════════════════════════════════════════════════
+async def auto_lock_task():
+    """Background coroutine to auto-lock DB after 3 min inactivity."""
+    AUTOLOCK_TIMEOUT = 180  # 3 minutes
+    while True:
+        await asyncio.sleep(10)  # check every 10 seconds
+        if secure_db.is_unlocked():
+            now = time.monotonic()
+            if now - secure_db.last_activity > AUTOLOCK_TIMEOUT:
+                secure_db.lock()
+                logging.warning("🔒 Auto-lock triggered after inactivity.")
+
+# ════════════════════════════════════════════════════════════
 # Menus
 # ════════════════════════════════════════════════════════════
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Root menu / back-to-root callback."""
     kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("ADD USER",      callback_data="adduser_menu"),
-         InlineKeyboardButton("ADD FINANCIAL", callback_data="addfinancial_menu")],
+        [InlineKeyboardButton("Customers",     callback_data="customer_menu"),
+         InlineKeyboardButton("Stores",        callback_data="store_menu")],
+        [InlineKeyboardButton("Partners",      callback_data="partner_menu"),
+         InlineKeyboardButton("Sales",         callback_data="sales_menu")],
+        [InlineKeyboardButton("Payments",      callback_data="payment_menu"),
+         InlineKeyboardButton("Payouts",       callback_data="payout_menu")],
+        [InlineKeyboardButton("Stock-In",      callback_data="stockin_menu"),
+         InlineKeyboardButton("Partner Sales", callback_data="partner_sales_menu")],
         [InlineKeyboardButton("👑 Owner",      callback_data="owner_menu"),
          InlineKeyboardButton("📊 Reports",    callback_data="report_menu")],
     ])
@@ -85,33 +127,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "Main Menu: choose a section", reply_markup=kb
         )
-
-async def show_adduser_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.answer()
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("Customers", callback_data="customer_menu")],
-        [InlineKeyboardButton("Stores",    callback_data="store_menu")],
-        [InlineKeyboardButton("Partners",  callback_data="partner_menu")],
-        [InlineKeyboardButton("🔙 Back",   callback_data="main_menu")],
-    ])
-    await update.callback_query.edit_message_text(
-        "ADD USER: choose an account type", reply_markup=kb
-    )
-
-async def show_addfinancial_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.answer()
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("Sales",         callback_data="sales_menu")],
-        [InlineKeyboardButton("Payments",      callback_data="payment_menu")],
-        [InlineKeyboardButton("Expenses",      callback_data="expense_menu")],
-        [InlineKeyboardButton("Payouts",       callback_data="payout_menu")],
-        [InlineKeyboardButton("Stock-In",      callback_data="stockin_menu")],
-        [InlineKeyboardButton("Partner Sales", callback_data="partner_sales_menu")],
-        [InlineKeyboardButton("🔙 Back",       callback_data="main_menu")],
-    ])
-    await update.callback_query.edit_message_text(
-        "ADD FINANCIAL: choose a transaction type", reply_markup=kb
-    )
 
 async def show_report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
@@ -140,13 +155,16 @@ async def run_bot():
     app.add_handler(CommandHandler("restart", restart_bot))
     app.add_handler(CommandHandler("kill",    kill_bot))
 
+    # Unlock handler
+    app.add_handler(ConversationHandler(
+        entry_points=[CommandHandler("unlock", unlock_start)],
+        states={UNLOCK_PIN: [MessageHandler(filters.TEXT & ~filters.COMMAND, unlock_process)]},
+        fallbacks=[],
+    ))
+
     # Root / back
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(start, pattern="^main_menu$"))
-
-    # Add user/financial submenus
-    app.add_handler(CallbackQueryHandler(show_adduser_menu,      pattern="^adduser_menu$"))
-    app.add_handler(CallbackQueryHandler(show_addfinancial_menu, pattern="^addfinancial_menu$"))
 
     # Reports menu
     app.add_handler(CallbackQueryHandler(show_report_menu, pattern="^report_menu$"))
@@ -157,32 +175,23 @@ async def run_bot():
     register_partner_handlers(app)
     register_sales_handlers(app)
     register_payment_handlers(app)
-    register_expense_handlers(app)
     register_payout_handlers(app)
     register_stockin_handlers(app)
+    app.add_handler(CallbackQueryHandler(show_stockin_menu, pattern="^stockin_menu$"))
     register_partner_sales_handlers(app)
+    app.add_handler(CallbackQueryHandler(show_partner_sales_menu, pattern="^partner_sales_menu$"))
 
     # Reports
     register_customer_report_handlers(app)
     register_partner_report_handlers(app)
-    app.add_handler(
-        CallbackQueryHandler(show_partner_report_menu, pattern="^rep_part$")
-    )
+    app.add_handler(CallbackQueryHandler(show_partner_report_menu, pattern="^rep_part$"))
     register_store_report_handlers(app)
-    app.add_handler(
-        CallbackQueryHandler(show_store_report_menu, pattern="^rep_store$")
-    )
+    app.add_handler(CallbackQueryHandler(show_store_report_menu, pattern="^rep_store$"))
     register_owner_report_handlers(app)
-
-    # Owner module
-    register_owner_handlers(app)
     app.add_handler(CallbackQueryHandler(show_owner_menu, pattern="^owner_menu$"))
 
-    # --- PATCH: Add these handlers for custom date input in partner and store reports only
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, save_custom_start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, save_custom_start_store))
-
-    # Start polling
+    # Start polling and background auto-lock
+    asyncio.create_task(auto_lock_task())
     await app.initialize()
     await app.start()
     await app.updater.start_polling()
