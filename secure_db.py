@@ -8,12 +8,10 @@ from tinydb.storages import JSONStorage
 from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 from cryptography.fernet import Fernet, InvalidToken
 
-# Config
 DB_FILE = "data/db.json"
 SALT_FILE = "data/kdf_salt.bin"
 MAX_PIN_ATTEMPTS = 7
 
-# Logger
 logger = logging.getLogger("secure_db")
 logger.setLevel(logging.INFO)
 
@@ -23,7 +21,7 @@ class EncryptedJSONStorage(JSONStorage):
         self.fernet = fernet
 
     def read(self):
-        print("READ CALLED")  # <--- Debug print
+        logger.info("READ CALLED")
         try:
             raw = self._handle.read()
             if not raw:
@@ -40,7 +38,7 @@ class EncryptedJSONStorage(JSONStorage):
             raise
 
     def write(self, data):
-        print("WRITE CALLED")  # <--- Debug print
+        logger.info("WRITE CALLED")
         try:
             json_str = json.dumps(data, separators=(",", ":")).encode()
             token = self.fernet.encrypt(json_str)
@@ -54,10 +52,7 @@ class EncryptedJSONStorage(JSONStorage):
             logger.error(f"❌ Failed to write DB: {e}")
             raise
 
-
-
 class SecureDB:
-    """Handles encryption/decryption and PIN logic for DB."""
     def __init__(self):
         self.db = None
         self.fernet = None
@@ -101,7 +96,7 @@ class SecureDB:
                 DB_FILE,
                 storage=lambda p: EncryptedJSONStorage(p, self.fernet),
             )
-            _ = self.db.all()  # Test read
+            _ = self.db.all()
             logger.info("✅ Database unlocked successfully")
             self._passphrase = pin
             self._unlocked = True
@@ -132,11 +127,9 @@ class SecureDB:
         return self._unlocked
 
     def has_pin(self) -> bool:
-        # If both DB and SALT files exist, assume DB is initialized
         return os.path.exists(DB_FILE) and os.path.exists(SALT_FILE)
 
     def _wipe_db(self):
-        """Wipe the DB and salt for security."""
         if os.path.exists(DB_FILE):
             os.remove(DB_FILE)
             logger.warning("🗑️ DB file deleted")
@@ -158,7 +151,10 @@ class SecureDB:
 
     def insert(self, table, doc):
         self.ensure_unlocked()
-        return self.db.table(table).insert(doc)
+        result = self.db.table(table).insert(doc)
+        self.db.close()  # force write to disk
+        self.unlock(self._passphrase)  # re-open for next access
+        return result
 
     def all(self, table):
         self.ensure_unlocked()
@@ -170,11 +166,17 @@ class SecureDB:
 
     def update(self, table, fields, cond):
         self.ensure_unlocked()
-        return self.db.table(table).update(fields, cond)
+        result = self.db.table(table).update(fields, cond)
+        self.db.close()
+        self.unlock(self._passphrase)
+        return result
 
     def remove(self, table, cond):
         self.ensure_unlocked()
-        return self.db.table(table).remove(cond)
+        result = self.db.table(table).remove(cond)
+        self.db.close()
+        self.unlock(self._passphrase)
+        return result
 
     def get(self, table, cond):
         self.ensure_unlocked()
