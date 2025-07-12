@@ -7,7 +7,7 @@ import subprocess
 import time
 
 import config
-from secure_db import secure_db
+from secure_db import secure_db, EncryptedJSONStorage
 from tinydb import TinyDB  # ✅ Added import for TinyDB
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
