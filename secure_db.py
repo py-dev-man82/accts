@@ -17,7 +17,7 @@ logger = logging.getLogger("secure_db")
 logger.setLevel(logging.INFO)
 
 # Auto-lock timeout in seconds
-UNLOCK_TIMEOUT = 18000  # 3 minutes
+UNLOCK_TIMEOUT = 18000  # 3 minutes (was 180)
 KDF_SALT = bytes.fromhex("9f8a17a401bbcd23456789abcdef0123")
 
 class EncryptedJSONStorage(JSONStorage):
@@ -124,8 +124,6 @@ class SecureDB:
             self._unlocked   = False
             logger.info("🔒 Database locked")
 
-  
-
     def is_unlocked(self) -> bool:
         return self._unlocked
 
@@ -137,20 +135,6 @@ class SecureDB:
 
     def table(self, name):
         """Proxy to TinyDB.table() with unlock check."""
-        self.ensure_unlocked()
-        logger.debug(f"📂 Accessing table: {name}")
-        return self.db.table(name)
-
-    def ensure_unlocked(self):
-        if not self._unlocked:
-            logger.warning("🔒 DB access attempted while locked")
-            raise RuntimeError("🔒 Database is locked. Please /unlock first.")
-
-    
-        def mark_activity(self):
-        self._last_access = time.monotonic()
-
-    def table(self, name):
         self.ensure_unlocked()
         logger.debug(f"📂 Accessing table: {name}")
         return self.db.table(name)
