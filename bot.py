@@ -159,7 +159,10 @@ async def auto_lock_task():
 # Menus
 # ════════════════════════════════════════════════════════════
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Root menu / back-to-root callback."""
+    """Root menu / back-to-root callback with lock status."""
+    # Show DB lock status
+    status_icon = "🔓 Unlocked" if secure_db.is_unlocked() else "🔒 Locked"
+
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("Customers",     callback_data="customer_menu"),
          InlineKeyboardButton("Stores",        callback_data="store_menu")],
@@ -172,15 +175,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("👑 Owner",      callback_data="owner_menu"),
          InlineKeyboardButton("📊 Reports",    callback_data="report_menu")],
     ])
+    text = f"Main Menu: choose a section\n\nStatus: *{status_icon}*"
+
     if update.callback_query:
         await update.callback_query.answer()
         await update.callback_query.edit_message_text(
-            "Main Menu: choose a section", reply_markup=kb
+            text, reply_markup=kb, parse_mode="Markdown"
         )
     else:
         await update.message.reply_text(
-            "Main Menu: choose a section", reply_markup=kb
+            text, reply_markup=kb, parse_mode="Markdown"
         )
+
 
 async def show_report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
