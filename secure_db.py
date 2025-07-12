@@ -60,7 +60,7 @@ class SecureDB:
         self._passphrase = None
         self._unlocked = False
         self._failed_attempts = 0
-        self._last_access = None
+        self._last_access = time.monotonic()
 
     def _load_salt(self):
         if os.path.exists(SALT_FILE):
@@ -97,8 +97,7 @@ class SecureDB:
                 DB_FILE,
                 storage=lambda p: EncryptedJSONStorage(p, self.fernet),
             )
-            # Test read
-            _ = self.db.all()
+            _ = self.db.all()  # Test read
             logger.info("✅ Database unlocked successfully")
             self._passphrase = pin
             self._unlocked = True
@@ -120,8 +119,7 @@ class SecureDB:
             return False
 
     def lock(self):
-        """Lock the DB for inactivity."""
-        if self._unlocked:
+        if self._unlocked and self.db is not None:
             self.db.close()
             self._unlocked = False
             logger.info("🔒 Database locked")
@@ -129,16 +127,9 @@ class SecureDB:
     def is_unlocked(self) -> bool:
         return self._unlocked
 
-    def ensure_unlocked(self):
-        if not self.is_unlocked():
-            raise RuntimeError("Database is locked. Use /unlock to access this feature.")
-
-    def mark_activity(self):
-        """Update last access time to now."""
-        self._last_access = time.monotonic()
-
-    def get_last_access(self):
-        return self._last_access or time.monotonic()
+    def has_pin(self) -> bool:
+        # If both DB and SALT files exist, assume DB is initialized
+        return os.path.exists(DB_FILE) and os.path.exists(SALT_FILE)
 
     def _wipe_db(self):
         """Wipe the DB and salt for security."""
@@ -153,8 +144,40 @@ class SecureDB:
         self._failed_attempts = 0
         logger.critical("💥 Database and salt wiped due to security policy")
 
-    def has_pin(self) -> bool:
-        """Returns True if the salt file exists (i.e. DB has a PIN set)."""
-        return os.path.exists(SALT_FILE)
+    def mark_activity(self):
+        self._last_access = time.monotonic()
+
+    def get_last_access(self):
+        return self._last_access
+
+    # ===== Pass-through TinyDB methods for use in handlers =====
+
+    def insert(self, table, doc):
+        self.ensure_unlocked()
+        return self.db.table(table).insert(doc)
+
+    def all(self, table):
+        self.ensure_unlocked()
+        return self.db.table(table).all()
+
+    def search(self, table, cond):
+        self.ensure_unlocked()
+        return self.db.table(table).search(cond)
+
+    def update(self, table, fields, cond):
+        self.ensure_unlocked()
+        return self.db.table(table).update(fields, cond)
+
+    def remove(self, table, cond):
+        self.ensure_unlocked()
+        return self.db.table(table).remove(cond)
+
+    def get(self, table, cond):
+        self.ensure_unlocked()
+        return self.db.table(table).get(cond)
+
+    def ensure_unlocked(self):
+        if not self._unlocked:
+            raise RuntimeError("🔒 Database is locked. Unlock it first.")
 
 secure_db = SecureDB()
