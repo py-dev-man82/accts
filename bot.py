@@ -276,15 +276,14 @@ async def run_bot():
 
     # InitDB handler
     app.add_handler(ConversationHandler(
-        entry_points=[CommandHandler("initdb", initdb_start)],
-        states={
-            CONFIRM_INITDB: [CallbackQueryHandler(initdb_confirm)],
-            ENTER_OLD_PIN: [MessageHandler(filters.TEXT & ~filters.COMMAND, enter_old_pin)],
-            SET_NEW_PIN: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_new_pin)],
-            CONFIRM_NEW_PIN: [MessageHandler(filters.TEXT & ~filters.COMMAND, confirm_new_pin)],
-        },
-        fallbacks=[],
-    ))
+    entry_points=[CommandHandler("initdb", initdb_start)],
+    states={
+        CONFIRM_INITDB: [CallbackQueryHandler(initdb_confirm)],
+        SET_NEW_PIN: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_new_pin)],
+        CONFIRM_NEW_PIN: [MessageHandler(filters.TEXT & ~filters.COMMAND, confirm_new_pin)],
+    },
+    fallbacks=[],
+))
 
     # Unlock handler
     app.add_handler(ConversationHandler(
