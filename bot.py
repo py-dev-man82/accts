@@ -22,8 +22,9 @@ from telegram.ext import (
 # Core utilities
 from handlers.utils import require_unlock
 
-# States for initdb conversation
+# States for initdb conversations
 CONFIRM_INITDB, PASSWORD_INITDB = range(2)
+CONFIRM_INITDB2 = range(1)
 
 # Feature modules already in the project
 from handlers.customers         import register_customer_handlers,  show_customer_menu
@@ -55,22 +56,19 @@ from handlers.owner import register_owner_handlers, show_owner_menu
 # ════════════════════════════════════════════════════════════
 # Admin-only helper commands
 # ════════════════════════════════════════════════════════════
-
 async def restart_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("♻️ Bot is restarting…")
-    logging.warning("⚠️  Admin issued /restart — restarting bot.")
+    logging.warning("⚠️ Admin issued /restart — restarting bot.")
     subprocess.Popen([sys.executable, os.path.abspath(sys.argv[0]), "child"])
     raise SystemExit(0)
 
-
 async def kill_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🛑 Bot is shutting down… it will auto-restart.")
-    logging.warning("⚠️  Admin issued /kill — shutting down cleanly.")
+    logging.warning("⚠️ Admin issued /kill — shutting down cleanly.")
     raise SystemExit(0)
 
-
 # ════════════════════════════════════════════════════════════
-# Secure InitDB flow
+# Secure InitDB flow (requires PIN)
 # ════════════════════════════════════════════════════════════
 async def initdb_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Ask for confirmation before resetting DB."""
@@ -120,6 +118,53 @@ async def initdb_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 # ════════════════════════════════════════════════════════════
+# InitDB2 flow (no PIN required)
+# ════════════════════════════════════════════════════════════
+async def initdb2_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Ask for confirmation before resetting DB (no PIN)."""
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Yes", callback_data="initdb2_yes"),
+         InlineKeyboardButton("❌ No",  callback_data="initdb2_no")]
+    ])
+    await update.message.reply_text(
+        "⚠️ *TEST MODE:* This will DELETE all data and create a fresh database.\n\n"
+        "Are you sure you want to proceed?",
+        parse_mode="Markdown", reply_markup=kb)
+    return CONFIRM_INITDB2
+
+async def initdb2_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+    if update.callback_query.data == "initdb2_no":
+        await update.callback_query.edit_message_text("❌ InitDB2 cancelled.")
+        return ConversationHandler.END
+
+    db_path = config.DB_PATH
+
+    try:
+        # Wipe DB file
+        if os.path.exists(db_path):
+            os.remove(db_path)
+            logging.warning(f"⚠️ Database file {db_path} deleted.")
+
+        # Recreate DB (empty)
+        if config.ENABLE_ENCRYPTION:
+            await update.callback_query.edit_message_text(
+                "⚠️ Encryption is enabled. Run /unlock with your PIN to set up the fresh DB."
+            )
+        else:
+            secure_db.db = TinyDB(config.DB_PATH, storage=JSONStorage)
+            await update.callback_query.edit_message_text(
+                "✅ Database reset (InitDB2, no password)."
+            )
+            logging.info("✅ Database reset in InitDB2 (no PIN).")
+    except Exception as e:
+        logging.error(f"InitDB2 failed: {e}")
+        await update.callback_query.edit_message_text(
+            f"❌ InitDB2 failed: {e}"
+        )
+    return ConversationHandler.END
+
+# ════════════════════════════════════════════════════════════
 # Unlock command flow
 # ════════════════════════════════════════════════════════════
 UNLOCK_PIN = range(1)  # conversation state
@@ -160,7 +205,6 @@ async def auto_lock_task():
 # ════════════════════════════════════════════════════════════
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Root menu / back-to-root callback with lock status."""
-    # Show DB lock status
     status_icon = "🔓 Unlocked" if secure_db.is_unlocked() else "🔒 Locked"
 
     kb = InlineKeyboardMarkup([
@@ -186,7 +230,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             text, reply_markup=kb, parse_mode="Markdown"
         )
-
 
 async def show_report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
@@ -215,13 +258,18 @@ async def run_bot():
     app.add_handler(CommandHandler("restart", restart_bot))
     app.add_handler(CommandHandler("kill",    kill_bot))
 
-    # InitDB handler
+    # InitDB handlers
     app.add_handler(ConversationHandler(
         entry_points=[CommandHandler("initdb", initdb_start)],
         states={
             CONFIRM_INITDB: [CallbackQueryHandler(initdb_confirm)],
             PASSWORD_INITDB: [MessageHandler(filters.TEXT & ~filters.COMMAND, initdb_password)],
         },
+        fallbacks=[],
+    ))
+    app.add_handler(ConversationHandler(
+        entry_points=[CommandHandler("initdb2", initdb2_start)],
+        states={CONFIRM_INITDB2: [CallbackQueryHandler(initdb2_confirm)]},
         fallbacks=[],
     ))
 
