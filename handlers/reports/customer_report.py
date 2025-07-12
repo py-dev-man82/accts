@@ -10,7 +10,7 @@ from telegram.ext import (
 )
 from secure_db import secure_db
 from handlers.utils import require_unlock, fmt_money, fmt_date
-from handlers.ledger import get_ledger, get_balance
+from handlers.ledger import get_ledger
 
 async def _goto_main_menu(update, context):
     from bot import start
@@ -28,7 +28,6 @@ _PAGE_SIZE = 8
 
 @require_unlock
 async def show_customer_report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Clear all state on entry for reliability!
     for k in ['customer_id', 'start_date', 'end_date', 'page', 'scope']:
         context.user_data.pop(k, None)
     logging.info("show_customer_report_menu called")
@@ -65,7 +64,6 @@ async def show_customer_report_menu(update: Update, context: ContextTypes.DEFAUL
         reply_markup=InlineKeyboardMarkup(grid)
     )
     return CUST_SELECT
-
 
 async def select_date_range(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logging.info("select_date_range: %s", update.callback_query.data)
@@ -174,18 +172,21 @@ async def show_customer_report(update: Update, context: ContextTypes.DEFAULT_TYP
     customer = secure_db.table("customers").get(doc_id=cid)
     currency = customer['currency']
 
-    # --- PATCH: Pull from both customer and general account_types ---
-    ledger_entries = get_ledger("customer", cid) + get_ledger("general", cid)
-    filtered_entries = _filter_ledger(ledger_entries, start_date, end_date)
+    # PATCH: Pull both customer and general ledger entries for this customer for all-time balance
+    ledger_entries_all = get_ledger("customer", cid) + get_ledger("general", cid)
+    # For current date-range sales/payments display
+    filtered_entries = _filter_ledger(ledger_entries_all, start_date, end_date)
     sales = [e for e in filtered_entries if e["entry_type"] == "sale"]
     payments = [e for e in filtered_entries if e["entry_type"] == "payment"]
 
     total_sales = sum(-e["amount"] for e in sales)
     total_payments_local = sum(e["amount"] for e in payments)
-    balance = get_balance("customer", cid)
 
     sales_page, sales_count = _paginate(sales, page) if scope in ["full", "sales"] else ([], 0)
     payments_page, payments_count = _paginate(payments, page) if scope in ["full", "payments"] else ([], 0)
+
+    # NEW: True all-time balance, using both customer and general ledgers for this customer
+    balance = sum(e["amount"] for e in ledger_entries_all)
 
     lines = [
         f"📄 *Report — {customer['name']}*",
@@ -319,7 +320,8 @@ async def export_pdf_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pdf.drawString(50, y, f"Total Payments: {fmt_money(total_local, currency)}")
         y -= 30
 
-    balance = get_balance("customer", cid)
+    # All-time balance
+    balance = sum(e["amount"] for e in ledger_entries)
     pdf.setFont('Helvetica-Bold',12)
     pdf.drawString(50, y, f"Current Balance: {fmt_money(balance, currency)}")
 
