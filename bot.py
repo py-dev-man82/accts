@@ -69,6 +69,15 @@ async def kill_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logging.warning("⚠️ Admin issued /kill — shutting down cleanly.")
     raise SystemExit(0)
 
+@require_unlock
+async def db_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Check DB tables and status."""
+    try:
+        tables = secure_db.db.tables()
+        await update.message.reply_text(f"📊 DB Tables: {tables}")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Failed to read DB: {e}")
+
 # ════════════════════════════════════════════════════════════
 # InitDB flow with secure setup script and enforced PIN
 # ════════════════════════════════════════════════════════════
@@ -135,6 +144,11 @@ async def confirm_new_pin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Failed to run secure DB setup script.")
         return ConversationHandler.END
 
+    # Wipe existing DB
+    if os.path.exists(config.DB_PATH):
+        os.remove(config.DB_PATH)
+        logging.warning(f"⚠️ Database file {config.DB_PATH} deleted.")
+
     # Encrypt DB immediately with confirmed PIN
     pin = context.user_data["new_db_pin"]
     secure_db._passphrase = pin.encode('utf-8')
@@ -157,6 +171,8 @@ async def confirm_new_pin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     subprocess.Popen([sys.executable, os.path.abspath(sys.argv[0]), "child"])
     raise SystemExit(0)
 
+# Unlock, auto-lock, and menu logic unchanged
+# ...
 # ════════════════════════════════════════════════════════════
 # Unlock command flow
 # ════════════════════════════════════════════════════════════
