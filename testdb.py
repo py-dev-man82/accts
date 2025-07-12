@@ -1,19 +1,14 @@
 from secure_db import secure_db
 
-# Unlock with your actual PIN
-if not secure_db.unlock("1122"):
+PIN = "1122"  # Set this to your real PIN
+
+if not secure_db.unlock(PIN):
     print("Unlock failed! Wrong PIN or DB corrupted.")
     exit()
 
-# Insert a test customer
+print("Before insert:", secure_db.all("customers"))
+
 secure_db.insert("customers", {"name": "Test User"})
+print("After insert:", secure_db.all("customers"))
 
-# Immediately read all customers
-print("Customers after insert:", secure_db.all("customers"))
-
-# Lock and unlock again, and read again
-secure_db.lock()
-if not secure_db.unlock("1122"):
-    print("Unlock failed after relock!")
-    exit()
-print("Customers after re-unlock:", secure_db.all("customers"))
+secure_db.db.close()
