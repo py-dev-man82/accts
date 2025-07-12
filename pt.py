@@ -5,11 +5,10 @@ from tinydb import TinyDB
 from tinydb.storages import JSONStorage
 from cryptography.fernet import Fernet
 
-# Ensure data dir exists
 os.makedirs("data", exist_ok=True)
 
-# Generate a key for test (do NOT use in prod)
-key = Fernet.generate_key()
+# Use a static Fernet key (generate once, then reuse)
+key = b"pNHD_16I4RBZHJdT6F3EazQoBipCfB9l0BKXUvyeGTw="  # <- your static test key
 fernet = Fernet(key)
 
 class EncryptedJSONStorage(JSONStorage):
@@ -31,14 +30,15 @@ class EncryptedJSONStorage(JSONStorage):
         self._handle.truncate()
         self._handle.write(encoded)
 
-# ---- FIRST OPEN: insert and read ----
+# Remove test file to start clean (optional)
+if os.path.exists("data/test_enc.json"):
+    os.remove("data/test_enc.json")
+
 db = TinyDB("data/test_enc.json", storage=lambda p: EncryptedJSONStorage(p, fernet))
 db.insert({"foo": "bar"})
-db.storage.flush()
 print("After insert:", db.all())
 db.close()
 
-# ---- SECOND OPEN: read again with SAME key ----
 db2 = TinyDB("data/test_enc.json", storage=lambda p: EncryptedJSONStorage(p, fernet))
 print("Reloaded:", db2.all())
 db2.close()
