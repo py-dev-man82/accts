@@ -219,18 +219,20 @@ def build_store_report_lines(ctx, start, end, sid, cur, secure_db, get_ledger):
     balance = total_sales + total_fees - total_pay - total_exp
 
     # ---- SECTIONED LINES FOR MATCHED OUTPUT ----
+        # --- Header ---
     lines = []
     lines.append(f"📄 Account: {store_name}")
     lines.append(f"🗓️ Period: {start.strftime('%d/%m/%Y')} → {end.strftime('%d/%m/%Y')}")
+    lines.append(f"    Currency: {cur}")
     lines.append("──────────────────────────────\n")
 
-        # --- Sales Section ---
+    # --- Sales Section ---
     lines.append("🛒 Sales")
     lines += sales_lines if sales_lines else ["(none)"]
     lines.append("")
 
     # --- Store Fees Section ---
-    lines.append("💳 Store Fees")
+    lines.append("💳 Handling Fees")
     lines += fee_lines if fee_lines else ["(none)"]
     lines.append("")
 
@@ -239,31 +241,37 @@ def build_store_report_lines(ctx, start, end, sid, cur, secure_db, get_ledger):
     lines += unit_summary if unit_summary else ["(none)"]
 
     lines.append(f"\n📊 Total Sales: {fmt_money(total_sales_only, cur)}")
-    lines.append(f"📊 Total Store Fees: {fmt_money(total_fees_only, cur)}")
+    lines.append(f"📊 Total Handling Fees: {fmt_money(total_fees_only, cur)}")
     lines.append(f"\n📊 Grand Total (Sales - Fees): {fmt_money(total_sales_only - total_fees_only, cur)}")
     lines.append("──────────────────────────────\n")
 
     # --- Payments Section ---
     payment_lines = []
     total_gross = 0
-    total_usd = 0
-    for p in sorted(store_payments, key=lambda x: (x.get("date", ""), x.get("timestamp", "")), reverse=True):
+    total_fees_payments = 0
+    for p in sorted(store_payments, key=lambda x: (x.get('date', ''), x.get('timestamp', '')), reverse=True):
         amount = p.get('amount', 0)
-        fee_amt = abs(p.get('fee_amt', 0) or 0)
+        fee_perc = p.get('fee_perc', 0)
         fx_rate = p.get('fx_rate', 0)
-        usd_amt = p.get('usd_amt', 0)
+        fx_inv = 1 / fx_rate if fx_rate else 0
         total_gross += amount
-        total_usd += usd_amt
+        fee_amt = abs(p.get('fee_amt', 0) or 0)
+        total_fees_payments += fee_amt
         payment_lines.append(
-            f"• {fmt_date(p.get('date', ''))}: {fmt_money(amount, cur)}\n"
-            f"   - FX: {fx_rate:.4f}  |  USD: {fmt_money(usd_amt, 'USD')}"
+            f"• {fmt_date(p.get('date', ''))}: {fmt_money(amount, cur)} | {fee_perc:g}% | {fx_inv:.4f}"
         )
 
     lines.append("💵 Payments")
     lines += payment_lines if payment_lines else ["(none)"]
-    lines.append(f"\n📊 Total Payments : {fmt_money(total_gross, cur)}")
+    lines.append(f"\n📊 Total Payments: {fmt_money(total_gross, cur)}")
     lines.append("──────────────────────────────\n")
 
+    # --- Expenses Section (only if there are actual expenses) ---
+    if expense_lines and any(line for line in expense_lines if "(none)" not in line):
+        lines.append("🧾 Expenses")
+        lines += expense_lines
+        lines.append(f"\n📊 Total All Expenses: {fmt_money(total_all_expenses, cur)}")
+        lines.append("──────────────────────────────\n")
 
     # --- Inventory Section ---
     lines.append("📦 Inventory")
@@ -277,12 +285,13 @@ def build_store_report_lines(ctx, start, end, sid, cur, secure_db, get_ledger):
     lines.append("──────────────────────────────\n")
 
     # --- Financial Position Section ---
-    balance = total_sales_only - total_fees_only - total_gross
+    balance = total_sales_only - total_fees_only - total_gross - (total_all_expenses if 'total_all_expenses' in locals() else 0)
     lines.append("📊 Financial Position (ALL TIME)")
-    lines.append(f"Balance (S - Fees − P): {fmt_money(balance, cur)}")
+    lines.append(f"Balance (S - Fees − P − E): {fmt_money(balance, cur)}")
     lines.append(f"Inventory Value:     {fmt_money(stock_value, cur)}")
     lines.append("────────────────────────────────────")
     lines.append(f"Total Position:      {fmt_money(balance + stock_value, cur)}")
+
 
 
     return lines
