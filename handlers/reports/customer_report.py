@@ -28,14 +28,18 @@ _PAGE_SIZE = 8
 
 @require_unlock
 async def show_customer_report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Clear all state on entry for reliability!
     for k in ['customer_id', 'start_date', 'end_date', 'page', 'scope']:
         context.user_data.pop(k, None)
     logging.info("show_customer_report_menu called")
-    customers = secure_db.all("customers")
+    customers = [
+        c for c in secure_db.all("customers")
+        if c.get("type", "general") == "general"
+    ]
     if not customers:
         await update.callback_query.answer()
         await update.callback_query.edit_message_text(
-            "⚠️ No customers found.",
+            "⚠️ No general customers found.",
             reply_markup=InlineKeyboardMarkup([
                 [
                     InlineKeyboardButton("🔙 Back", callback_data="customer_report_menu"),
@@ -57,10 +61,11 @@ async def show_customer_report_menu(update: Update, context: ContextTypes.DEFAUL
 
     await update.callback_query.answer()
     await update.callback_query.edit_message_text(
-        "📄 Select a customer to view report:",
+        "📄 Select a general customer to view report:",
         reply_markup=InlineKeyboardMarkup(grid)
     )
     return CUST_SELECT
+
 
 async def select_date_range(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logging.info("select_date_range: %s", update.callback_query.data)
