@@ -22,7 +22,7 @@ from secure_db import secure_db
     E_DEL_TYPE, E_DEL_ACCT, E_DEL_TIME, E_DEL_PAGE, E_DEL_PICK, E_DEL_CONFIRM,
 ) = range(26)
 
-EXPENSE_CATS = ["General", "Office", "Travel", "Salary", "Maintenance", "Other"]
+EXPENSE_CATS = ["Other"]
 ROWS_PER_PAGE = 20
 
 async def send_error(update, msg="An error occurred. Please try again."):
