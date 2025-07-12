@@ -114,6 +114,10 @@ async def run_setup_script_and_set_pin(update: Update, context: ContextTypes.DEF
     """Run setup script and require admin to set a new PIN."""
     update_msg = await update.message.reply_text("⚙️ Setting up secure DB (generating new salt)…")
     try:
+        # Ensure the script is executable
+        subprocess.run(["chmod", "+x", "./setup_secure_db.sh"], check=True)
+
+        # Run the setup script
         subprocess.run(["bash", "./setup_secure_db.sh"], check=True)
         logging.info("✅ setup_secure_db.sh executed successfully.")
     except Exception as e:
@@ -126,6 +130,7 @@ async def run_setup_script_and_set_pin(update: Update, context: ContextTypes.DEF
         "🔑 Now set a NEW password (PIN) for the database:"
     )
     return SET_NEW_PIN
+
 
 async def set_new_pin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pin = update.message.text.strip()
