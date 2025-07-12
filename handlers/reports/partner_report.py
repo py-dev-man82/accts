@@ -278,16 +278,13 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 expense_lines.append(f"   - {fmt_date(h.get('date', ''))}: [{item}] {fmt_money(amt, cur)}")
         expense_lines.append(f"\n📊 Total Handling Fees: {fmt_money(handling_total, cur)}")
-    
     if other_expenses:
-       expense_lines.append("\n• 🧾 Other Expenses")
-       for e in other_expenses:
-           note = e.get('note', '')
-           note_str = f" [{note}]" if note else ""
-           expense_lines.append(f"   - {fmt_date(e.get('date', ''))}: {fmt_money(abs(e.get('amount', 0)), cur)}{note_str}")
-       expense_lines.append(f"\n📊 Total Other Expenses: {fmt_money(other_total, cur)}")
-
-
+        expense_lines.append("\n• 🧾 Other Expenses")
+        for e in other_expenses:
+            note = e.get('note', '')
+            note_str = f" [{note}]" if note else ""
+            expense_lines.append(f"   - {fmt_date(e.get('date', ''))}: {fmt_money(abs(e.get('amount', 0)), cur)}{note_str}")
+        expense_lines.append(f"\n📊 Total Other Expenses: {fmt_money(other_total, cur)}")
 
     if inventory_purchase_lines:
         expense_lines.append("\n📦 Inventory Purchase:")
@@ -480,13 +477,12 @@ async def export_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 expense_lines.append(f"   - {fmt_date(h.get('date', ''))}: [{item}] {fmt_money(amt, cur)}")
         expense_lines.append(f"\n📊 Total Handling Fees: {fmt_money(handling_total, cur)}")
     if other_expenses:
-       expense_lines.append("\n• 🧾 Other Expenses")
-       for e in other_expenses:
-           note = e.get('note', '')
-           note_str = f" [{note}]" if note else ""
-           expense_lines.append(f"   - {fmt_date(e.get('date', ''))}: {fmt_money(abs(e.get('amount', 0)), cur)}{note_str}")
-       expense_lines.append(f"\n📊 Total Other Expenses: {fmt_money(other_total, cur)}"))
-
+        expense_lines.append("\n• 🧾 Other Expenses")
+        for e in other_expenses:
+            note = e.get('note', '')
+            note_str = f" [{note}]" if note else ""
+            expense_lines.append(f"   - {fmt_date(e.get('date', ''))}: {fmt_money(abs(e.get('amount', 0)), cur)}{note_str}")
+        expense_lines.append(f"\n📊 Total Other Expenses: {fmt_money(other_total, cur)}")
 
     if inventory_purchase_lines:
         expense_lines.append("\n📦 Inventory Purchase:")
@@ -548,6 +544,7 @@ async def export_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
         units = sum(abs(s.get('quantity', 0)) for s in entries)
         value = sum(abs(s.get('quantity', 0) * s.get('unit_price', s.get('unit_cost', 0))) for s in entries)
         unit_summary.append(f"- [{item_id}] : {units} units, {fmt_money(value, cur)}")
+    total_sales = sum(abs(s.get('quantity', 0) * s.get('unit_price', s.get('unit_cost', 0))) for s in sales)
 
     payment_lines = []
     for p in sorted(payments, key=lambda x: (x.get("date", ""), x.get("timestamp", "")), reverse=True):
