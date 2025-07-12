@@ -122,7 +122,10 @@ async def confirm_new_pin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
     # Now generate salt and initialize DB
-    await update.message.reply_text("⚙️ Setting up secure DB (generating new salt)…")
+    if update.message:
+        await update.message.reply_text("⚙️ Setting up secure DB (generating new salt)…")
+    elif update.callback_query:
+        await update.callback_query.message.reply_text("⚙️ Setting up secure DB (generating new salt)…")
     try:
         subprocess.run(["chmod", "+x", "./setup_secure_db.sh"], check=True)
         subprocess.run(["bash", "./setup_secure_db.sh"], check=True)
@@ -188,23 +191,9 @@ async def auto_lock_task():
                 secure_db.lock()
                 logging.warning("🔒 Auto-lock triggered after inactivity.")
 
-# (Remaining menu logic unchanged from earlier)
+# (Remaining menu logic unchanged)
 # ...
 
-
-# ════════════════════════════════════════════════════════════
-# Auto-lock background task
-# ════════════════════════════════════════════════════════════
-async def auto_lock_task():
-    """Background coroutine to auto-lock DB after 3 min inactivity."""
-    AUTOLOCK_TIMEOUT = 180  # 3 minutes
-    while True:
-        await asyncio.sleep(10)
-        if secure_db.is_unlocked():
-            now = time.monotonic()
-            if now - secure_db.get_last_access() > AUTOLOCK_TIMEOUT:
-                secure_db.lock()
-                logging.warning("🔒 Auto-lock triggered after inactivity.")
 
 # ════════════════════════════════════════════════════════════
 # Main Menu and Nested Submenus
