@@ -9,7 +9,7 @@ import time
 import config
 from secure_db import secure_db, EncryptedJSONStorage
 from tinydb import TinyDB
-from handlers.ledger import seed_tables  # 🌱 Seeding function
+from handlers.ledger import seed_tables  # 🌱 Correct import path for seeding
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     ApplicationBuilder,
@@ -43,10 +43,12 @@ from handlers.reports.customer_report import register_customer_report_handlers
 from handlers.reports.partner_report  import (
     register_partner_report_handlers,
     show_partner_report_menu,
+    save_custom_start,
 )
 from handlers.reports.store_report    import (
     register_store_report_handlers,
     show_store_report_menu,
+    save_custom_start as save_custom_start_store,
 )
 from handlers.reports.owner_report    import register_owner_report_handlers
 
@@ -74,8 +76,10 @@ async def kill_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ════════════════════════════════════════════════════════════
 async def initdb_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Ask for confirmation before resetting DB."""
-    if secure_db.is_unlocked():
-        await update.message.reply_text("🔓 DB is already unlocked. Lock it first before resetting.")
+    if not config.ENABLE_ENCRYPTION:
+        await update.message.reply_text(
+            "❌ Encryption must be enabled to initialize DB. Set ENABLE_ENCRYPTION = True in config.py."
+        )
         return ConversationHandler.END
 
     kb = InlineKeyboardMarkup([
@@ -95,23 +99,24 @@ async def initdb_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
     if os.path.exists(config.DB_PATH):
-        # Require old PIN if DB exists
-        await update.callback_query.edit_message_text("🔑 Enter current DB PIN to confirm reset:")
+        # Require current PIN to reset DB
+        await update.callback_query.edit_message_text("🔑 Enter current DB password (PIN) to confirm:")
         return ENTER_OLD_PIN
-
-    await update.callback_query.edit_message_text("🔑 Enter new DB password (PIN):")
-    return SET_NEW_PIN
+    else:
+        await update.callback_query.edit_message_text("🔑 Set a new DB password (PIN):")
+        return SET_NEW_PIN
 
 async def enter_old_pin(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    pin = update.message.text.strip()
+    """Check old PIN before allowing reset."""
+    old_pin = update.message.text.strip()
     try:
-        secure_db.unlock(pin)
-        secure_db.lock()  # Immediately lock again
-        context.user_data["reset_authorized"] = True
-        await update.message.reply_text("✅ PIN verified. Enter new DB password (PIN):")
+        secure_db.unlock(old_pin)
+        secure_db.lock()
+        await update.message.reply_text("✅ Old PIN verified. Now enter a new PIN for the fresh DB:")
         return SET_NEW_PIN
     except Exception as e:
-        await update.message.reply_text(f"❌ PIN verification failed: {e}")
+        logger.warning(f"Old PIN verification failed: {e}")
+        await update.message.reply_text("❌ Wrong PIN. InitDB cancelled for security.")
         return ConversationHandler.END
 
 async def set_new_pin(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -129,18 +134,17 @@ async def confirm_new_pin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ PINs do not match. Start over with /initdb.")
         return ConversationHandler.END
 
-    # Run setup script with --force-reset
     await update.message.reply_text("⚙️ Setting up secure DB (generating new salt)…")
     try:
         subprocess.run(["chmod", "+x", "./setup_secure_db.sh"], check=True)
-        subprocess.run(["bash", "./setup_secure_db.sh", "--force-reset"], check=True)
+        subprocess.run(["bash", "./setup_secure_db.sh"], check=True)
         logging.info("✅ setup_secure_db.sh executed successfully.")
     except Exception as e:
         logging.error(f"❌ setup_secure_db.sh failed: {e}")
         await update.message.reply_text("❌ Failed to run secure DB setup script.")
         return ConversationHandler.END
 
-    # Encrypt DB with new PIN
+    # Encrypt DB immediately with confirmed PIN
     pin = context.user_data["new_db_pin"]
     secure_db._passphrase = pin.encode('utf-8')
     secure_db.fernet = secure_db._derive_fernet()
@@ -161,31 +165,39 @@ async def confirm_new_pin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     raise SystemExit(0)
 
 # ════════════════════════════════════════════════════════════
-# Unlock command flow
+# Unlock command flow (with wipe warning)
 # ════════════════════════════════════════════════════════════
 async def unlock_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Prompt admin for encryption PIN/key."""
     await update.message.reply_text("🔑 *Enter your encryption PIN to unlock:*", parse_mode="Markdown")
     return UNLOCK_PIN
 
 async def unlock_process(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Attempt to unlock the database with provided PIN."""
     pin = update.message.text.strip()
     try:
         secure_db.unlock(pin)
-        secure_db.mark_activity()  # update last activity
+        secure_db.mark_activity()
         await update.message.reply_text("✅ *Database unlocked successfully!*", parse_mode="Markdown")
-    except Exception as e:
+    except RuntimeError as e:
+        if "wiped" in str(e).lower():
+            await update.message.reply_text(
+                "💣 *Database wiped after too many failed PIN attempts!*",
+                parse_mode="Markdown"
+            )
+        else:
+            attempts_left = max(0, 7 - secure_db.failed_attempts)
+            await update.message.reply_text(
+                f"❌ *Unlock failed:* {e}\n"
+                f"⚠️ Attempts left before wipe: {attempts_left}",
+                parse_mode="Markdown"
+            )
         logging.error(f"Unlock failed: {e}")
-        await update.message.reply_text(f"❌ *Unlock failed:* {e}", parse_mode="Markdown")
     return ConversationHandler.END
 
 # ════════════════════════════════════════════════════════════
 # Auto-lock background task
 # ════════════════════════════════════════════════════════════
 async def auto_lock_task():
-    """Background coroutine to auto-lock DB after 3 min inactivity."""
-    AUTOLOCK_TIMEOUT = 180  # 3 minutes
+    AUTOLOCK_TIMEOUT = 180
     while True:
         await asyncio.sleep(10)
         if secure_db.is_unlocked():
@@ -193,6 +205,10 @@ async def auto_lock_task():
             if now - secure_db.get_last_access() > AUTOLOCK_TIMEOUT:
                 secure_db.lock()
                 logging.warning("🔒 Auto-lock triggered after inactivity.")
+
+# (menus & run_bot unchanged)
+# ...
+
 
 # ════════════════════════════════════════════════════════════
 # Main Menu
