@@ -1,157 +1,142 @@
+import os
 import json
 import base64
-import os
-import time
 import logging
 from tinydb import TinyDB
 from tinydb.storages import JSONStorage
-from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
-from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 from cryptography.fernet import Fernet, InvalidToken
-from cryptography.hazmat.backends import default_backend
 
-import config
+# Config
+DB_FILE = "data/db.json"
+SALT_FILE = "data/kdf_salt.bin"
+MAX_PIN_ATTEMPTS = 7
 
+# Logger
 logger = logging.getLogger("secure_db")
 logger.setLevel(logging.INFO)
 
-# Auto-lock timeout in seconds
-UNLOCK_TIMEOUT = 180  # 3 minutes
-KDF_SALT = bytes.fromhex("e62ee68733a7d9cfdfcc20b2e29c416c")
-
-
 class EncryptedJSONStorage(JSONStorage):
+    """Custom TinyDB storage with encryption."""
     def __init__(self, path, fernet: Fernet, **kwargs):
         super().__init__(path, **kwargs)
         self.fernet = fernet
 
     def read(self):
         try:
-            text = self._handle.read()
-            if not text:
+            raw = self._handle.read()
+            if not raw:
                 logger.warning("📂 DB file is empty, returning {}")
                 return {}
-            token = base64.b64decode(text.encode('utf-8'))
-            data = self.fernet.decrypt(token)
-            logger.info("📥 DB decrypted successfully")
-            return json.loads(data.decode('utf-8'))
-        except FileNotFoundError:
-            logger.warning("📄 DB file not found, starting fresh")
-            return {}
+            token = base64.urlsafe_b64decode(raw.encode())
+            decrypted = self.fernet.decrypt(token)
+            return json.loads(decrypted.decode())
         except InvalidToken:
             logger.error("🔒 Decryption failed: wrong key or unencrypted DB")
-            raise RuntimeError("Failed to decrypt DB. Wrong PIN or unencrypted?")
+            raise
         except Exception as e:
-            logger.exception("❌ Unexpected error while reading DB")
-            raise RuntimeError("Failed to read DB file") from e
+            logger.error(f"❌ Unexpected error while reading DB: {e}")
+            raise
 
     def write(self, data):
-        raw = json.dumps(data).encode('utf-8')
-        token = self.fernet.encrypt(raw)
-        text = base64.b64encode(token).decode('utf-8')
-        self._handle.write(text)
-        logger.info("💾 DB written and encrypted successfully")
-
+        try:
+            json_str = json.dumps(data, separators=(",", ":")).encode()
+            token = self.fernet.encrypt(json_str)
+            encoded = base64.urlsafe_b64encode(token).decode()
+            self._handle.seek(0)
+            self._handle.truncate()
+            self._handle.write(encoded)
+            logger.info("💾 DB written and encrypted successfully")
+        except Exception as e:
+            logger.error(f"❌ Failed to write DB: {e}")
+            raise
 
 class SecureDB:
-    def __init__(self, db_path):
-        self.db_path         = db_path
-        self._passphrase     = None
-        self.fernet          = None
-        self.db              = None
-        self._unlocked       = False
-        self._last_access    = 0
-        self.failed_attempts = 0  # 🔥 Counter for failed unlocks
+    """Handles encryption/decryption and PIN logic for DB."""
+    def __init__(self):
+        self.db = None
+        self.fernet = None
+        self._passphrase = None
+        self._unlocked = False
+        self._failed_attempts = 0
 
-        if not config.ENABLE_ENCRYPTION:
-            self.db = TinyDB(self.db_path, storage=JSONStorage)
-            logger.info("🔓 Encryption disabled: using plaintext DB")
+    def _load_salt(self):
+        if os.path.exists(SALT_FILE):
+            salt = open(SALT_FILE, "rb").read()
+            logger.debug(f"🔑 Loaded existing KDF salt ({len(salt)} bytes)")
+        else:
+            salt = os.urandom(16)
+            open(SALT_FILE, "wb").write(salt)
+            logger.info(f"🔑 Generated new KDF salt and saved to disk")
+        return salt
 
-    def _derive_fernet(self):
-        logger.debug("🔑 Deriving encryption key from passphrase")
-        kdf = PBKDF2HMAC(
-            algorithm=hashes.SHA256(),
+    def _derive_key(self, pin: str) -> Fernet:
+        salt = self._load_salt()
+        kdf = Scrypt(
+            salt=salt,
             length=32,
-            salt=KDF_SALT,
-            iterations=200_000,
-            backend=default_backend()
+            n=2**14,
+            r=8,
+            p=1,
         )
-        key = base64.urlsafe_b64encode(kdf.derive(self._passphrase))
-        return Fernet(key)
+        key = kdf.derive(pin.encode("utf-8"))
+        token = base64.urlsafe_b64encode(key)
+        logger.debug(f"🔑 Derived encryption key from PIN and salt")
+        return Fernet(token)
 
-    def unlock(self, passphrase: str):
-        """Unlock database or trigger security wipe on too many failed attempts."""
-        if not config.ENABLE_ENCRYPTION:
-            logger.info("🔓 Unlock called but encryption disabled")
-            return
+    def unlock(self, pin: str) -> bool:
+        if self._unlocked:
+            logger.info("🔓 Database already unlocked")
+            return True
 
-        # 🔥 Hardened wipe check BEFORE trying PIN
-        if self.failed_attempts >= 7:
-            logger.critical("💣 Too many failed attempts — wiping DB now!")
-            self._wipe_database()
-            raise RuntimeError("Database wiped after too many failed attempts.")
-
-        logger.info("🔑 Attempting to unlock DB")
-        self._passphrase = passphrase.encode('utf-8')
-        self.fernet      = self._derive_fernet()
-
+        self.fernet = self._derive_key(pin)
         try:
             self.db = TinyDB(
-                self.db_path,
-                storage=lambda p: EncryptedJSONStorage(p, self.fernet)
+                DB_FILE,
+                storage=lambda p: EncryptedJSONStorage(p, self.fernet),
             )
-            _ = self.db.tables()  # Trigger decryption
-            self._unlocked = True
-            self._last_access = time.monotonic()
-            self.failed_attempts = 0  # ✅ Reset counter ONLY on success
+            # Test read
+            _ = self.db.all()
             logger.info("✅ Database unlocked successfully")
-        except RuntimeError as e:
-            self.failed_attempts += 1
-            attempts_left = 7 - self.failed_attempts
-            logger.warning(f"❌ Unlock failed ({self.failed_attempts}/7). Attempts left: {attempts_left}")
-            raise RuntimeError(f"Unlock failed: {e}")
+            self._passphrase = pin
+            self._unlocked = True
+            self._failed_attempts = 0
+            return True
+        except InvalidToken:
+            self._failed_attempts += 1
+            logger.warning(
+                f"❌ Unlock failed ({self._failed_attempts}/{MAX_PIN_ATTEMPTS}). "
+                f"Attempts left: {MAX_PIN_ATTEMPTS - self._failed_attempts}"
+            )
+            if self._failed_attempts >= MAX_PIN_ATTEMPTS:
+                logger.critical("☠️ Maximum PIN attempts exceeded. Wiping DB and salt!")
+                self._wipe_db()
+            return False
+        except Exception as e:
+            logger.error(f"❌ Unexpected error while unlocking DB: {e}")
+            return False
 
     def lock(self):
-        if not config.ENABLE_ENCRYPTION:
-            logger.info("🔓 Lock called but encryption disabled")
-            return
-        if self.db:
+        """Lock the DB for inactivity."""
+        if self._unlocked:
             self.db.close()
-        self.db          = None
-        self.fernet      = None
-        self._passphrase = None
-        self._unlocked   = False
-        logger.info("🔒 Database locked")
+            self._unlocked = False
+            logger.info("🔒 Database locked")
 
     def is_unlocked(self) -> bool:
         return self._unlocked
 
-    def get_last_access(self):
-        return self._last_access
+    def _wipe_db(self):
+        """Wipe the DB and salt for security."""
+        if os.path.exists(DB_FILE):
+            os.remove(DB_FILE)
+            logger.warning("🗑️ DB file deleted")
+        if os.path.exists(SALT_FILE):
+            os.remove(SALT_FILE)
+            logger.warning("🗑️ Salt file deleted")
+        self._passphrase = None
+        self._unlocked = False
+        self._failed_attempts = 0
+        logger.critical("💥 Database and salt wiped due to security policy")
 
-    def mark_activity(self):
-        self._last_access = time.monotonic()
-
-    def _wipe_database(self):
-        """Security wipe: delete DB file and reset counter."""
-        try:
-            if os.path.exists(self.db_path):
-                os.remove(self.db_path)
-                logger.critical("💣 Database file wiped after 7 failed unlock attempts!")
-            self.failed_attempts = 0
-            self.lock()
-        except Exception as e:
-            logger.error(f"❌ Error wiping database: {e}")
-            raise
-
-    # Usual TinyDB wrappers...
-    def table(self, name): ...
-    def insert(self, table_name, doc): ...
-    def all(self, table_name): ...
-    def search(self, table_name, query): ...
-    def update(self, table_name, fields, doc_ids): ...
-    def remove(self, table_name, doc_ids): ...
-
-
-# Global instance
-secure_db = SecureDB(config.DB_PATH)
+secure_db = SecureDB()
