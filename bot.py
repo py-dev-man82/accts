@@ -15,18 +15,19 @@ from telegram.ext import (
     CommandHandler,
     ContextTypes,
     MessageHandler,
-    filters
+    filters,
 )
 
 # Core utilities
 from handlers.utils import require_unlock
 
-# Feature modules already in the project
+# Feature modules
 from handlers.customers         import register_customer_handlers,  show_customer_menu
 from handlers.stores            import register_store_handlers,     show_store_menu
 from handlers.partners          import register_partner_handlers,   show_partner_menu
 from handlers.sales             import register_sales_handlers
 from handlers.payments          import register_payment_handlers,   show_payment_menu
+from handlers.expenses          import register_expense_handlers,   show_expense_menu    # <-- Expenses module
 from handlers.payouts           import register_payout_handlers,    show_payout_menu
 from handlers.stockin           import register_stockin_handlers,   show_stockin_menu
 from handlers.partner_sales     import register_partner_sales_handlers, show_partner_sales_menu
@@ -70,14 +71,8 @@ async def kill_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Root menu / back-to-root callback."""
     kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("Customers",     callback_data="customer_menu"),
-         InlineKeyboardButton("Stores",        callback_data="store_menu")],
-        [InlineKeyboardButton("Partners",      callback_data="partner_menu"),
-         InlineKeyboardButton("Sales",         callback_data="sales_menu")],
-        [InlineKeyboardButton("Payments",      callback_data="payment_menu"),
-         InlineKeyboardButton("Payouts",       callback_data="payout_menu")],
-        [InlineKeyboardButton("Stock-In",      callback_data="stockin_menu"),
-         InlineKeyboardButton("Partner Sales", callback_data="partner_sales_menu")],
+        [InlineKeyboardButton("ADD USER",      callback_data="adduser_menu"),
+         InlineKeyboardButton("ADD FINANCIAL", callback_data="addfinancial_menu")],
         [InlineKeyboardButton("👑 Owner",      callback_data="owner_menu"),
          InlineKeyboardButton("📊 Reports",    callback_data="report_menu")],
     ])
@@ -90,6 +85,33 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "Main Menu: choose a section", reply_markup=kb
         )
+
+async def show_adduser_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("Customers", callback_data="customer_menu")],
+        [InlineKeyboardButton("Stores",    callback_data="store_menu")],
+        [InlineKeyboardButton("Partners",  callback_data="partner_menu")],
+        [InlineKeyboardButton("🔙 Back",   callback_data="main_menu")],
+    ])
+    await update.callback_query.edit_message_text(
+        "ADD USER: choose an account type", reply_markup=kb
+    )
+
+async def show_addfinancial_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("Sales",         callback_data="sales_menu")],
+        [InlineKeyboardButton("Payments",      callback_data="payment_menu")],
+        [InlineKeyboardButton("Expenses",      callback_data="expense_menu")],  # <-- Expenses button
+        [InlineKeyboardButton("Payouts",       callback_data="payout_menu")],
+        [InlineKeyboardButton("Stock-In",      callback_data="stockin_menu")],
+        [InlineKeyboardButton("Partner Sales", callback_data="partner_sales_menu")],
+        [InlineKeyboardButton("🔙 Back",       callback_data="main_menu")],
+    ])
+    await update.callback_query.edit_message_text(
+        "ADD FINANCIAL: choose a transaction type", reply_markup=kb
+    )
 
 async def show_report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
@@ -122,23 +144,40 @@ async def run_bot():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(start, pattern="^main_menu$"))
 
+    # Add user/financial submenus
+    app.add_handler(CallbackQueryHandler(show_adduser_menu,      pattern="^adduser_menu$"))
+    app.add_handler(CallbackQueryHandler(show_addfinancial_menu, pattern="^addfinancial_menu$"))
+
     # Reports menu
     app.add_handler(CallbackQueryHandler(show_report_menu, pattern="^report_menu$"))
 
     # Register all feature handlers
     register_customer_handlers(app)
+    app.add_handler(CallbackQueryHandler(show_customer_menu, pattern="^customer_menu$"))
+
     register_store_handlers(app)
+    app.add_handler(CallbackQueryHandler(show_store_menu, pattern="^store_menu$"))
+
     register_partner_handlers(app)
+    app.add_handler(CallbackQueryHandler(show_partner_menu, pattern="^partner_menu$"))
+
     register_sales_handlers(app)
+    app.add_handler(CallbackQueryHandler(show_sales_menu, pattern="^sales_menu$"))
+
     register_payment_handlers(app)
+    app.add_handler(CallbackQueryHandler(show_payment_menu, pattern="^payment_menu$"))
+
+    register_expense_handlers(app)      # <-- Expenses module
+    app.add_handler(CallbackQueryHandler(show_expense_menu, pattern="^expense_menu$"))  # <-- Expenses menu
+
     register_payout_handlers(app)
+    app.add_handler(CallbackQueryHandler(show_payout_menu, pattern="^payout_menu$"))
+
     register_stockin_handlers(app)
     app.add_handler(CallbackQueryHandler(show_stockin_menu, pattern="^stockin_menu$"))
 
     register_partner_sales_handlers(app)
-    app.add_handler(
-        CallbackQueryHandler(show_partner_sales_menu, pattern="^partner_sales_menu$")
-    )
+    app.add_handler(CallbackQueryHandler(show_partner_sales_menu, pattern="^partner_sales_menu$"))
 
     # Reports
     register_customer_report_handlers(app)
@@ -150,7 +189,7 @@ async def run_bot():
     app.add_handler(
         CallbackQueryHandler(show_store_report_menu, pattern="^rep_store$")
     )
-    register_owner_report_handlers(app)   # This now works with your fixed function name!
+    register_owner_report_handlers(app)
 
     # Owner module
     register_owner_handlers(app)
@@ -159,7 +198,6 @@ async def run_bot():
     # --- PATCH: Add these handlers for custom date input in partner and store reports only
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, save_custom_start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, save_custom_start_store))
-    # (No MessageHandler for owner needed!)
 
     # Start polling
     await app.initialize()
