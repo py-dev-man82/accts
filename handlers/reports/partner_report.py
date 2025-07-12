@@ -163,44 +163,7 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     pledger = get_ledger("partner", pid)
 
-    # 🛠️ DEBUG BLOCK
-    if ctx.get("scope", "") == "full":
-        debug_lines = []
-        debug_lines.append("──────────────────────────────")
-        debug_lines.append("🛠️ [DEBUG] Partner Ledger Entries (ALL TYPES, in report period):")
-        # Sales
-        debug_lines.append("Sales:")
-        for e in pledger:
-            if e.get("entry_type") == "sale" and _between(e.get("date", ""), start, end):
-                debug_lines.append(
-                    f"• {e.get('date','')} id:{e.get('account_id')} amt:{e.get('amount')} cur:{e.get('currency')} item:{e.get('item_id')} qty:{e.get('quantity')} price:{e.get('unit_price', e.get('unit_cost', ''))} note:{e.get('note','')}")
-        # Payments
-        debug_lines.append("Payments:")
-        for e in pledger:
-            if e.get("entry_type") == "payment" and _between(e.get("date", ""), start, end):
-                debug_lines.append(
-                    f"• {e.get('date','')} id:{e.get('account_id')} amt:{e.get('amount')} cur:{e.get('currency')} usd:{e.get('usd_amt','')} fx:{e.get('fx_rate','')} fee%:{e.get('fee_perc','')} fee:{e.get('fee_amt','')} note:{e.get('note','')}")
-        # Handling Fees
-        debug_lines.append("Handling Fees:")
-        for e in pledger:
-            if e.get("entry_type") == "handling_fee" and _between(e.get("date", ""), start, end):
-                debug_lines.append(
-                    f"• {e.get('date','')} id:{e.get('account_id')} amt:{e.get('amount')} cur:{e.get('currency')} item:{e.get('item_id')} qty:{e.get('quantity')} price:{e.get('unit_price', '')} note:{e.get('note','')}")
-        # Stock-ins
-        debug_lines.append("Stock-ins:")
-        for e in pledger:
-            if e.get("entry_type") == "stockin" and _between(e.get("date", ""), start, end):
-                debug_lines.append(
-                    f"• {e.get('date','')} id:{e.get('account_id')} item:{e.get('item_id')} qty:{e.get('quantity')} price:{e.get('unit_price', '')} note:{e.get('note','')}")
-        # Expenses
-        debug_lines.append("Expenses:")
-        for e in pledger:
-            if e.get("entry_type") == "expense" and _between(e.get("date", ""), start, end):
-                debug_lines.append(
-                    f"• {e.get('date','')} id:{e.get('account_id')} amt:{e.get('amount')} cur:{e.get('currency')} note:{e.get('note','')}")
-        debug_lines.append("──────────────────────────────")
-    else:
-        debug_lines = []
+    
 
     # SALES (in period, for report lines/units)
     sales = []
