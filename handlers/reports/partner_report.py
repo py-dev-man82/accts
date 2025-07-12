@@ -279,10 +279,13 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 expense_lines.append(f"   - {fmt_date(h.get('date', ''))}: [{item}] {fmt_money(amt, cur)}")
         expense_lines.append(f"\n📊 Total Handling Fees: {fmt_money(handling_total, cur)}")
     if other_expenses:
-        expense_lines.append("\n• 🧾 Other Expenses")
-        for e in other_expenses:
-            expense_lines.append(f"   - {fmt_date(e.get('date', ''))}: {fmt_money(abs(e.get('amount', 0)), cur)}")
-        expense_lines.append(f"\n📊 Total Other Expenses: {fmt_money(other_total, cur)}")
+    expense_lines.append("\n• 🧾 Other Expenses")
+    for e in other_expenses:
+        note = e.get('note', '')
+        note_str = f" [{note}]" if note else ""
+        expense_lines.append(f"   - {fmt_date(e.get('date', ''))}: {fmt_money(abs(e.get('amount', 0)), cur)}{note_str}")
+    expense_lines.append(f"\n📊 Total Other Expenses: {fmt_money(other_total, cur)}")
+)
     if inventory_purchase_lines:
         expense_lines.append("\n📦 Inventory Purchase:")
         expense_lines += inventory_purchase_lines
@@ -474,10 +477,13 @@ async def export_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 expense_lines.append(f"   - {fmt_date(h.get('date', ''))}: [{item}] {fmt_money(amt, cur)}")
         expense_lines.append(f"\n📊 Total Handling Fees: {fmt_money(handling_total, cur)}")
     if other_expenses:
-        expense_lines.append("\n• 🧾 Other Expenses")
-        for e in other_expenses:
-            expense_lines.append(f"   - {fmt_date(e.get('date', ''))}: {fmt_money(abs(e.get('amount', 0)), cur)}")
-        expense_lines.append(f"\n📊 Total Other Expenses: {fmt_money(other_total, cur)}")
+    expense_lines.append("\n• 🧾 Other Expenses")
+    for e in other_expenses:
+        note = e.get('note', '')
+        note_str = f" [{note}]" if note else ""
+        expense_lines.append(f"   - {fmt_date(e.get('date', ''))}: {fmt_money(abs(e.get('amount', 0)), cur)}{note_str}")
+    expense_lines.append(f"\n📊 Total Other Expenses: {fmt_money(other_total, cur)}")
+
     if inventory_purchase_lines:
         expense_lines.append("\n📦 Inventory Purchase:")
         expense_lines += inventory_purchase_lines
