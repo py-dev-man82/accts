@@ -9,7 +9,7 @@ import time
 import config
 from secure_db import secure_db, EncryptedJSONStorage
 from tinydb import TinyDB
-from handlers.ledger import seed_tables
+from handlers.ledger import seed_tables  # 🌱 Correct import path for seeding
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     ApplicationBuilder,
@@ -102,7 +102,6 @@ async def initdb_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.callback_query.edit_message_text("❌ InitDB cancelled.")
         return ConversationHandler.END
 
-    context.user_data["old_pin_attempts"] = 0
     if secure_db.has_pin():
         await update.callback_query.edit_message_text("🔒 Enter current DB password (PIN) to reset:")
         return ENTER_OLD_PIN
@@ -112,24 +111,15 @@ async def initdb_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def enter_old_pin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pin = update.message.text.strip()
-    context.user_data["old_pin_attempts"] = context.user_data.get("old_pin_attempts", 0)
     try:
-        if not secure_db.unlock(pin):
-            raise Exception("Wrong PIN")
+        secure_db.unlock(pin)
         secure_db.lock()
         context.user_data["old_db_pin"] = pin
-        context.user_data["old_pin_attempts"] = 0
         await update.message.reply_text("🔑 Current PIN accepted. Enter new DB password (PIN):")
         return SET_NEW_PIN
     except Exception:
-        context.user_data["old_pin_attempts"] += 1
-        attempts = context.user_data["old_pin_attempts"]
-        left = secure_db.MAX_PIN_ATTEMPTS - attempts
-        if attempts >= secure_db.MAX_PIN_ATTEMPTS:
-            await update.message.reply_text("☠️ 7 failed PIN attempts. DB and salt wiped for security.")
-            return ConversationHandler.END
-        await update.message.reply_text(f"❌ Wrong PIN. Attempts left: {left}\n\nPlease enter the current PIN:")
-        return ENTER_OLD_PIN
+        await update.message.reply_text("❌ Wrong PIN. InitDB aborted.")
+        return ConversationHandler.END
 
 async def set_new_pin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pin = update.message.text.strip()
@@ -162,7 +152,7 @@ async def confirm_new_pin(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     pin = context.user_data["new_db_pin"]
     secure_db._passphrase = pin.encode('utf-8')
-    secure_db.fernet = secure_db._derive_key(pin)
+    secure_db.fernet = secure_db._derive_fernet()
     secure_db.db = TinyDB(
         config.DB_PATH,
         storage=lambda p: EncryptedJSONStorage(p, secure_db.fernet)
@@ -180,32 +170,38 @@ async def confirm_new_pin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     raise SystemExit(0)
 
 # ════════════════════════════════════════════════════════════
-# Unlock command flow with retry up to MAX_PIN_ATTEMPTS
+# Unlock command flow
 # ════════════════════════════════════════════════════════════
 async def unlock_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["unlock_attempts"] = 0
-    if update.message:
+    if hasattr(update, 'message') and update.message:
         await update.message.reply_text("🔑 *Enter your encryption PIN to unlock:*", parse_mode="Markdown")
-    elif update.callback_query:
+    elif hasattr(update, 'callback_query') and update.callback_query:
         await update.callback_query.edit_message_text("🔑 *Enter your encryption PIN to unlock:*", parse_mode="Markdown")
     return UNLOCK_PIN
 
 async def unlock_process(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pin = update.message.text.strip()
-    context.user_data["unlock_attempts"] = context.user_data.get("unlock_attempts", 0)
-    if secure_db.unlock(pin):
+    success = secure_db.unlock(pin)
+    if success:
+        # Optionally, call secure_db.mark_activity() if needed
         await update.message.reply_text("✅ *Database unlocked successfully!*", parse_mode="Markdown")
-        context.user_data["unlock_attempts"] = 0
         return ConversationHandler.END
     else:
-        context.user_data["unlock_attempts"] += 1
-        attempts = context.user_data["unlock_attempts"]
-        left = secure_db.MAX_PIN_ATTEMPTS - attempts
-        if attempts >= secure_db.MAX_PIN_ATTEMPTS:
-            await update.message.reply_text("☠️ 7 failed PIN attempts. DB and salt wiped for security.")
+        attempts = getattr(secure_db, "_failed_attempts", 0)
+        left = max(0, getattr(secure_db, "MAX_PIN_ATTEMPTS", 7) - attempts)
+        if left > 0:
+            await update.message.reply_text(
+                f"❌ *Unlock failed.* Attempts left: {left}\nTry again:",
+                parse_mode="Markdown"
+            )
+            return UNLOCK_PIN
+        else:
+            await update.message.reply_text(
+                "☠️ *Too many wrong attempts. DB wiped for security.*",
+                parse_mode="Markdown"
+            )
             return ConversationHandler.END
-        await update.message.reply_text(f"❌ Unlock failed. Attempts left: {left}\n\nPlease try again:")
-        return UNLOCK_PIN
 
 # ════════════════════════════════════════════════════════════
 # Auto-lock background task
@@ -216,23 +212,23 @@ async def auto_lock_task():
         await asyncio.sleep(10)
         if secure_db.is_unlocked():
             now = time.monotonic()
-            if hasattr(secure_db, "get_last_access") and secure_db.get_last_access:
-                try:
-                    if now - secure_db.get_last_access() > AUTOLOCK_TIMEOUT:
-                        secure_db.lock()
-                        logging.warning("🔒 Auto-lock triggered after inactivity.")
-                except Exception:
-                    pass
+            try:
+                last = secure_db.get_last_access()
+            except AttributeError:
+                last = now  # fallback for old secure_db
+            if now - last > AUTOLOCK_TIMEOUT:
+                secure_db.lock()
+                logging.warning("🔒 Auto-lock triggered after inactivity.")
 
 # ════════════════════════════════════════════════════════════
 # Main Menu and Nested Submenus
 # ════════════════════════════════════════════════════════════
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Main menu with DB status indicator and unlock/initdb buttons."""
+    """Main menu with DB status indicator and unlock/initdb shortcuts."""
     if not os.path.exists(config.DB_PATH):
         status_icon = "📂 No DB found: run /initdb"
         kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔑 InitDB", callback_data="initdb_button")],
+            [InlineKeyboardButton("⚡️ InitDB", callback_data="initdb_menu")]
         ])
     elif secure_db.is_unlocked():
         status_icon = "🔓 Unlocked"
@@ -245,12 +241,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         status_icon = "🔒 Locked"
         kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔓 Unlock", callback_data="unlock_button")],
-            [InlineKeyboardButton("ADD USER", callback_data="adduser_menu"),
-             InlineKeyboardButton("ADD FINANCIAL", callback_data="addfinancial_menu")],
-            [InlineKeyboardButton("👑 Owner", callback_data="owner_menu"),
-             InlineKeyboardButton("📊 Reports", callback_data="report_menu")],
+            [InlineKeyboardButton("🔓 Unlock DB", callback_data="unlock_button")],
+            [InlineKeyboardButton("⚡️ InitDB", callback_data="initdb_menu")],
         ])
+
     text = f"Main Menu: choose a section\n\nStatus: *{status_icon}*"
     if update.callback_query:
         await update.callback_query.answer()
@@ -261,17 +255,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             text, reply_markup=kb, parse_mode="Markdown"
         )
-
-# Optional: Handle main menu unlock/initdb buttons
-async def menu_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    qd = update.callback_query.data
-    await update.callback_query.answer()
-    if qd == "unlock_button":
-        # Call unlock_start with the callbackquery as the update
-        return await unlock_start(update, context)
-    elif qd == "initdb_button":
-        return await initdb_start(update, context)
-
 
 async def show_adduser_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
@@ -322,12 +305,10 @@ async def run_bot():
     app.add_handler(CommandHandler("restart", restart_bot))
     app.add_handler(CommandHandler("kill",    kill_bot))
 
-    # Menu button short-cuts
-    app.add_handler(CallbackQueryHandler(menu_button_handler, pattern="^(unlock_button|initdb_button)$"))
-
     # InitDB handler
     app.add_handler(ConversationHandler(
-        entry_points=[CommandHandler("initdb", initdb_start)],
+        entry_points=[CommandHandler("initdb", initdb_start),
+                      CallbackQueryHandler(initdb_start, pattern="^initdb_menu$")],
         states={
             CONFIRM_INITDB: [CallbackQueryHandler(initdb_confirm)],
             ENTER_OLD_PIN:  [MessageHandler(filters.TEXT & ~filters.COMMAND, enter_old_pin)],
@@ -337,9 +318,12 @@ async def run_bot():
         fallbacks=[],
     ))
 
-    # Unlock handler
+    # Unlock handler (handles both /unlock and menu button)
     app.add_handler(ConversationHandler(
-        entry_points=[CommandHandler("unlock", unlock_start)],
+        entry_points=[
+            CommandHandler("unlock", unlock_start),
+            CallbackQueryHandler(unlock_start, pattern="^unlock_button$"),
+        ],
         states={UNLOCK_PIN: [MessageHandler(filters.TEXT & ~filters.COMMAND, unlock_process)]},
         fallbacks=[],
     ))
