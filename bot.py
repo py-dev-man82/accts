@@ -9,6 +9,7 @@ import time
 import config
 from secure_db import secure_db, EncryptedJSONStorage
 from tinydb import TinyDB
+from ledger import seed_tables  # 🌱 Import seeding function
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     ApplicationBuilder,
@@ -162,7 +163,11 @@ async def confirm_new_pin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         config.DB_PATH,
         storage=lambda p: EncryptedJSONStorage(p, secure_db.fernet)
     )
-    secure_db.lock()  # Lock after creating
+
+    # 🌱 Seed initial tables
+    seed_tables(secure_db)
+
+    secure_db.lock()  # Lock after seeding
 
     await update.message.reply_text(
         "✅ New PIN set and DB encrypted successfully.\n"
@@ -197,7 +202,7 @@ async def auto_lock_task():
     """Background coroutine to auto-lock DB after 3 min inactivity."""
     AUTOLOCK_TIMEOUT = 180  # 3 minutes
     while True:
-        await asyncio.sleep(10)  # check every 10 seconds
+        await asyncio.sleep(10)
         if secure_db.is_unlocked():
             now = time.monotonic()
             if now - secure_db.get_last_access() > AUTOLOCK_TIMEOUT:
