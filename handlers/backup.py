@@ -183,7 +183,8 @@ async def restore_receive(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     with tempfile.TemporaryDirectory() as tmpdir:
         file_path = os.path.join(tmpdir, doc.file_name)
-        await doc.get_file().download_to_drive(file_path)
+        file = await doc.get_file()
+        await file.download_to_drive(file_path)
         try:
             with ZipFile(file_path, "r") as zf:
                 names = zf.namelist()
