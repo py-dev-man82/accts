@@ -171,6 +171,7 @@ async def restore_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return RESTORE_WAITING
 
 async def restore_receive(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    print("[DEBUG] restore_receive called")
     if not is_admin(update):
         await update.message.reply_text("❌ You are not authorized to restore.")
         return ConversationHandler.END
