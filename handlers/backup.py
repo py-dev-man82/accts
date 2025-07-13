@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 import asyncio
 
 from telegram import (
-    Update, InlineKeyboardButton, InlineKeyboardMarkup
+    Update, InlineKeyboardButton, InlineKeyboardMarkup, InputFile
 )
 from telegram.ext import (
     CommandHandler,
@@ -261,14 +261,12 @@ async def backup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await _reply(
             update,
-            "🗄️ Backup created, but failed to get Nextcloud public share link. (Manual download only)."
+            f"🗄️ Backup created and uploaded to Nextcloud as: <code>{os.path.basename(backup_file)}</code>\n"
+            f"To restore, use the server restore option and select this file.",
+            parse_mode="HTML"
         )
     if os.path.exists(BACKUP_TMP):
         os.remove(BACKUP_TMP)
-
-# (Rest of file unchanged -- auto-backup, restore, etc. remains as before)
-# You do NOT send the backup to Telegram ever in manual backup now.
-
 
 # ──────────────────────────────
 # Restore (upload backup zip, txt, dbk, bin, etc.)
