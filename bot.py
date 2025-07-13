@@ -40,18 +40,24 @@ from handlers.stockin           import register_stockin_handlers,   show_stockin
 from handlers.partner_sales     import register_partner_sales_handlers, show_partner_sales_menu
 
 # Reports
-from handlers.reports.customer_report import register_customer_report_handlers
-from handlers.reports.partner_report  import (
+from handlers.reports.customer_report import (
+    register_customer_report_handlers,
+    show_customer_report_menu,
+)
+from handlers.reports.partner_report import (
     register_partner_report_handlers,
     show_partner_report_menu,
     save_custom_start,
 )
-from handlers.reports.store_report    import (
+from handlers.reports.store_report import (
     register_store_report_handlers,
     show_store_report_menu,
     save_custom_start as save_custom_start_store,
 )
-from handlers.reports.owner_report    import register_owner_report_handlers
+from handlers.reports.owner_report import (
+    register_owner_report_handlers,
+    show_owner_report_menu,
+)
 
 # Owner module
 from handlers.owner import register_owner_handlers, show_owner_menu
@@ -365,13 +371,17 @@ async def run_bot():
     register_owner_handlers(app)
     app.add_handler(CallbackQueryHandler(show_owner_menu, pattern="^owner_menu$"))
 
-    # Reports
+    # ── Reports ──────────────────────────────────────────────────────────
     register_customer_report_handlers(app)
     register_partner_report_handlers(app)
-    app.add_handler(CallbackQueryHandler(show_partner_report_menu, pattern="^rep_part$"))
     register_store_report_handlers(app)
-    app.add_handler(CallbackQueryHandler(show_store_report_menu, pattern="^rep_store$"))
     register_owner_report_handlers(app)
+
+# Top-level “Reports” menu buttons
+    app.add_handler(CallbackQueryHandler(show_customer_report_menu, pattern="^rep_cust$"))
+    app.add_handler(CallbackQueryHandler(show_partner_report_menu,  pattern="^rep_part$"))
+    app.add_handler(CallbackQueryHandler(show_store_report_menu,    pattern="^rep_store$"))
+    app.add_handler(CallbackQueryHandler(show_owner_report_menu,    pattern="^rep_owner$"))
 
     # Start polling and background auto-lock
     asyncio.create_task(auto_lock_task())
