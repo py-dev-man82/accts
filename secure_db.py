@@ -24,7 +24,12 @@ class EncryptedJSONStorage(JSONStorage):
     def read(self):
         logger.info("READ CALLED")
         try:
-            raw = self._handle.read()
+            # Always open the file for reading
+            if not os.path.exists(self._path):
+                logger.warning("📂 DB file does not exist, returning {}")
+                return {}
+            with open(self._path, "r", encoding="utf-8") as f:
+                raw = f.read()
             if not raw:
                 logger.warning("📂 DB file is empty, returning {}")
                 return {}
@@ -44,10 +49,12 @@ class EncryptedJSONStorage(JSONStorage):
             json_str = json.dumps(data, separators=(",", ":")).encode()
             token = self.fernet.encrypt(json_str)
             encoded = base64.urlsafe_b64encode(token).decode()
-            self._handle.seek(0)
-            self._handle.truncate()
-            self._handle.write(encoded)
-            self._handle.flush()
+            # Always open the file for writing
+            with open(self._path, "w", encoding="utf-8") as f:
+                f.seek(0)
+                f.truncate()
+                f.write(encoded)
+                f.flush()
             logger.info("💾 DB written and encrypted successfully")
         except Exception as e:
             logger.error(f"❌ Failed to write DB: {e}")
