@@ -351,7 +351,8 @@ async def run_bot():
     app.add_handler(CallbackQueryHandler(show_stockin_menu, pattern="^stockin_menu$"))
     register_partner_sales_handlers(app)
     app.add_handler(CallbackQueryHandler(show_partner_sales_menu, pattern="^partner_sales_menu$"))
-
+    register_owner_handlers(app)
+    app.add_handler(CallbackQueryHandler(show_owner_menu, pattern="^owner_menu$"))
     # Reports
     register_customer_report_handlers(app)
     register_partner_report_handlers(app)
@@ -359,7 +360,7 @@ async def run_bot():
     register_store_report_handlers(app)
     app.add_handler(CallbackQueryHandler(show_store_report_menu, pattern="^rep_store$"))
     register_owner_report_handlers(app)
-    app.add_handler(CallbackQueryHandler(show_owner_menu, pattern="^owner_menu$"))
+  
 
     # Start polling and background auto-lock
     asyncio.create_task(auto_lock_task())
