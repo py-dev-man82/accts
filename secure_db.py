@@ -77,7 +77,7 @@ class SecureDB:
             )
         salt = open(SALT_FILE, "rb").read()
         logger.debug(f"🔑 Loaded existing KDF salt ({len(salt)} bytes)")
-        return saltt
+        return salt
 
     def _derive_key(self, pin: str) -> Fernet:
         salt = self._load_salt()
