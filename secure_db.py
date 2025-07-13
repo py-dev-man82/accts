@@ -186,10 +186,6 @@ class SecureDB:
         self.ensure_unlocked()
         return self.db.table(table).get(cond)
 
-    def table(self, name):
-        self.ensure_unlocked()
-        return self.db.table(name)
-
     def ensure_unlocked(self):
         if not self._unlocked:
             raise RuntimeError("🔒 Database is locked. Unlock it first.")
