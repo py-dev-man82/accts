@@ -1,4 +1,5 @@
 # handlers/owner.py
+
 import logging
 from datetime import datetime
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -8,10 +9,18 @@ from telegram.ext import (
     ContextTypes,
     MessageHandler,
     filters,
+    Application,
 )
 from secure_db import secure_db
 from handlers.utils import require_unlock
 from handlers.ledger import add_ledger_entry, get_balance
+
+# --- Import backup/restore actions from your backup module ---
+from handlers.backup import (
+    backup_command,
+    backups_command,
+    restore_command,
+)
 
 (
     O_POT_ACTION,
@@ -21,17 +30,44 @@ from handlers.ledger import add_ledger_entry, get_balance
 ) = range(4)
 
 # ────────────────────────────────────────────────
-# Owner Main Menu (POT only)
+# Owner Main Menu (now with nested Backup/Restore)
 # ────────────────────────────────────────────────
 async def show_owner_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
-    kb = InlineKeyboardMarkup(
-        [
-            [InlineKeyboardButton("🏦 Adjust POT Balance",callback_data="owner_adjust_pot")],
-            [InlineKeyboardButton("🔙 Back to Main Menu", callback_data="main_menu")],
-        ]
-    )
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🏦 Adjust POT Balance", callback_data="owner_adjust_pot")],
+        [InlineKeyboardButton("🛡️ Backup/Restore", callback_data="backup_menu")],
+        [InlineKeyboardButton("🔙 Back to Main Menu", callback_data="main_menu")],
+    ])
     await update.callback_query.edit_message_text("👑 Owner: choose an action", reply_markup=kb)
+
+# ────────────────────────────────────────────────
+# Backup/Restore Submenu
+# ────────────────────────────────────────────────
+async def show_backup_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🗄️ Backup Now", callback_data="backup_now")],
+        [InlineKeyboardButton("🗄️ Restore Server Backup", callback_data="backup_list")],
+        [InlineKeyboardButton("♻️ Restore From File", callback_data="backup_restore")],
+        [InlineKeyboardButton("🔙 Back", callback_data="owner_menu")],
+    ])
+    await update.callback_query.edit_message_text(
+        "🛡️ Backup & Restore:\nChoose an action.", reply_markup=kb
+    )
+
+# --- Handle Backup/Restore submenu button clicks ---
+async def handle_backup_menu_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    data = query.data
+    if data == "backup_now":
+        await backup_command(update, context)
+    elif data == "backup_list":
+        await backups_command(update, context)
+    elif data == "backup_restore":
+        await restore_command(update, context)
+    else:
+        await query.answer("Unknown action.", show_alert=True)
 
 # ════════════════════════════════════════════════
 # Adjust POT Balance flow (all in ledger)
@@ -143,9 +179,13 @@ async def save_pot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.pop("pot_old_balance", None)
     return ConversationHandler.END
 
+# --- Registration for all owner menu logic, including nested backup/restore ---
 def register_owner_handlers(app):
     app.add_handler(CallbackQueryHandler(show_owner_menu, pattern="^owner_menu$"))
     app.add_handler(CallbackQueryHandler(adjust_pot_balance, pattern="^owner_adjust_pot$"))
-    app.add_handler(CallbackQueryHandler(get_pot_amount, pattern="^pot_add|^pot_subtract|^pot_set$"))
+    app.add_handler(CallbackQueryHandler(get_pot_amount, pattern="^pot_add$|^pot_subtract$|^pot_set$"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, get_pot_note))
-    app.add_handler(CallbackQueryHandler(save_pot, pattern="^pot_conf_yes|^pot_conf_no$"))
+    app.add_handler(CallbackQueryHandler(save_pot, pattern="^pot_conf_yes$|^pot_conf_no$"))
+    # Backup/Restore menu handlers
+    app.add_handler(CallbackQueryHandler(show_backup_menu, pattern="^backup_menu$"))
+    app.add_handler(CallbackQueryHandler(handle_backup_menu_button, pattern="^(backup_now|backup_list|backup_restore)$"))
