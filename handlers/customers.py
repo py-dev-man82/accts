@@ -1,344 +1,399 @@
-# handlers/customers.py
-
 import logging
+from datetime import datetime, timedelta
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     ConversationHandler,
     CallbackQueryHandler,
     MessageHandler,
-    CommandHandler,
     filters,
     ContextTypes,
 )
-from datetime import datetime
-from tinydb import Query
-
-from handlers.utils import require_unlock
 from secure_db import secure_db
+from handlers.utils import require_unlock, fmt_money, fmt_date
+from handlers.ledger import get_ledger
 
-# State constants for the customer flow
+def _reset_customer_report_state(context):
+    for k in ['customer_id', 'start_date', 'end_date', 'page', 'scope']:
+        context.user_data.pop(k, None)
+
+async def _goto_main_menu(update, context):
+    _reset_customer_report_state(context)
+    from bot import start
+    return await start(update, context)
+
 (
-    C_NAME,
-    C_CUR,
-    C_TYPE,
-    C_CONFIRM,
-    C_EDIT_SELECT,
-    C_EDIT_NAME,
-    C_EDIT_CUR,
-    C_EDIT_TYPE,
-    C_EDIT_CONFIRM,
-    C_DELETE_SELECT,
-    C_DELETE_CONFIRM,
-) = range(11)
+    CUST_SELECT,
+    DATE_RANGE_SELECT,
+    CUSTOM_DATE_INPUT,
+    REPORT_SCOPE_SELECT,
+    REPORT_PAGE,
+) = range(5)
 
-CUSTOMER_TYPE_LABELS = {
-    "general": "General",
-    "partner": "Partner",
-    "store_customer": "Store Customer",
-}
+_PAGE_SIZE = 8
 
-# --- Submenu for Customer Management ---
-async def show_customer_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logging.info("Showing customer submenu")
-    if update.callback_query:
+@require_unlock
+async def show_customer_report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    _reset_customer_report_state(context)
+    logging.info("show_customer_report_menu called")
+    customers = [
+        c for c in secure_db.all("customers")
+        if c.get("type", "general") == "general"
+    ]
+    if not customers:
         await update.callback_query.answer()
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("➕ Add Customer",     callback_data="add_customer")],
-            [InlineKeyboardButton("👀 View Customers",  callback_data="view_customer")],
-            [InlineKeyboardButton("✏️ Edit Customer",   callback_data="edit_customer")],
-            [InlineKeyboardButton("🗑️ Remove Customer", callback_data="remove_customer")],
-            [InlineKeyboardButton("🔙 Back to Main Menu", callback_data="main_menu")],
+        await update.callback_query.edit_message_text(
+            "⚠️ No general customers found.",
+            reply_markup=InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("🔙 Back", callback_data="customer_report_menu"),
+                    InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu"),
+                ]
+            ])
+        )
+        return ConversationHandler.END
+
+    buttons = [
+        InlineKeyboardButton(f"{c['name']} ({c['currency']})", callback_data=f"custrep_{c.doc_id}")
+        for c in customers
+    ]
+    grid = [buttons[i:i+2] for i in range(0, len(buttons), 2)]
+    grid.append([
+        InlineKeyboardButton("🔙 Back", callback_data="customer_report_menu"),
+        InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu"),
+    ])
+
+    await update.callback_query.answer()
+    await update.callback_query.edit_message_text(
+        "📄 Select a general customer to view report:",
+        reply_markup=InlineKeyboardMarkup(grid)
+    )
+    return CUST_SELECT
+
+async def select_date_range(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logging.info("select_date_range: %s", update.callback_query.data)
+    await update.callback_query.answer()
+    cid = int(update.callback_query.data.split("_")[-1])
+    context.user_data["customer_id"] = cid
+
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📅 Weekly (Last 7 days)", callback_data="daterange_weekly")],
+        [InlineKeyboardButton("📆 Custom Range", callback_data="daterange_custom")],
+        [
+            InlineKeyboardButton("🔙 Back", callback_data="customer_report_menu"),
+            InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu"),
+        ],
+    ])
+    await update.callback_query.edit_message_text(
+        "Choose date range:", reply_markup=kb
+    )
+    return DATE_RANGE_SELECT
+
+async def get_custom_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logging.info("get_custom_date")
+    await update.callback_query.answer()
+    await update.callback_query.edit_message_text(
+        "📅 Enter start date (DDMMYYYY):",
+        reply_markup=InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("🔙 Back", callback_data="customer_report_menu"),
+                InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu"),
+            ]
         ])
-        await update.callback_query.edit_message_text(
-            "Customer Management: choose an action",
-            reply_markup=kb
-        )
+    )
+    return CUSTOM_DATE_INPUT
 
-# --- Add Customer Flow ---
-@require_unlock
-async def add_customer(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logging.info("Start add_customer")
-    if update.callback_query:
+async def save_custom_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logging.info("save_custom_date: %s", update.message.text)
+    text = update.message.text.strip()
+    try:
+        start_date = datetime.strptime(text, "%d%m%Y")
+    except ValueError:
+        await update.message.reply_text("❌ Invalid format. Enter date as DDMMYYYY.")
+        return CUSTOM_DATE_INPUT
+
+    context.user_data["start_date"] = start_date
+    context.user_data["end_date"] = datetime.now()
+    return await choose_report_scope(update, context)
+
+async def choose_report_scope(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    data = None
+    if getattr(update, "callback_query", None):
         await update.callback_query.answer()
-        await update.callback_query.edit_message_text("Enter new customer name:")
+        data = update.callback_query.data
+    elif getattr(update, "message", None):
+        data = "custom_date_message"
+
+    logging.info("choose_report_scope: %s", data)
+
+    if data == "daterange_weekly":
+        context.user_data["start_date"] = datetime.now() - timedelta(days=7)
+        context.user_data["end_date"] = datetime.now()
+    elif data == "daterange_custom":
+        return await get_custom_date(update, context)
+
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📝 Full Report", callback_data="scope_full")],
+        [InlineKeyboardButton("🛒 Sales Only", callback_data="scope_sales")],
+        [InlineKeyboardButton("💵 Payments Only", callback_data="scope_payments")],
+        [
+            InlineKeyboardButton("🔙 Back", callback_data="customer_report_menu"),
+            InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu"),
+        ],
+    ])
+    if getattr(update, "callback_query", None):
+        await update.callback_query.edit_message_text("Choose report scope:", reply_markup=kb)
     else:
-        await update.message.reply_text("Enter new customer name:")
-    return C_NAME
+        await update.message.reply_text("Choose report scope:", reply_markup=kb)
+    return REPORT_SCOPE_SELECT
 
-async def get_customer_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logging.info("Received customer name: %s", update.message.text)
-    context.user_data['customer_name'] = update.message.text.strip()
-    await update.message.reply_text("Enter currency code for this customer (e.g. USD):")
-    return C_CUR
+def _paginate(items, page):
+    start = page * _PAGE_SIZE
+    return items[start:start + _PAGE_SIZE], len(items)
 
-async def get_customer_currency(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logging.info("Received currency: %s", update.message.text)
-    context.user_data['customer_currency'] = update.message.text.strip().upper()
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("General", callback_data="ctype_general")],
-        [InlineKeyboardButton("Partner", callback_data="ctype_partner")],
-        [InlineKeyboardButton("Store Customer", callback_data="ctype_store_customer")],
-    ])
-    await update.message.reply_text(
-        "Select customer type:",
-        reply_markup=kb
-    )
-    return C_TYPE
-
-async def get_customer_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logging.info("Selected customer type: %s", update.callback_query.data)
-    await update.callback_query.answer()
-    ctype = update.callback_query.data.split("_", 1)[1]
-    context.user_data['customer_type'] = ctype
-    label = CUSTOMER_TYPE_LABELS.get(ctype, ctype)
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ Yes", callback_data="cust_yes"),
-         InlineKeyboardButton("❌ No",  callback_data="cust_no")],
-    ])
-    await update.callback_query.edit_message_text(
-        f"Name: {context.user_data['customer_name']}\n"
-        f"Currency: {context.user_data['customer_currency']}\n"
-        f"Type: {label}\nSave?",
-        reply_markup=kb
-    )
-    return C_CONFIRM
+def _filter_ledger(entries, start_date, end_date):
+    out = []
+    for e in entries:
+        try:
+            d = datetime.strptime(e["date"], "%d%m%Y")
+        except Exception:
+            continue
+        if start_date <= d <= end_date:
+            out.append(e)
+    return out
 
 @require_unlock
-async def confirm_customer(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logging.info("Confirm add_customer: %s", update.callback_query.data)
+async def show_customer_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logging.info("show_customer_report: page=%s scope=%s", context.user_data.get("page"), context.user_data.get("scope"))
     await update.callback_query.answer()
-    if update.callback_query.data == 'cust_yes':
-        secure_db.insert('customers', {
-            'name':       context.user_data['customer_name'],
-            'currency':   context.user_data['customer_currency'],
-            'type':       context.user_data['customer_type'],
-            'created_at': datetime.utcnow().isoformat()
-        })
-        await update.callback_query.edit_message_text(
-            f"✅ Customer '{context.user_data['customer_name']}' added.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="customer_menu")]])
-        )
-    else:
-        await show_customer_menu(update, context)
-    return ConversationHandler.END
+    scope = update.callback_query.data.split("_")[-1]
+    context.user_data["scope"] = scope
+    context.user_data.setdefault("page", 0)
 
-# --- View Customers Flow ---
-async def view_customers(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logging.info("View customers")
-    await update.callback_query.answer()
-    rows = secure_db.all('customers')
-    if not rows:
-        text = "No customers found."
-    else:
-        lines = [
-            f"• [{r.doc_id}] {r['name']} ({r['currency']}) - {CUSTOMER_TYPE_LABELS.get(r.get('type', 'general'))}"
-            for r in rows
-        ]
-        text = "Customers:\n" + "\n".join(lines)
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="customer_menu")]])
-    await update.callback_query.edit_message_text(text, reply_markup=kb)
+    cid = context.user_data["customer_id"]
+    start_date = context.user_data["start_date"]
+    end_date = context.user_data["end_date"]
+    page = context.user_data["page"]
+    customer = secure_db.table("customers").get(doc_id=cid)
+    currency = customer['currency']
 
-# --- Edit Customer Flow ---
-@require_unlock
-async def edit_customer(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logging.info("Start edit_customer")
-    await update.callback_query.answer()
-    rows = secure_db.all('customers')
-    if not rows:
-        await update.callback_query.edit_message_text(
-            "No customers to edit.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="customer_menu")]])
-        )
-        return ConversationHandler.END
+    # Pull both customer and general ledger entries for all-time balance
+    ledger_entries_all = get_ledger("customer", cid) + get_ledger("general", cid)
+    # For current date-range sales/payments display
+    filtered_entries = _filter_ledger(ledger_entries_all, start_date, end_date)
+    sales = [e for e in filtered_entries if e["entry_type"] == "sale"]
+    payments = [e for e in filtered_entries if e["entry_type"] == "payment"]
 
-    buttons = [
-        InlineKeyboardButton(f"{r['name']} ({r['currency']}) - {CUSTOMER_TYPE_LABELS.get(r.get('type', 'general'))}", callback_data=f"edit_customer_{r.doc_id}")
-        for r in rows
+    total_sales = sum(-e["amount"] for e in sales)
+    total_payments_local = sum(e["amount"] for e in payments)
+
+    sales_page, sales_count = _paginate(sales, page) if scope in ["full", "sales"] else ([], 0)
+    payments_page, payments_count = _paginate(payments, page) if scope in ["full", "payments"] else ([], 0)
+
+    # All-time balance, using both customer and general ledgers
+    balance = sum(e["amount"] for e in ledger_entries_all)
+
+    lines = [
+        f"📄 *Report — {customer['name']}*",
+        f"Period: {fmt_date(start_date.strftime('%d%m%Y'))} → {fmt_date(end_date.strftime('%d%m%Y'))}",
+        f"Currency: {currency}\n"
     ]
-    kb = InlineKeyboardMarkup([buttons[i:i+2] for i in range(0, len(buttons), 2)])
-    await update.callback_query.edit_message_text("Select a customer to edit:", reply_markup=kb)
-    return C_EDIT_SELECT
 
-async def get_edit_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logging.info("get_edit_selection: %s", update.callback_query.data)
-    await update.callback_query.answer()
-    parts = update.callback_query.data.rsplit("_", 1)
-    if len(parts) != 2 or not parts[1].isdigit():
-        return await show_customer_menu(update, context)
-    cid = int(parts[1])
-    rec = secure_db.table('customers').get(doc_id=cid)
-    if not rec:
-        return await show_customer_menu(update, context)
-    context.user_data['edit_cust'] = rec
-    await update.callback_query.edit_message_text("Enter the new customer name:")
-    return C_EDIT_NAME
+    if scope in ["full", "sales"]:
+        lines.append("🛒 *Sales*")
+        if sales_page:
+            for s in sales_page:
+                qty = s.get("quantity", 1)
+                price = s.get("unit_price", 0)
+                total_val = qty * price
+                lines.append(
+                    f"• {fmt_date(s['date'])}: {qty} × {fmt_money(price, currency)} = {fmt_money(total_val, currency)}"
+                )
+        else:
+            lines.append("  (No sales on this page)")
+        if page == 0:
+            lines.append(f"📊 *Total Sales:* {fmt_money(total_sales, currency)}")
 
-async def get_edit_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logging.info("get_edit_name: %s", update.message.text)
-    context.user_data['new_name'] = update.message.text.strip()
-    await update.message.reply_text("Enter the new currency code:")
-    return C_EDIT_CUR
+    if scope in ["full", "payments"]:
+        lines.append("\n💵 *Payments*")
+        if payments_page:
+            for p in payments_page:
+                fee_perc = p.get('fee_perc', 0)
+                fx = p.get('fx_rate', 0)
+                inv_fx = 1 / fx if fx else 0
+                usd_amt = p.get('usd_amt', 0)
+                line = (
+                    f"• {fmt_date(p['date'])}: {fmt_money(p['amount'], currency)}"
+                    f" | {fee_perc:.2f}%"
+                    f" | {inv_fx:.4f}"
+                    f" | {fmt_money(usd_amt, 'USD')}"
+                )
+                if p.get('note'):
+                    line += f"  📝 {p['note']}"
+                lines.append(line)
+        else:
+            lines.append("  (No payments on this page)")
+        if page == 0:
+            lines.append(
+                f"📊 *Total Payments:* {fmt_money(total_payments_local, currency)} → {fmt_money(sum(p.get('usd_amt',0) for p in payments), 'USD')}"
+            )
 
-async def get_edit_currency(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logging.info("get_edit_currency: %s", update.message.text)
-    context.user_data['new_cur'] = update.message.text.strip().upper()
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("General", callback_data="edit_ctype_general")],
-        [InlineKeyboardButton("Partner", callback_data="edit_ctype_partner")],
-        [InlineKeyboardButton("Store Customer", callback_data="edit_ctype_store_customer")],
-    ])
-    await update.message.reply_text(
-        "Select new customer type:",
-        reply_markup=kb
-    )
-    return C_EDIT_TYPE
+    lines.append(f"\n📊 *Current Balance:* {fmt_money(balance, currency)}")
 
-async def get_edit_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logging.info("Selected new customer type: %s", update.callback_query.data)
-    await update.callback_query.answer()
-    ctype = update.callback_query.data.split("_", 2)[2]
-    context.user_data['new_type'] = ctype
-    label = CUSTOMER_TYPE_LABELS.get(ctype, ctype)
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ Save", callback_data="cust_conf_yes"),
-         InlineKeyboardButton("❌ Cancel", callback_data="cust_conf_no")]
-    ])
-    edit_cust = context.user_data['edit_cust']
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton("⬅️ Prev", callback_data="page_prev"))
+    if (page + 1) * _PAGE_SIZE < (sales_count if scope in ['full','sales'] else payments_count):
+        nav.append(InlineKeyboardButton("➡️ Next", callback_data="page_next"))
+    nav.append(InlineKeyboardButton("📄 Export PDF", callback_data="export_pdf"))
+    nav.append(InlineKeyboardButton("🔙 Back", callback_data="customer_report_menu"))
+    nav.append(InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu"))
+
     await update.callback_query.edit_message_text(
-        f"Save changes for '{edit_cust['name']}'?\n"
-        f"Name: {context.user_data['new_name']}\n"
-        f"Currency: {context.user_data['new_cur']}\n"
-        f"Type: {label}",
-        reply_markup=kb
+        "\n".join(lines),
+        reply_markup=InlineKeyboardMarkup([nav]),
+        parse_mode="Markdown"
     )
-    return C_EDIT_CONFIRM
+    return REPORT_PAGE
 
 @require_unlock
-async def confirm_edit_customer(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logging.info("confirm_edit_customer: %s", update.callback_query.data)
+async def paginate_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logging.info("paginate_report: %s", update.callback_query.data)
     await update.callback_query.answer()
-    if update.callback_query.data == 'cust_conf_yes':
-        rec = context.user_data['edit_cust']
-        secure_db.update('customers', {
-            'name': context.user_data['new_name'],
-            'currency': context.user_data['new_cur'],
-            'type': context.user_data['new_type'],
-        }, [rec.doc_id])
-        await update.callback_query.edit_message_text(
-            f"✅ Updated to {context.user_data['new_name']} "
-            f"({context.user_data['new_cur']}) - {CUSTOMER_TYPE_LABELS.get(context.user_data['new_type'])}.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="customer_menu")]])
-        )
-    else:
-        await show_customer_menu(update, context)
-    return ConversationHandler.END
-
-# --- Delete Customer Flow ---
-@require_unlock
-async def delete_customer(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logging.info("Start delete_customer")
-    await update.callback_query.answer()
-    rows = secure_db.all('customers')
-    if not rows:
-        await update.callback_query.edit_message_text(
-            "No customers to remove.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="customer_menu")]])
-        )
-        return ConversationHandler.END
-
-    buttons = [
-        InlineKeyboardButton(f"{r['name']} ({r['currency']}) - {CUSTOMER_TYPE_LABELS.get(r.get('type', 'general'))}", callback_data=f"delete_customer_{r.doc_id}")  
-        for r in rows
-    ]
-    kb = InlineKeyboardMarkup([buttons[i:i+2] for i in range(0, len(buttons), 2)])
-    await update.callback_query.edit_message_text("Select a customer to delete:", reply_markup=kb)
-    return C_DELETE_SELECT
-
-async def get_delete_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logging.info("get_delete_selection: %s", update.callback_query.data)
-    await update.callback_query.answer()
-    parts = update.callback_query.data.rsplit("_", 1)
-    if len(parts) != 2 or not parts[1].isdigit():
-        return await show_customer_menu(update, context)
-    cid = int(parts[1])
-    rec = secure_db.table('customers').get(doc_id=cid)
-    if not rec:
-        return await show_customer_menu(update, context)
-    context.user_data['del_cust'] = rec
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ Yes, delete", callback_data="cust_del_yes"),
-         InlineKeyboardButton("❌ No, cancel",  callback_data="cust_del_no")]
-    ])
-    await update.callback_query.edit_message_text(
-        f"Are you sure you want to delete {rec['name']} ({CUSTOMER_TYPE_LABELS.get(rec.get('type', 'general'))})?",
-        reply_markup=kb
-    )
-    return C_DELETE_CONFIRM
+    if update.callback_query.data == "page_next":
+        context.user_data['page'] += 1
+    elif update.callback_query.data == "page_prev":
+        context.user_data['page'] = max(0, context.user_data.get('page', 0) - 1)
+    return await show_customer_report(update, context)
 
 @require_unlock
-async def confirm_delete_customer(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logging.info("confirm_delete_customer: %s", update.callback_query.data)
+async def export_pdf_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
-    if update.callback_query.data == 'cust_del_yes':
-        rec = context.user_data['del_cust']
-        secure_db.remove('customers', [rec.doc_id])
-        await update.callback_query.edit_message_text(
-            f"✅ Customer '{rec['name']}' deleted.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="customer_menu")]])
-        )
-    else:
-        await show_customer_menu(update, context)
-    return ConversationHandler.END
+    cid = context.user_data.get('customer_id')
+    customer = secure_db.table('customers').get(doc_id=cid)
+    start = context.user_data.get('start_date')
+    end = context.user_data.get('end_date')
+    scope = context.user_data.get('scope')
+    currency = customer['currency']
 
-# --- Register Handlers ---
-def register_customer_handlers(app):
-    app.add_handler(CallbackQueryHandler(show_customer_menu, pattern="^customer_menu$"))
+    ledger_entries = get_ledger("customer", cid) + get_ledger("general", cid)
+    filtered_entries = _filter_ledger(ledger_entries, start, end)
+    sales = [e for e in filtered_entries if e["entry_type"] == "sale"]
+    payments = [e for e in filtered_entries if e["entry_type"] == "payment"]
 
-    add_conv = ConversationHandler(
+    from io import BytesIO
+    from reportlab.lib.pagesizes import letter
+    from reportlab.pdfgen import canvas
+
+    buffer = BytesIO()
+    pdf = canvas.Canvas(buffer, pagesize=letter)
+    width, height = letter
+    y = height - 50
+
+    pdf.setFont('Helvetica-Bold', 14)
+    pdf.drawString(50, y, f"Report — {customer['name']}")
+    y -= 20
+    pdf.setFont('Helvetica', 10)
+    pdf.drawString(50, y, f"Period: {fmt_date(start.strftime('%d%m%Y'))} → {fmt_date(end.strftime('%d%m%Y'))}")
+    y -= 15
+    pdf.drawString(50, y, f"Currency: {currency}")
+    y -= 30
+
+    if scope in ('full','sales'):
+        pdf.setFont('Helvetica-Bold', 12)
+        pdf.drawString(50, y, 'Sales:')
+        y -= 20
+        pdf.setFont('Helvetica', 10)
+        for s in sales:
+            qty = s.get("quantity", 1)
+            price = s.get("unit_price", 0)
+            total_val = qty * price
+            line = f"{fmt_date(s['date'])}: {qty} × {fmt_money(price, currency)} = {fmt_money(total_val, currency)}"
+            pdf.drawString(60, y, line)
+            y -= 15
+            if y<50:
+                pdf.showPage(); y=height-50
+        total_sales = sum(-s['amount'] for s in sales)
+        pdf.setFont('Helvetica-Bold',10)
+        pdf.drawString(50, y, f"Total Sales: {fmt_money(total_sales, currency)}")
+        y -= 30
+
+    if scope in ('full','payments'):
+        pdf.setFont('Helvetica-Bold', 12)
+        pdf.drawString(50, y, 'Payments:')
+        y -= 20
+        pdf.setFont('Helvetica', 10)
+        for p in payments:
+            fee_perc = p.get('fee_perc', 0)
+            fx = p.get('fx_rate', 0)
+            inv_fx = 1 / fx if fx else 0
+            usd_amt = p.get('usd_amt', 0)
+            line = (
+                f"{fmt_date(p['date'])}: {fmt_money(p['amount'], currency)}"
+                f" | {fee_perc:.2f}%"
+                f" | {inv_fx:.4f}"
+                f" | {fmt_money(usd_amt, 'USD')}"
+            )
+            pdf.drawString(60, y, line)
+            y -= 15
+            if y<50:
+                pdf.showPage(); y=height-50
+        total_local = sum(p['amount'] for p in payments)
+        pdf.setFont('Helvetica-Bold',10)
+        pdf.drawString(50, y, f"Total Payments: {fmt_money(total_local, currency)} → {fmt_money(sum(p.get('usd_amt',0) for p in payments), 'USD')}")
+        y -= 30
+
+    # All-time balance
+    balance = sum(e["amount"] for e in ledger_entries)
+    pdf.setFont('Helvetica-Bold',12)
+    pdf.drawString(50, y, f"Current Balance: {fmt_money(balance, currency)}")
+
+    pdf.showPage()
+    pdf.save()
+    buffer.seek(0)
+
+    await update.callback_query.message.reply_document(
+        document=buffer,
+        filename=f"report_{customer['name']}_{start.strftime('%Y%m%d')}.pdf"
+    )
+    return REPORT_PAGE
+
+def register_customer_report_handlers(app):
+    logging.info("Registering customer_report handlers")
+    conv = ConversationHandler(
         entry_points=[
-            CommandHandler("add_customer", add_customer),
-            CallbackQueryHandler(add_customer, pattern="^add_customer$")
+            CallbackQueryHandler(show_customer_report_menu, pattern="^rep_cust$"),
+            CallbackQueryHandler(show_customer_report_menu, pattern="^customer_report_menu$"),
+            CallbackQueryHandler(_goto_main_menu, pattern="^main_menu$"),
         ],
         states={
-            C_NAME:    [MessageHandler(filters.TEXT & ~filters.COMMAND, get_customer_name)],
-            C_CUR:     [MessageHandler(filters.TEXT & ~filters.COMMAND, get_customer_currency)],
-            C_TYPE:    [CallbackQueryHandler(get_customer_type, pattern="^ctype_")],
-            C_CONFIRM: [CallbackQueryHandler(confirm_customer, pattern="^cust_")]
+            CUST_SELECT: [
+                CallbackQueryHandler(show_customer_report_menu, pattern="^customer_report_menu$"),
+                CallbackQueryHandler(select_date_range, pattern="^custrep_"),
+                CallbackQueryHandler(_goto_main_menu, pattern="^main_menu$"),
+            ],
+            DATE_RANGE_SELECT: [
+                CallbackQueryHandler(choose_report_scope, pattern="^daterange_"),
+                CallbackQueryHandler(show_customer_report_menu, pattern="^customer_report_menu$"),
+                CallbackQueryHandler(_goto_main_menu, pattern="^main_menu$"),
+            ],
+            CUSTOM_DATE_INPUT: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, save_custom_date),
+                CallbackQueryHandler(show_customer_report_menu, pattern="^customer_report_menu$"),
+                CallbackQueryHandler(_goto_main_menu, pattern="^main_menu$"),
+            ],
+            REPORT_SCOPE_SELECT: [
+                CallbackQueryHandler(show_customer_report, pattern="^scope_"),
+                CallbackQueryHandler(show_customer_report_menu, pattern="^customer_report_menu$"),
+                CallbackQueryHandler(_goto_main_menu, pattern="^main_menu$"),
+            ],
+            REPORT_PAGE: [
+                CallbackQueryHandler(paginate_report, pattern="^page_(prev|next)$"),
+                CallbackQueryHandler(export_pdf_report, pattern="^export_pdf$"),
+                CallbackQueryHandler(show_customer_report_menu, pattern="^customer_report_menu$"),
+                CallbackQueryHandler(_goto_main_menu, pattern="^main_menu$"),
+            ],
         },
-        fallbacks=[CommandHandler("cancel", confirm_customer)],
-        per_message=False
+        fallbacks=[],
+        per_message=False,
     )
-    app.add_handler(add_conv)
-
-    app.add_handler(CallbackQueryHandler(view_customers, pattern="^view_customer$"))
-
-    edit_conv = ConversationHandler(
-        entry_points=[
-            CommandHandler("edit_customer", edit_customer),
-            CallbackQueryHandler(edit_customer, pattern="^edit_customer$")
-        ],
-        states={
-            C_EDIT_SELECT: [CallbackQueryHandler(get_edit_selection, pattern="^edit_customer_")],
-            C_EDIT_NAME:   [MessageHandler(filters.TEXT & ~filters.COMMAND, get_edit_name)],
-            C_EDIT_CUR:    [MessageHandler(filters.TEXT & ~filters.COMMAND, get_edit_currency)],
-            C_EDIT_TYPE:   [CallbackQueryHandler(get_edit_type, pattern="^edit_ctype_")],
-            C_EDIT_CONFIRM:[CallbackQueryHandler(confirm_edit_customer, pattern="^cust_conf_")]
-        },
-        fallbacks=[CommandHandler("cancel", confirm_edit_customer)],
-        per_message=False
-    )
-    app.add_handler(edit_conv)
-
-    del_conv = ConversationHandler(
-        entry_points=[
-            CommandHandler("remove_customer", delete_customer),
-            CallbackQueryHandler(delete_customer, pattern="^remove_customer$")
-        ],
-        states={
-            C_DELETE_SELECT: [CallbackQueryHandler(get_delete_selection, pattern="^delete_customer_")],
-            C_DELETE_CONFIRM:[CallbackQueryHandler(confirm_delete_customer, pattern="^cust_del_")]
-        },
-        fallbacks=[CommandHandler("cancel", confirm_delete_customer)],
-        per_message=False
-    )
-    app.add_handler(del_conv)
+    app.add_handler(conv)
