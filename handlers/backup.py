@@ -177,7 +177,8 @@ async def backup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         update,
         document=InputFile(backup_file),
         filename=os.path.basename(backup_file),
-        caption="🗄️ Encrypted DB backup (with SHA256 integrity check). Keep safe!"
+        caption="🗄️ Encrypted DB backup (with SHA256 integrity check). Keep safe!",
+        mime_type="application/zip"
     )
     if os.path.exists(BACKUP_TMP):
         os.remove(BACKUP_TMP)
