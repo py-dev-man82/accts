@@ -31,7 +31,7 @@ BACKUP_TMP = "data/telegram_backup.zip"
 HASH_FILE = "backup.sha256"
 RETENTION_DIR = "data/backups"
 MAX_BACKUPS = 5
-ADMIN_IDS = getattr(config, "ADMIN_IDS", [])
+ADMIN_TELEGRAM_ID = getattr(config, "ADMIN_TELEGRAM_ID", None)
 RESTORE_WAITING = range(1)
 
 # ──────────── Nextcloud WebDAV Upload (optional) ─────────────
@@ -62,7 +62,7 @@ def upload_to_nextcloud(local_file_path, remote_filename):
 
 def is_admin(update: Update) -> bool:
     user = update.effective_user
-    return user and user.id in ADMIN_IDS
+    return user and user.id == ADMIN_TELEGRAM_ID
 
 def _reply(update: Update, *args, **kwargs):
     if hasattr(update, "message") and update.message:
@@ -324,10 +324,11 @@ async def autobackup_task(app: Application):
                 msg = f"⚠️ Weekly backup upload to Nextcloud FAILED!"
             else:
                 msg = f"✅ Weekly auto-backup saved locally (Nextcloud not configured)."
-            for admin_id in ADMIN_IDS:
+            # Only send to single admin:
+            if ADMIN_TELEGRAM_ID:
                 try:
                     await app.bot.send_message(
-                        admin_id,
+                        ADMIN_TELEGRAM_ID,
                         msg,
                         parse_mode="HTML"
                     )
