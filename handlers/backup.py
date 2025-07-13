@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 import asyncio
 
 from telegram import (
-    Update, InputFile, InlineKeyboardButton, InlineKeyboardMarkup
+    Update, InlineKeyboardButton, InlineKeyboardMarkup
 )
 from telegram.ext import (
     CommandHandler,
@@ -44,7 +44,6 @@ def upload_to_nextcloud(local_file_path, remote_filename, share=False):
         logging.info("Nextcloud upload skipped: credentials not set.")
         return None
 
-    # Upload
     try:
         with open(local_file_path, "rb") as fin:
             r = requests.put(
@@ -64,11 +63,8 @@ def upload_to_nextcloud(local_file_path, remote_filename, share=False):
     if not share:
         return True
 
-    # Create public share link
     share_url = None
     try:
-        # OCS API to create a public share
-        # docs: https://docs.nextcloud.com/server/latest/developer_manual/core/ocs-share-api.html
         share_api = url.split("/remote.php")[0] + "/ocs/v2.php/apps/files_sharing/api/v1/shares"
         rel_path = "/files/" + user + "/" + remote_filename
         headers = {"OCS-APIREQUEST": "true"}
@@ -86,7 +82,6 @@ def upload_to_nextcloud(local_file_path, remote_filename, share=False):
         )
         if r.status_code == 200 and "<url>" in r.text:
             import re
-            # Extract URL from XML
             url_match = re.search(r"<url>(.*?)</url>", r.text)
             if url_match:
                 share_url = url_match.group(1)
@@ -102,10 +97,8 @@ def list_nextcloud_backups():
     if not url or not user or not pw:
         return []
     try:
-        # List files in user's root
         r = requests.request("PROPFIND", url, auth=(user, pw), headers={"Depth": "1"})
         if r.status_code == 207:
-            # Parse all .zip files
             import re
             files = re.findall(r"<d:href>[^<]+/(backup-[^<]+\.zip)</d:href>", r.text)
             return files
@@ -142,12 +135,6 @@ def _reply(update: Update, *args, **kwargs):
         return update.message.reply_text(*args, **kwargs)
     elif hasattr(update, "callback_query") and update.callback_query:
         return update.callback_query.message.reply_text(*args, **kwargs)
-
-def _reply_document(update: Update, *args, **kwargs):
-    if hasattr(update, "message") and update.message:
-        return update.message.reply_document(*args, **kwargs)
-    elif hasattr(update, "callback_query") and update.callback_query:
-        return update.callback_query.message.reply_document(*args, **kwargs)
 
 def compute_hashes(files):
     lines = []
@@ -203,7 +190,6 @@ def make_backup_file(suffix=""):
         hout.write(hash_txt)
 
     try:
-        # Create main zip first (no padding yet)
         with ZipFile(BACKUP_TMP, 'w', compression=ZIP_STORED) as zf:
             for filepath in BACKUP_FILES:
                 zf.write(filepath, arcname=os.path.basename(filepath))
@@ -211,14 +197,12 @@ def make_backup_file(suffix=""):
         if os.path.exists(HASH_FILE):
             os.remove(HASH_FILE)
 
-        # If the archive is too small, add a pad file inside
         MIN_SIZE = 128 * 1024
         zip_size = os.path.getsize(BACKUP_TMP)
         if zip_size < MIN_SIZE:
             pad_size = MIN_SIZE - zip_size
             with open(PAD_FILE, "wb") as pf:
                 pf.write(b"\0" * pad_size)
-            # Add pad file to archive
             with ZipFile(BACKUP_TMP, 'a', compression=ZIP_STORED) as zf:
                 zf.write(PAD_FILE, arcname="__pad.bin")
             os.remove(PAD_FILE)
@@ -265,29 +249,26 @@ async def backup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _reply(update, f"❌ Failed to create backup: {e}")
         return
 
-    # Send as .txt to user (Telegram bug workaround)
-    txt_file = backup_file.replace('.zip', '.txt')
-    shutil.copy2(backup_file, txt_file)
-
     # --- Upload to Nextcloud and get link ---
     share_url = upload_to_nextcloud(backup_file, os.path.basename(backup_file), share=True)
-    msg_lines = [
-        "🗄️ Encrypted DB backup (SHA256 included). After download, rename to .zip before extracting!",
-        "A copy has also been uploaded to your Nextcloud server."
-    ]
     if share_url and isinstance(share_url, str):
-        msg_lines.append(f"🌐 <b>Direct cloud download:</b> <a href='{share_url}'>{share_url}</a>")
-
-    await _reply_document(
-        update,
-        document=InputFile(txt_file),
-        filename=os.path.basename(txt_file),
-        caption="\n".join(msg_lines),
-        parse_mode="HTML"
-    )
-    os.remove(txt_file)
+        await _reply(
+            update,
+            f"🗄️ Encrypted DB backup created and uploaded to Nextcloud.\n"
+            f"<b>Direct cloud download:</b> <a href='{share_url}'>{share_url}</a>",
+            parse_mode="HTML"
+        )
+    else:
+        await _reply(
+            update,
+            "🗄️ Backup created, but failed to get Nextcloud public share link. (Manual download only)."
+        )
     if os.path.exists(BACKUP_TMP):
         os.remove(BACKUP_TMP)
+
+# (Rest of file unchanged -- auto-backup, restore, etc. remains as before)
+# You do NOT send the backup to Telegram ever in manual backup now.
+
 
 # ──────────────────────────────
 # Restore (upload backup zip, txt, dbk, bin, etc.)
