@@ -247,4 +247,4 @@ def register_owner_handlers(app: Application):
     app.add_handler(CommandHandler("restore", restore_command))
 
     # Register the debug handler LAST
-    app.add_handler(CallbackQueryHandler(debug_callback))
+   # app.add_handler(CallbackQueryHandler(debug_callback))
