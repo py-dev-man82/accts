@@ -34,6 +34,7 @@ from handlers.backup import (
 # Owner Main Menu (with Backup/Restore)
 # ────────────────────────────────────────────────
 async def show_owner_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    print("[DEBUG] Entered show_owner_menu")
     await update.callback_query.answer()
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("🏦 Adjust POT Balance", callback_data="owner_adjust_pot")],
@@ -46,6 +47,7 @@ async def show_owner_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Backup/Restore Submenu
 # ────────────────────────────────────────────────
 async def show_backup_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    print("[DEBUG] Entered show_backup_menu")
     await update.callback_query.answer()
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("🗄️ Backup Now", callback_data="backup_now")],
@@ -59,14 +61,19 @@ async def show_backup_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # --- Handle Backup/Restore submenu button clicks ---
 async def handle_backup_menu_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    print("[DEBUG] Entered handle_backup_menu_button, data:", update.callback_query.data)
     data = update.callback_query.data
     if data == "backup_now":
+        print("[DEBUG] Calling backup_command")
         await backup_command(update, context)
     elif data == "backup_list":
+        print("[DEBUG] Calling backups_command")
         await backups_command(update, context)
     elif data == "backup_restore":
+        print("[DEBUG] Calling restore_command")
         await restore_command(update, context)
     else:
+        print("[DEBUG] Unknown backup menu button:", data)
         await update.callback_query.answer("Unknown action.", show_alert=True)
 
 # ════════════════════════════════════════════════
@@ -74,7 +81,7 @@ async def handle_backup_menu_button(update: Update, context: ContextTypes.DEFAUL
 # ════════════════════════════════════════════════
 @require_unlock
 async def adjust_pot_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # This handler works for both commands and buttons
+    print("[DEBUG] Entered adjust_pot_balance")
     if hasattr(update, "callback_query") and update.callback_query:
         await update.callback_query.answer()
         msg_method = update.callback_query.edit_message_text
@@ -93,6 +100,7 @@ async def adjust_pot_balance(update: Update, context: ContextTypes.DEFAULT_TYPE)
     return O_POT_ACTION
 
 async def get_pot_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    print("[DEBUG] Entered get_pot_amount, data:", update.callback_query.data)
     await update.callback_query.answer()
     context.user_data["pot_action"] = update.callback_query.data  # pot_add|pot_subtract|pot_set
     prompt = {
@@ -109,11 +117,14 @@ async def get_pot_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @require_unlock
 async def get_pot_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    print("[DEBUG] Entered get_pot_note. Current state:", context.user_data)
     # If we don't have an amount yet, expect number input here
     if "pot_amount" not in context.user_data:
         try:
             amt = float(update.message.text.strip())
+            print(f"[DEBUG] Received amount: {amt}")
         except:
+            print("[DEBUG] Invalid number entered")
             await update.message.reply_text("Enter a valid number:")
             return O_POT_INPUT
 
@@ -127,6 +138,7 @@ async def get_pot_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Else, this is the note input step
     note = update.message.text.strip()
     context.user_data["pot_note"] = note
+    print(f"[DEBUG] Note entered: {note}")
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("✅ Confirm", callback_data="pot_conf_yes"),
          InlineKeyboardButton("❌ Cancel", callback_data="pot_conf_no")]
@@ -146,14 +158,17 @@ async def get_pot_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @require_unlock
 async def save_pot(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    print("[DEBUG] Entered save_pot, data:", update.callback_query.data)
     await update.callback_query.answer()
     if update.callback_query.data != "pot_conf_yes":
+        print("[DEBUG] POT flow cancelled")
         await show_owner_menu(update, context)
         return ConversationHandler.END
 
     action = context.user_data.get("pot_action")
     amt = context.user_data.get("pot_amount", 0.0)
     note = context.user_data.get("pot_note", "")
+    print(f"[DEBUG] Finalizing POT: action={action}, amt={amt}, note={note}")
     if action == "pot_set":
         old = context.user_data.get("pot_old_balance", 0.0)
         adj = amt - old
@@ -162,6 +177,7 @@ async def save_pot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif action == "pot_subtract":
         adj = -amt
     else:
+        print("[DEBUG] Unknown POT action")
         await show_owner_menu(update, context)
         return ConversationHandler.END
 
@@ -187,8 +203,17 @@ async def save_pot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.pop("pot_old_balance", None)
     return ConversationHandler.END
 
+# --- Debug catch-all handler (ALWAYS last) ---
+async def debug_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    print("\n[DEBUG] Callback data received (not matched by any handler):", getattr(update.callback_query, "data", None))
+    if hasattr(update, "callback_query") and update.callback_query:
+        print("[DEBUG] CallbackQuery user:", update.callback_query.from_user.id)
+        print("[DEBUG] CallbackQuery message_id:", update.callback_query.message.message_id)
+    await update.callback_query.answer("Debug: Button pressed", show_alert=True)
+
 # --- Registration for all owner menu logic, including nested backup/restore ---
 def register_owner_handlers(app: Application):
+    print("[DEBUG] Registering all owner handlers")
     # Adjust POT: ConversationHandler with BOTH /adjustpot and button entry
     pot_conv = ConversationHandler(
         entry_points=[
@@ -215,3 +240,6 @@ def register_owner_handlers(app: Application):
     app.add_handler(CommandHandler("backup", backup_command))
     app.add_handler(CommandHandler("backups", backups_command))
     app.add_handler(CommandHandler("restore", restore_command))
+
+    # Register the debug handler LAST
+    app.add_handler(CallbackQueryHandler(debug_callback))
