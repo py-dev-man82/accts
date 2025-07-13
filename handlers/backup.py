@@ -122,20 +122,15 @@ def enforce_retention():
 
 def make_backup_file(suffix=""):
     os.makedirs(RETENTION_DIR, exist_ok=True)
-
-    # Check all backup files exist before archiving
     for f in BACKUP_FILES:
         if not os.path.isfile(f):
             logging.error(f"Backup file missing or not a file: {f}")
             raise FileNotFoundError(f"Missing backup file: {f}")
-
-    # Compute hashes
     hash_txt = compute_hashes(BACKUP_FILES)
     with open(HASH_FILE, "w") as hout:
         hout.write(hash_txt)
 
     try:
-        # Create zip archive with compression
         with ZipFile(BACKUP_TMP, 'w', compression=ZIP_DEFLATED) as zf:
             for filepath in BACKUP_FILES:
                 zf.write(filepath, arcname=os.path.basename(filepath))
@@ -147,7 +142,6 @@ def make_backup_file(suffix=""):
         if os.path.exists(HASH_FILE):
             os.remove(HASH_FILE)
 
-    # Validate zip file exists and is not empty
     if not os.path.isfile(BACKUP_TMP) or os.path.getsize(BACKUP_TMP) == 0:
         logging.error("Backup zip file not created or is empty")
         raise IOError("Backup zip creation failed")
@@ -155,12 +149,9 @@ def make_backup_file(suffix=""):
     nowtag = datetime.now().strftime("%Y%m%d-%H%M%S")
     backup_copy_path = os.path.join(RETENTION_DIR, f"backup-{nowtag}{suffix}.zip")
     shutil.copy2(BACKUP_TMP, backup_copy_path)
-
-    # Validate copied backup file
     if os.path.getsize(backup_copy_path) == 0:
         logging.error("Copied backup zip file is empty!")
         raise IOError("Copied backup zip file is empty")
-
     enforce_retention()
     logging.info(f"Backup zip created at {backup_copy_path}")
     return backup_copy_path
@@ -292,7 +283,7 @@ async def backups_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         else:
             await update.callback_query.answer("File not found.", show_alert=True)
-    elif data.startswith("restorefile_"):
+    elif data.startswith("restorefile_") and not data == "restorefile_confirm" and not data == "restorefile_cancel":
         fname = data[len("restorefile_") :]
         context.user_data["selected_restore"] = fname
         await update.callback_query.message.reply_text(
@@ -393,5 +384,6 @@ def register_backup_handlers(app: Application):
         name="restore_conv",
     )
     app.add_handler(restore_conv)
+    # Patch: only match base restorefile_ not confirm/cancel for confirmation step, those are checked below!
     app.add_handler(CallbackQueryHandler(backups_callback, pattern="^(downloadbackup_|restorefile_|restorefile_confirm|restorefile_cancel)"))
     app.create_task(autobackup_task(app))
