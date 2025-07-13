@@ -33,14 +33,18 @@ RETENTION_DIR = "data/backups"
 MAX_BACKUPS = 5
 ADMIN_TELEGRAM_ID = getattr(config, "ADMIN_TELEGRAM_ID", None)
 RESTORE_WAITING = range(1)
+CLOUD_RESTORE_SELECT = range(1)
 
-def upload_to_nextcloud(local_file_path, remote_filename):
+# --- Nextcloud Upload and Public Link ---
+def upload_to_nextcloud(local_file_path, remote_filename, share=False):
     url = getattr(config, "NEXTCLOUD_URL", "").strip()
     user = getattr(config, "NEXTCLOUD_USER", "").strip()
     pw = getattr(config, "NEXTCLOUD_PASS", "").strip()
     if not url or not user or not pw:
         logging.info("Nextcloud upload skipped: credentials not set.")
         return None
+
+    # Upload
     try:
         with open(local_file_path, "rb") as fin:
             r = requests.put(
@@ -49,15 +53,85 @@ def upload_to_nextcloud(local_file_path, remote_filename):
                 auth=(user, pw),
                 timeout=120
             )
-        if r.status_code in (200, 201, 204):
-            logging.info(f"Uploaded to Nextcloud: {remote_filename}")
-            return True
-        else:
+        if r.status_code not in (200, 201, 204):
             logging.error(f"Nextcloud upload failed: {r.status_code} {r.text}")
             return False
+        logging.info(f"Uploaded to Nextcloud: {remote_filename}")
     except Exception as e:
         logging.error(f"Nextcloud upload error: {e}")
         return False
+
+    if not share:
+        return True
+
+    # Create public share link
+    share_url = None
+    try:
+        # OCS API to create a public share
+        # docs: https://docs.nextcloud.com/server/latest/developer_manual/core/ocs-share-api.html
+        share_api = url.split("/remote.php")[0] + "/ocs/v2.php/apps/files_sharing/api/v1/shares"
+        rel_path = "/files/" + user + "/" + remote_filename
+        headers = {"OCS-APIREQUEST": "true"}
+        data = {
+            "path": rel_path,
+            "shareType": 3,  # 3 = public link
+            "permissions": 1,  # 1 = read
+        }
+        r = requests.post(
+            share_api,
+            data=data,
+            headers=headers,
+            auth=(user, pw),
+            timeout=30
+        )
+        if r.status_code == 200 and "<url>" in r.text:
+            import re
+            # Extract URL from XML
+            url_match = re.search(r"<url>(.*?)</url>", r.text)
+            if url_match:
+                share_url = url_match.group(1)
+    except Exception as e:
+        logging.error(f"Nextcloud share link error: {e}")
+
+    return share_url or True
+
+def list_nextcloud_backups():
+    url = getattr(config, "NEXTCLOUD_URL", "").strip()
+    user = getattr(config, "NEXTCLOUD_USER", "").strip()
+    pw = getattr(config, "NEXTCLOUD_PASS", "").strip()
+    if not url or not user or not pw:
+        return []
+    try:
+        # List files in user's root
+        r = requests.request("PROPFIND", url, auth=(user, pw), headers={"Depth": "1"})
+        if r.status_code == 207:
+            # Parse all .zip files
+            import re
+            files = re.findall(r"<d:href>[^<]+/(backup-[^<]+\.zip)</d:href>", r.text)
+            return files
+    except Exception as e:
+        logging.error(f"Nextcloud list error: {e}")
+    return []
+
+def download_from_nextcloud(remote_filename, local_path):
+    url = getattr(config, "NEXTCLOUD_URL", "").strip()
+    user = getattr(config, "NEXTCLOUD_USER", "").strip()
+    pw = getattr(config, "NEXTCLOUD_PASS", "").strip()
+    if not url or not user or not pw:
+        return False
+    file_url = url.rstrip("/") + "/" + remote_filename
+    try:
+        r = requests.get(file_url, auth=(user, pw), stream=True, timeout=120)
+        if r.status_code == 200:
+            with open(local_path, "wb") as fout:
+                for chunk in r.iter_content(chunk_size=4096):
+                    fout.write(chunk)
+            return True
+        else:
+            logging.error(f"Nextcloud download failed: {r.status_code} {r.text}")
+    except Exception as e:
+        logging.error(f"Nextcloud download error: {e}")
+    return False
 
 def is_admin(update: Update) -> bool:
     user = update.effective_user
@@ -191,19 +265,25 @@ async def backup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _reply(update, f"❌ Failed to create backup: {e}")
         return
 
-    # Send as .txt to avoid Telegram zip bug
+    # Send as .txt to user (Telegram bug workaround)
     txt_file = backup_file.replace('.zip', '.txt')
     shutil.copy2(backup_file, txt_file)
+
+    # --- Upload to Nextcloud and get link ---
+    share_url = upload_to_nextcloud(backup_file, os.path.basename(backup_file), share=True)
+    msg_lines = [
+        "🗄️ Encrypted DB backup (SHA256 included). After download, rename to .zip before extracting!",
+        "A copy has also been uploaded to your Nextcloud server."
+    ]
+    if share_url and isinstance(share_url, str):
+        msg_lines.append(f"🌐 <b>Direct cloud download:</b> <a href='{share_url}'>{share_url}</a>")
 
     await _reply_document(
         update,
         document=InputFile(txt_file),
         filename=os.path.basename(txt_file),
-        caption=(
-            "🗄️ Encrypted DB backup (SHA256 included). "
-            "After download, rename to .zip before extracting! "
-            "(The archive may contain a '__pad.bin' file for compatibility.)"
-        ),
+        caption="\n".join(msg_lines),
+        parse_mode="HTML"
     )
     os.remove(txt_file)
     if os.path.exists(BACKUP_TMP):
@@ -272,8 +352,73 @@ async def restore_receive(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     return ConversationHandler.END
 
-# [rest of file remains unchanged...]
-# ... previous code from above ...
+# ──────────────────────────────
+# Restore from Nextcloud (user selection)
+async def cloud_restore_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update):
+        await _reply(update, "❌ Not authorized.")
+        return ConversationHandler.END
+    # List .zip backup files from Nextcloud root
+    files = list_nextcloud_backups()
+    if not files:
+        await _reply(update, "❌ No backups found on Nextcloud.")
+        return ConversationHandler.END
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton(f, callback_data=f"cloudrestore_{f}")]
+        for f in files
+    ] + [[InlineKeyboardButton("🔙 Cancel", callback_data="cloudrestore_cancel")]])
+    await _reply(
+        update,
+        "Select a backup file from Nextcloud to restore:",
+        reply_markup=kb
+    )
+    return CLOUD_RESTORE_SELECT
+
+async def cloud_restore_receive(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    data = update.callback_query.data
+    if data == "cloudrestore_cancel":
+        await update.callback_query.edit_message_text("Cloud restore cancelled.")
+        return ConversationHandler.END
+    if not data.startswith("cloudrestore_"):
+        await update.callback_query.answer("Unknown cloud restore action.", show_alert=True)
+        return
+    fname = data[len("cloudrestore_") :]
+    with tempfile.TemporaryDirectory() as tmpdir:
+        dl_path = os.path.join(tmpdir, fname)
+        if not download_from_nextcloud(fname, dl_path):
+            await update.callback_query.edit_message_text(f"❌ Failed to download {fname} from Nextcloud.")
+            return ConversationHandler.END
+        # Try to restore as normal
+        try:
+            with ZipFile(dl_path, "r") as zf:
+                names = zf.namelist()
+                needed = ["db.json", "kdf_salt.bin", "backup.sha256"]
+                if not all(f in names for f in needed):
+                    await update.callback_query.edit_message_text(
+                        f"❌ Archive missing one of: {', '.join(needed)}"
+                    )
+                    return ConversationHandler.END
+                zf.extract("db.json", path=tmpdir)
+                zf.extract("kdf_salt.bin", path=tmpdir)
+                zf.extract("backup.sha256", path=tmpdir)
+            ok, msg = check_hashes(tmpdir, os.path.join(tmpdir, "backup.sha256"))
+            if not ok:
+                await update.callback_query.edit_message_text(f"❌ Hash check failed: {msg}. Restore aborted.")
+                return ConversationHandler.END
+            # PATCH: Unlock the salt file for writing
+            if os.path.exists("data/kdf_salt.bin"):
+                os.chmod("data/kdf_salt.bin", stat.S_IWRITE | stat.S_IREAD)
+            shutil.move(os.path.join(tmpdir, "db.json"), "data/db.json")
+            shutil.move(os.path.join(tmpdir, "kdf_salt.bin"), "data/kdf_salt.bin")
+            os.chmod("data/kdf_salt.bin", 0o444)
+        except Exception as e:
+            logging.error(f"Cloud restore failed: {e}")
+            await update.callback_query.edit_message_text(f"❌ Cloud restore failed: {e}")
+            return ConversationHandler.END
+    await update.callback_query.edit_message_text(
+        f"✅ Cloud restore complete and hash verified! Please /unlock with your PIN."
+    )
+    return ConversationHandler.END
 
 async def restore_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if hasattr(update, "message") and update.message:
@@ -373,6 +518,8 @@ async def backups_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.callback_query.message.reply_text(f"❌ Restore failed: {e}")
     elif data == "restorefile_cancel":
         await update.callback_query.message.reply_text("Restore cancelled.")
+    elif data.startswith("cloudrestore_") or data == "cloudrestore_cancel":
+        await cloud_restore_receive(update, context)
 
 # ──────────────────────────────
 # Weekly Autobackup Task (notifies admins, uploads to Nextcloud if set)
@@ -390,14 +537,15 @@ async def autobackup_task(app: Application):
             logging.info(f"Weekly auto-backup created: {backup_file}")
             cloud_result = upload_to_nextcloud(
                 backup_file,
-                os.path.basename(backup_file)
+                os.path.basename(backup_file),
+                share=False
             )
-            if cloud_result is True:
-                msg = f"✅ Weekly auto-backup uploaded to Nextcloud: <code>{os.path.basename(backup_file)}</code>"
-            elif cloud_result is False:
-                msg = f"⚠️ Weekly backup upload to Nextcloud FAILED!"
-            else:
-                msg = f"✅ Weekly auto-backup saved locally (Nextcloud not configured)."
+            msg = (
+                f"✅ Weekly auto-backup complete and uploaded to Nextcloud.\n"
+                f"- Local file: <code>{os.path.basename(backup_file)}</code>\n"
+                f"- Cloud copy: <b>uploaded</b>\n"
+                "No public download link is created for auto-backups."
+            )
             # Only send to single admin:
             if ADMIN_TELEGRAM_ID:
                 try:
@@ -416,17 +564,22 @@ async def autobackup_task(app: Application):
 def register_backup_handlers(app: Application):
     app.add_handler(CommandHandler("backup", backup_command))
     app.add_handler(CommandHandler("backups", backups_command))
+    app.add_handler(CommandHandler("restore", restore_command))
+    # Cloud restore entry: (button, not command)
+    app.add_handler(CallbackQueryHandler(cloud_restore_command, pattern="^backup_cloud_restore$"))
     restore_conv = ConversationHandler(
         entry_points=[
             CommandHandler("restore", restore_command),
             CallbackQueryHandler(restore_command, pattern="^backup_restore$"),
+            CallbackQueryHandler(cloud_restore_command, pattern="^backup_cloud_restore$"),
         ],
         states={
             RESTORE_WAITING: [MessageHandler(filters.ALL, restore_receive)],
+            CLOUD_RESTORE_SELECT: [CallbackQueryHandler(cloud_restore_receive, pattern="^(cloudrestore_.*|cloudrestore_cancel)$")],
         },
         fallbacks=[CommandHandler("cancel", restore_cancel)],
         name="restore_conv",
     )
     app.add_handler(restore_conv)
-    app.add_handler(CallbackQueryHandler(backups_callback, pattern="^(downloadbackup_|restorefile_|restorefile_confirm|restorefile_cancel)"))
+    app.add_handler(CallbackQueryHandler(backups_callback, pattern="^(downloadbackup_|restorefile_|restorefile_confirm|restorefile_cancel|cloudrestore_.*|cloudrestore_cancel)$"))
     app.create_task(autobackup_task(app))
