@@ -61,6 +61,7 @@ async def handle_backup_menu_button(update: Update, context: ContextTypes.DEFAUL
     query = update.callback_query
     data = query.data
 
+    # This lets us call backup handlers with .message (even from callback)
     class FakeUpdate:
         def __init__(self, orig_update):
             self.message = orig_update.callback_query.message
@@ -79,7 +80,7 @@ async def handle_backup_menu_button(update: Update, context: ContextTypes.DEFAUL
         await query.answer("Unknown action.", show_alert=True)
 
 # ════════════════════════════════════════════════
-# Adjust POT Balance flow (all in ledger, ConversationHandler)
+# Adjust POT Balance flow (multi-step, ConversationHandler)
 # ════════════════════════════════════════════════
 @require_unlock
 async def adjust_pot_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -192,7 +193,7 @@ async def save_pot(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # --- Registration for all owner menu logic, including nested backup/restore ---
 def register_owner_handlers(app: Application):
-    # Adjust POT: Conversation Handler
+    # 1. Adjust POT: Conversation Handler (must be first)
     pot_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(adjust_pot_balance, pattern="^owner_adjust_pot$")],
         states={
@@ -206,7 +207,7 @@ def register_owner_handlers(app: Application):
     )
     app.add_handler(pot_conv)
 
-    # Owner menu and backup/restore handlers
+    # 2. Owner menu and backup/restore handlers (single-step)
     app.add_handler(CallbackQueryHandler(show_owner_menu, pattern="^owner_menu$"))
     app.add_handler(CallbackQueryHandler(show_backup_menu, pattern="^backup_menu$"))
     app.add_handler(CallbackQueryHandler(handle_backup_menu_button, pattern="^(backup_now|backup_list|backup_restore)$"))
