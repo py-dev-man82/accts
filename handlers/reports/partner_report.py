@@ -1,13 +1,13 @@
 import logging
 from datetime import datetime, timedelta
-from typing import List, Dict
+from typing import List
 from collections import defaultdict
 from io import BytesIO
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.ext import CallbackQueryHandler, ConversationHandler, ContextTypes
+from telegram.ext import CallbackQueryHandler, ContextTypes
 
 from handlers.utils import require_unlock, fmt_money, fmt_date
 from handlers.ledger import get_ledger
@@ -31,10 +31,6 @@ async def _goto_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     _reset_state(context)
     from bot import start
     return await start(update, context)
-
-def _paginate(lst: List[dict], page: int) -> List[dict]:
-    start = page * _PAGE_SIZE
-    return lst[start : start + _PAGE_SIZE]
 
 def _between(date_str: str, start: datetime, end: datetime) -> bool:
     try:
@@ -62,7 +58,7 @@ async def show_partner_report_menu(update: Update, context: ContextTypes.DEFAULT
                 [[InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu")]]
             ),
         )
-        return ConversationHandler.END
+        return
 
     btns = [
         InlineKeyboardButton(
@@ -78,11 +74,9 @@ async def show_partner_report_menu(update: Update, context: ContextTypes.DEFAULT
         "📄 Select partner:",
         reply_markup=InlineKeyboardMarkup(rows),
     )
-    return PARTNER_SELECT
 
 @require_unlock
 async def select_date_range(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    print("DEBUG: select_date_range called, data =", update.callback_query.data)
     logging.warning("DEBUG: select_date_range called, data = %s", update.callback_query.data)
     pid = int(update.callback_query.data.split("_")[-1])
     context.user_data["partner_id"] = pid
@@ -96,7 +90,6 @@ async def select_date_range(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.callback_query.answer()
     await update.callback_query.edit_message_text("Choose period:", reply_markup=kb)
-    return DATE_RANGE_SELECT
 
 async def ask_custom_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
@@ -106,7 +99,6 @@ async def ask_custom_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [[InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu")]]
         ),
     )
-    return CUSTOM_DATE_INPUT
 
 async def save_custom_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     txt = update.message.text.strip()
@@ -114,7 +106,7 @@ async def save_custom_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         sd = datetime.strptime(txt, "%d%m%Y")
     except ValueError:
         await update.message.reply_text("❌ Format DDMMYYYY please.")
-        return CUSTOM_DATE_INPUT
+        return
 
     context.user_data["start_date"] = sd
     context.user_data["end_date"] = datetime.now()
@@ -148,7 +140,6 @@ async def choose_scope(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     else:
         await update.message.reply_text("Choose report scope:", reply_markup=kb)
-    return REPORT_SCOPE_SELECT
 
 @require_unlock
 async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -164,7 +155,7 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     pledger = get_ledger("partner", pid)
 
-    # --- SALES (in period, for report lines/units)
+    # --- SALES ---
     sales = []
     for c in secure_db.all("customers"):
         if c["name"] == partner["name"]:
@@ -180,7 +171,7 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for s in sales:
         sale_items[s.get("item_id", "?")].append(s)
 
-    # --- PAYMENTS
+    # --- PAYMENTS ---
     payouts = [
         e for e in get_ledger("partner", pid)
         if e.get("entry_type") == "payment" and _between(e.get("date", ""), start, end)
@@ -207,7 +198,7 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     total_pay_local = sum(p.get('amount', 0) for p in payments)
     total_pay_usd = sum(p.get('usd_amt', 0) for p in payments)
 
-    # --- EXPENSES
+    # --- EXPENSES ---
     handling_fees = [e for e in pledger if e.get("entry_type") == "handling_fee" and _between(e.get("date", ""), start, end)]
     other_expenses = [e for e in pledger if e.get("entry_type") == "expense" and _between(e.get("date", ""), start, end)]
 
@@ -343,7 +334,7 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines.append(f"Total Position:      {fmt_money(balance + stock_value, cur)}")
 
     nav = []
-    if ctx["page"] > 0:
+    if ctx.get("page", 0) > 0:
         nav.append(InlineKeyboardButton("⬅️ Prev", callback_data="page_prev"))
     nav.append(InlineKeyboardButton("📄 Export PDF", callback_data="export_pdf"))
     nav.append(InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu"))
@@ -353,7 +344,6 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=InlineKeyboardMarkup([nav]),
         parse_mode="Markdown"
     )
-    return REPORT_PAGE
 
 @require_unlock
 async def paginate(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -586,40 +576,14 @@ async def export_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
         filename=f"Report_{partner['name'].replace(' ', '_')}_{start.strftime('%d%m%Y')}_{end.strftime('%d%m%Y')}.pdf",
         caption=f"Report for {partner['name']} ({fmt_date(start.strftime('%d%m%Y'))} → {fmt_date(end.strftime('%d%m%Y'))})"
     )
-    return REPORT_PAGE
 
 def register_partner_report_handlers(app):
-    conv = ConversationHandler(
-        entry_points=[
-            CallbackQueryHandler(show_partner_report_menu, pattern="^rep_part$"),
-            CallbackQueryHandler(show_partner_report_menu, pattern="^partner_report_menu$"),
-            CallbackQueryHandler(_goto_main_menu, pattern="^main_menu$"),
-        ],
-        states={
-            PARTNER_SELECT: [
-                CallbackQueryHandler(select_date_range, pattern="^preport_\\d+$"),
-                CallbackQueryHandler(_goto_main_menu, pattern="^main_menu$"),
-            ],
-            DATE_RANGE_SELECT: [
-                CallbackQueryHandler(choose_scope, pattern="^range_(week|custom)$"),
-                CallbackQueryHandler(_goto_main_menu, pattern="^main_menu$"),
-            ],
-            CUSTOM_DATE_INPUT: [
-                CallbackQueryHandler(_goto_main_menu, pattern="^main_menu$"),
-            ],
-            REPORT_SCOPE_SELECT: [
-                CallbackQueryHandler(show_report, pattern="^scope_(full|sales|payments)$"),
-                CallbackQueryHandler(_goto_main_menu, pattern="^main_menu$"),
-            ],
-            REPORT_PAGE: [
-                CallbackQueryHandler(paginate, pattern="^page_(next|prev)$"),
-                CallbackQueryHandler(export_pdf, pattern="^export_pdf$"),
-                CallbackQueryHandler(_goto_main_menu, pattern="^main_menu$"),
-            ],
-        },
-        fallbacks=[],
-        per_message=False,
-    )
-    app.add_handler(conv)
-    # Add this top-level handler to catch direct button presses after bot restart or loss of state
+    app.add_handler(CallbackQueryHandler(show_partner_report_menu, pattern="^rep_part$"))
     app.add_handler(CallbackQueryHandler(select_date_range, pattern="^preport_\\d+$"))
+    app.add_handler(CallbackQueryHandler(choose_scope, pattern="^range_(week|custom)$"))
+    app.add_handler(CallbackQueryHandler(ask_custom_start, pattern="^range_custom$"))
+    # The save_custom_start step is for the custom date input - use MessageHandler if needed in your framework
+    app.add_handler(CallbackQueryHandler(show_report, pattern="^scope_"))
+    app.add_handler(CallbackQueryHandler(paginate, pattern="^page_(next|prev)$"))
+    app.add_handler(CallbackQueryHandler(export_pdf, pattern="^export_pdf$"))
+    app.add_handler(CallbackQueryHandler(_goto_main_menu, pattern="^main_menu$"))
