@@ -397,3 +397,12 @@ def register_customer_report_handlers(app):
         per_message=False,
     )
     app.add_handler(conv)
+    # Add these stateless handlers to allow access from any state
+    app.add_handler(CallbackQueryHandler(show_customer_report_menu, pattern="^rep_cust$"))
+    app.add_handler(CallbackQueryHandler(select_date_range, pattern="^custrep_\\d+$"))
+    app.add_handler(CallbackQueryHandler(choose_report_scope, pattern="^daterange_"))
+    app.add_handler(CallbackQueryHandler(get_custom_date, pattern="^daterange_custom$"))
+    app.add_handler(CallbackQueryHandler(show_customer_report, pattern="^scope_"))
+    app.add_handler(CallbackQueryHandler(paginate_report, pattern="^page_(prev|next)$"))
+    app.add_handler(CallbackQueryHandler(export_pdf_report, pattern="^export_pdf$"))
+    app.add_handler(CallbackQueryHandler(_goto_main_menu, pattern="^main_menu$"))
