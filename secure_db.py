@@ -1,4 +1,3 @@
-# secure_db.py
 import os
 import json
 import base64
@@ -24,7 +23,6 @@ class EncryptedJSONStorage(JSONStorage):
     def read(self):
         logger.info("READ CALLED")
         try:
-            # Always open the file for reading
             if not os.path.exists(self._storage_path):
                 logger.warning("📂 DB file does not exist, returning {}")
                 return {}
@@ -49,7 +47,6 @@ class EncryptedJSONStorage(JSONStorage):
             json_str = json.dumps(data, separators=(",", ":")).encode()
             token = self.fernet.encrypt(json_str)
             encoded = base64.urlsafe_b64encode(token).decode()
-            # Always open the file for writing
             with open(self._storage_path, "w", encoding="utf-8") as f:
                 f.seek(0)
                 f.truncate()
@@ -136,6 +133,10 @@ class SecureDB:
             os.remove(DB_FILE)
             logger.warning("🗑️ DB file deleted")
         if os.path.exists(SALT_FILE):
+            try:
+                os.chmod(SALT_FILE, 0o666)  # Make salt writable before deleting
+            except Exception as e:
+                logger.warning(f"Could not change salt file permissions: {e}")
             os.remove(SALT_FILE)
             logger.warning("🗑️ Salt file deleted")
         self._passphrase = None
