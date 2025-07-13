@@ -296,9 +296,9 @@ async def show_report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Reports: choose a type", reply_markup=kb
     )
 
-# ════════════════════════════════════════════════════════════
+# ──────────────────────────────
 # Main bot runner
-# ════════════════════════════════════════════════════════════
+# ──────────────────────────────
 async def run_bot():
     logging.basicConfig(
         format="%(asctime)s — %(name)s — %(levelname)s — %(message)s",
@@ -333,12 +333,16 @@ async def run_bot():
         fallbacks=[],
     ))
 
-    # Root / back
+    # Root / back commands
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(start, pattern="^main_menu$"))
     app.add_handler(CallbackQueryHandler(show_adduser_menu, pattern="^adduser_menu$"))
     app.add_handler(CallbackQueryHandler(show_addfinancial_menu, pattern="^addfinancial_menu$"))
     app.add_handler(CallbackQueryHandler(show_report_menu, pattern="^report_menu$"))
+
+    # **Register backup handlers BEFORE owner handlers!**
+    from handlers.backup import register_backup_handlers
+    register_backup_handlers(app)
 
     # Register feature handlers
     register_customer_handlers(app)
@@ -351,8 +355,11 @@ async def run_bot():
     app.add_handler(CallbackQueryHandler(show_stockin_menu, pattern="^stockin_menu$"))
     register_partner_sales_handlers(app)
     app.add_handler(CallbackQueryHandler(show_partner_sales_menu, pattern="^partner_sales_menu$"))
+
+    # Register owner handlers AFTER backup handlers
     register_owner_handlers(app)
     app.add_handler(CallbackQueryHandler(show_owner_menu, pattern="^owner_menu$"))
+
     # Reports
     register_customer_report_handlers(app)
     register_partner_report_handlers(app)
@@ -360,7 +367,6 @@ async def run_bot():
     register_store_report_handlers(app)
     app.add_handler(CallbackQueryHandler(show_store_report_menu, pattern="^rep_store$"))
     register_owner_report_handlers(app)
-  
 
     # Start polling and background auto-lock
     asyncio.create_task(auto_lock_task())
@@ -373,6 +379,7 @@ async def run_bot():
         await app.updater.stop()
         await app.stop()
         await app.shutdown()
+
 
 # ════════════════════════════════════════════════════════════
 # Simple self-supervisor — restarts on crash
