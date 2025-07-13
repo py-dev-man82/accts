@@ -34,15 +34,14 @@ MAX_BACKUPS = 5
 ADMIN_IDS = getattr(config, "ADMIN_IDS", [])
 RESTORE_WAITING = range(1)
 
-# ──────────── Nextcloud WebDAV Upload ─────────────
+# ──────────── Nextcloud WebDAV Upload (optional) ─────────────
 def upload_to_nextcloud(local_file_path, remote_filename):
-    # Skip upload if config is missing or incomplete
     url = getattr(config, "NEXTCLOUD_URL", "").strip()
     user = getattr(config, "NEXTCLOUD_USER", "").strip()
     pw = getattr(config, "NEXTCLOUD_PASS", "").strip()
     if not url or not user or not pw:
         logging.info("Nextcloud upload skipped: credentials not set.")
-        return None  # None = skipped (not error)
+        return None
     try:
         with open(local_file_path, "rb") as fin:
             r = requests.put(
@@ -132,10 +131,10 @@ def make_backup_file(suffix=""):
 @require_unlock
 async def backup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update):
-        await update.message.reply_text("❌ You are not authorized to use this command.")
+        await update.callback_query.answer("❌ You are not authorized to use this command.", show_alert=True)
         return
     backup_file = make_backup_file()
-    await update.message.reply_document(
+    await update.callback_query.message.reply_document(
         document=InputFile(backup_file),
         filename=os.path.basename(backup_file),
         caption="🗄️ Encrypted DB backup (with SHA256 integrity check). Keep safe!"
@@ -147,9 +146,9 @@ async def backup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Restore (from uploaded file, with hash check)
 async def restore_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update):
-        await update.message.reply_text("❌ You are not authorized to use this command.")
+        await update.callback_query.answer("❌ You are not authorized to use this command.", show_alert=True)
         return ConversationHandler.END
-    await update.message.reply_text(
+    await update.callback_query.message.reply_text(
         "⚠️ Upload your backup archive (.zip) with DB, salt, and hash file. "
         "This will OVERWRITE your current DB if hashes match.\n"
         "Type /cancel to abort."
@@ -202,7 +201,7 @@ async def restore_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # List and download backups + restore from server
 async def backups_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update):
-        await update.message.reply_text("❌ Not authorized.")
+        await update.callback_query.answer("❌ Not authorized.", show_alert=True)
         return
     backups = sorted(
         [f for f in os.listdir(RETENTION_DIR) if f.endswith('.zip')],
@@ -210,7 +209,7 @@ async def backups_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reverse=True
     )
     if not backups:
-        await update.message.reply_text("No backups found.")
+        await update.callback_query.message.reply_text("No backups found.")
         return
     buttons = []
     for fname in backups:
@@ -219,7 +218,7 @@ async def backups_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton("🔄 Restore", callback_data=f"restorefile_{fname}")
         ])
     reply_markup = InlineKeyboardMarkup(buttons)
-    await update.message.reply_text(
+    await update.callback_query.message.reply_text(
         "Available backups:\nSelect to download or restore (rollback) a backup.",
         reply_markup=reply_markup
     )
@@ -284,7 +283,7 @@ async def backups_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.callback_query.message.reply_text("Restore cancelled.")
 
 # ──────────────────────────────
-# Weekly Autobackup Task (runs forever, notifies admins, uploads to Nextcloud if configured)
+# Weekly Autobackup Task (notifies admins, uploads to Nextcloud if set)
 async def autobackup_task(app: Application):
     while True:
         now = datetime.now()
@@ -306,7 +305,7 @@ async def autobackup_task(app: Application):
                 msg = f"✅ Weekly auto-backup uploaded to Nextcloud: <code>{os.path.basename(backup_file)}</code>"
             elif cloud_result is False:
                 msg = f"⚠️ Weekly backup upload to Nextcloud FAILED!"
-            else:  # None: not configured/skipped
+            else:
                 msg = f"✅ Weekly auto-backup saved locally (Nextcloud not configured)."
             for admin_id in ADMIN_IDS:
                 try:
@@ -335,6 +334,4 @@ def register_backup_handlers(app: Application):
     app.add_handler(restore_conv)
     app.add_handler(CommandHandler("backups", backups_command))
     app.add_handler(CallbackQueryHandler(backups_callback, pattern="^(downloadbackup_|restorefile_|restorefile_confirm|restorefile_cancel)"))
-    # Schedule auto-backup (fire-and-forget)
     app.create_task(autobackup_task(app))
-
