@@ -1,5 +1,3 @@
-# handlers/reports/store_report.py
-
 import logging
 from datetime import datetime, timedelta
 from typing import List, Dict
@@ -303,8 +301,6 @@ def build_store_report_lines(ctx, start, end, sid, cur, secure_db, get_ledger):
     lines.append("────────────────────────────────────")
     lines.append(f"Total Position:      {fmt_money(balance + stock_value, cur)}")
 
-
-
     return lines
 
 @require_unlock
@@ -441,6 +437,14 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return REPORT_PAGE
 
 @require_unlock
+async def paginate(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.callback_query.data == "page_next":
+        context.user_data["page"] += 1
+    elif update.callback_query.data == "page_prev":
+        context.user_data["page"] = max(0, context.user_data.get("page", 0) - 1)
+    return await show_report(update, context)
+
+@require_unlock
 async def export_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer("Generating PDF …")
     ctx = context.user_data
@@ -485,4 +489,5 @@ def register_store_report_handlers(app):
     app.add_handler(CallbackQueryHandler(select_date_range, pattern="^store_sreport_"))
     app.add_handler(CallbackQueryHandler(choose_scope, pattern="^store_range_"))
     app.add_handler(CallbackQueryHandler(show_report, pattern="^store_scope_"))
-    app.add_handler(CallbackQueryHandler(export_pdf, pattern="^store_export_pdf"))
+    app.add_handler(CallbackQueryHandler(export_pdf, pattern="^store_export_pdf$"))
+    app.add_handler(CallbackQueryHandler(paginate, pattern="^page_(next|prev)$"))
