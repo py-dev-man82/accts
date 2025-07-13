@@ -216,7 +216,7 @@ def register_owner_handlers(app: Application):
     print("[DEBUG] Registering all owner handlers")
     # Adjust POT: ConversationHandler with BOTH /adjustpot and button entry
     pot_conv = ConversationHandler(
-        entry_points=[
+        entry_points=[ 
             CallbackQueryHandler(adjust_pot_balance, pattern="^owner_adjust_pot$"),
             CommandHandler("adjustpot", adjust_pot_balance),
         ],
