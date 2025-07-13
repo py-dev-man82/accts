@@ -357,7 +357,7 @@ def register_backup_handlers(app: Application):
     restore_conv = ConversationHandler(
         entry_points=[CommandHandler("restore", restore_command)],
         states={
-            RESTORE_WAITING: [MessageHandler(filters.Document.ALL & ~filters.COMMAND, restore_receive)],
+            RESTORE_WAITING: [MessageHandler(filters.ALL, restore_receive)],
         },
         fallbacks=[CommandHandler("cancel", restore_cancel)],
         name="restore_conv",
