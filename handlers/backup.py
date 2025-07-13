@@ -1,5 +1,3 @@
-# handlers/backup.py
-
 import os
 import shutil
 import tempfile
@@ -7,7 +5,7 @@ import logging
 import hashlib
 import requests
 import stat
-from zipfile import ZipFile, ZIP_DEFLATED
+from zipfile import ZipFile, ZIP_STORED
 from datetime import datetime, timedelta
 import asyncio
 
@@ -35,7 +33,6 @@ MAX_BACKUPS = 5
 ADMIN_TELEGRAM_ID = getattr(config, "ADMIN_TELEGRAM_ID", None)
 RESTORE_WAITING = range(1)
 
-# ──────────── Nextcloud WebDAV Upload (optional) ─────────────
 def upload_to_nextcloud(local_file_path, remote_filename):
     url = getattr(config, "NEXTCLOUD_URL", "").strip()
     user = getattr(config, "NEXTCLOUD_USER", "").strip()
@@ -131,7 +128,8 @@ def make_backup_file(suffix=""):
         hout.write(hash_txt)
 
     try:
-        with ZipFile(BACKUP_TMP, 'w', compression=ZIP_DEFLATED) as zf:
+        # No compression (ZIP_STORED)
+        with ZipFile(BACKUP_TMP, 'w', compression=ZIP_STORED) as zf:
             for filepath in BACKUP_FILES:
                 zf.write(filepath, arcname=os.path.basename(filepath))
             zf.write(HASH_FILE, arcname=HASH_FILE)
@@ -146,7 +144,6 @@ def make_backup_file(suffix=""):
         logging.error("Backup zip file not created or is empty")
         raise IOError("Backup zip creation failed")
 
-    # --- VERIFY ZIP --- #
     try:
         with ZipFile(BACKUP_TMP, 'r') as testzip:
             badfile = testzip.testzip()
@@ -179,14 +176,23 @@ async def backup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await _reply(update, f"❌ Failed to create backup: {e}")
         return
+
+    # --- Patch: send as .dbk file to avoid Telegram "zip" bugs ---
+    dbk_file = backup_file.replace('.zip', '.dbk')
+    shutil.copy2(backup_file, dbk_file)
     await _reply_document(
         update,
-        document=InputFile(backup_file),
-        filename=os.path.basename(backup_file),
-        caption="🗄️ Encrypted DB backup (with SHA256 integrity check). Keep safe!"
+        document=InputFile(dbk_file),
+        filename=os.path.basename(dbk_file),
+        caption="🗄️ Encrypted DB backup (SHA256 included). After download, **rename to .zip** before extracting!",
     )
+    os.remove(dbk_file)
     if os.path.exists(BACKUP_TMP):
         os.remove(BACKUP_TMP)
+
+# (the rest is unchanged)
+# ... [Keep your restore, list, and auto-backup logic as before]
+
 
 # ──────────────────────────────
 # Restore (upload backup zip)
