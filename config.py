@@ -11,3 +11,9 @@ DB_PATH           = "data/db.json"
 
 # Toggle DB encryption/locking (False in test, True in production)
 ENABLE_ENCRYPTION = True
+
+# config.py
+
+NEXTCLOUD_URL = "https://your.nextcloud.server/remote.php/dav/files/YOURUSERNAME/BACKUPS/"
+NEXTCLOUD_USER = "YOURUSERNAME"
+NEXTCLOUD_PASS = "YOUR_SUPER_STRONG_PASSWORD"
