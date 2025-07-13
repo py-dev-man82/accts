@@ -61,7 +61,9 @@ pip install \
     cryptography \
     pandas \
     xlsxwriter \
-    reportlab
+    reportlab \
+    requests
+
 
 # 7) Interactive POT starting balance
 read -p "Enter initial POT starting balance (leave blank to skip): " POT_START
