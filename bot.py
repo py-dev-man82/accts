@@ -44,16 +44,34 @@ from handlers.partner_sales     import register_partner_sales_handlers, show_par
 from handlers.reports.customer_report import (
     register_customer_report_handlers,
     show_customer_report_menu,
+    select_date_range as select_customer_date_range,
+    get_custom_date as get_customer_custom_date,
+    choose_report_scope as choose_customer_report_scope,
+    show_customer_report as show_customer_report,
+    paginate_report as paginate_customer_report,
+    export_pdf_report as export_customer_pdf,
 )
 from handlers.reports.partner_report  import (
     register_partner_report_handlers,
     show_partner_report_menu,
     save_custom_start,
+    select_date_range as select_partner_date_range,
+    ask_custom_start as ask_partner_custom_start,
+    choose_scope as choose_partner_scope,
+    show_report as show_partner_report,
+    paginate as paginate_partner_report,
+    export_pdf as export_partner_pdf,
 )
 from handlers.reports.store_report    import (
     register_store_report_handlers,
     show_store_report_menu,
     save_custom_start as save_custom_start_store,
+    select_date_range as select_store_date_range,
+    ask_custom_start as ask_store_custom_start,
+    choose_scope as choose_store_scope,
+    show_report as show_store_report,
+    paginate as paginate_store_report,
+    export_pdf as export_store_pdf,
 )
 from handlers.reports.owner_report    import (
     register_owner_report_handlers,
@@ -323,33 +341,6 @@ async def show_report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.edit_message_text(
         "Reports: choose a type", reply_markup=kb
     )
-    from handlers.reports.customer_report import (
-    select_date_range as select_customer_date_range,
-    get_custom_date as get_customer_custom_date,
-    choose_report_scope as choose_customer_report_scope,
-    show_customer_report as show_customer_report,
-    paginate_report as paginate_customer_report,
-    export_pdf_report as export_customer_pdf,
-)
-
-from handlers.reports.partner_report import (
-    select_date_range as select_partner_date_range,
-    ask_custom_start as ask_partner_custom_start,
-    choose_scope as choose_partner_scope,
-    show_report as show_partner_report,
-    paginate as paginate_partner_report,
-    export_pdf as export_partner_pdf,
-)
-
-from handlers.reports.store_report import (
-    select_date_range as select_store_date_range,
-    ask_custom_start as ask_store_custom_start,
-    choose_scope as choose_store_scope,
-    show_report as show_store_report,
-    paginate as paginate_store_report,
-    export_pdf as export_store_pdf,
-)
-
 
 # ═══════════════════════════════════════
 # run_bot() – handler registration
@@ -435,41 +426,36 @@ async def run_bot():
     register_owner_handlers(app)
     app.add_handler(CallbackQueryHandler(show_owner_menu, pattern="^owner_menu$"))
 
-    # ... after all handler registrations:
+    # ── Register all report handlers ──
     register_customer_report_handlers(app)
     register_partner_report_handlers(app)
     register_store_report_handlers(app)
     register_owner_report_handlers(app)
 
-    # Wire up "dangling" partner report select if not in ConversationHandler
-    from handlers.reports.partner_report import select_date_range
-    app.add_handler(CallbackQueryHandler(select_date_range, pattern="^preport_\\d+$"))
-
+    # --- Reports direct callback wiring (critical for nav!) ---
     # Customer report direct callbacks
-app.add_handler(CallbackQueryHandler(select_customer_date_range, pattern="^custrep_\\d+$"))
-app.add_handler(CallbackQueryHandler(choose_customer_report_scope, pattern="^daterange_"))
-app.add_handler(CallbackQueryHandler(get_customer_custom_date, pattern="^daterange_custom$"))
-app.add_handler(CallbackQueryHandler(show_customer_report, pattern="^scope_"))
-app.add_handler(CallbackQueryHandler(paginate_customer_report, pattern="^page_(prev|next)$"))
-app.add_handler(CallbackQueryHandler(export_customer_pdf, pattern="^export_pdf$"))
+    app.add_handler(CallbackQueryHandler(select_customer_date_range, pattern="^custrep_\\d+$"))
+    app.add_handler(CallbackQueryHandler(choose_customer_report_scope, pattern="^daterange_"))
+    app.add_handler(CallbackQueryHandler(get_customer_custom_date, pattern="^daterange_custom$"))
+    app.add_handler(CallbackQueryHandler(show_customer_report, pattern="^scope_"))
+    app.add_handler(CallbackQueryHandler(paginate_customer_report, pattern="^page_(prev|next)$"))
+    app.add_handler(CallbackQueryHandler(export_customer_pdf, pattern="^export_pdf$"))
 
-# Partner report direct callbacks
-app.add_handler(CallbackQueryHandler(select_partner_date_range, pattern="^preport_\\d+$"))
-app.add_handler(CallbackQueryHandler(choose_partner_scope, pattern="^range_(week|custom)$"))
-app.add_handler(CallbackQueryHandler(ask_partner_custom_start, pattern="^range_custom$"))
-app.add_handler(CallbackQueryHandler(show_partner_report, pattern="^scope_"))
-app.add_handler(CallbackQueryHandler(paginate_partner_report, pattern="^page_(next|prev)$"))
-app.add_handler(CallbackQueryHandler(export_partner_pdf, pattern="^export_pdf$"))
+    # Partner report direct callbacks
+    app.add_handler(CallbackQueryHandler(select_partner_date_range, pattern="^preport_\\d+$"))
+    app.add_handler(CallbackQueryHandler(choose_partner_scope, pattern="^range_(week|custom)$"))
+    app.add_handler(CallbackQueryHandler(ask_partner_custom_start, pattern="^range_custom$"))
+    app.add_handler(CallbackQueryHandler(show_partner_report, pattern="^scope_"))
+    app.add_handler(CallbackQueryHandler(paginate_partner_report, pattern="^page_(next|prev)$"))
+    app.add_handler(CallbackQueryHandler(export_partner_pdf, pattern="^export_pdf$"))
 
-# Store report direct callbacks
-app.add_handler(CallbackQueryHandler(select_store_date_range, pattern="^sreport_\\d+$"))
-app.add_handler(CallbackQueryHandler(choose_store_scope, pattern="^range_(week|custom)$"))
-app.add_handler(CallbackQueryHandler(ask_store_custom_start, pattern="^range_custom$"))
-app.add_handler(CallbackQueryHandler(show_store_report, pattern="^scope_"))
-app.add_handler(CallbackQueryHandler(paginate_store_report, pattern="^page_(next|prev)$"))
-app.add_handler(CallbackQueryHandler(export_store_pdf, pattern="^export_pdf$"))
-
-
+    # Store report direct callbacks
+    app.add_handler(CallbackQueryHandler(select_store_date_range, pattern="^sreport_\\d+$"))
+    app.add_handler(CallbackQueryHandler(choose_store_scope, pattern="^range_(week|custom)$"))
+    app.add_handler(CallbackQueryHandler(ask_store_custom_start, pattern="^range_custom$"))
+    app.add_handler(CallbackQueryHandler(show_store_report, pattern="^scope_"))
+    app.add_handler(CallbackQueryHandler(paginate_store_report, pattern="^page_(next|prev)$"))
+    app.add_handler(CallbackQueryHandler(export_store_pdf, pattern="^export_pdf$"))
 
     # --- Start polling & auto-lock background task ---
     asyncio.create_task(auto_lock_task())
