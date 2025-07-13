@@ -1,3 +1,4 @@
+# bot.py
 #!/usr/bin/env python3
 import logging
 import asyncio
@@ -9,7 +10,7 @@ import time
 import config
 from secure_db import secure_db, EncryptedJSONStorage
 from tinydb import TinyDB
-from handlers.ledger import seed_tables
+from handlers.ledger import seed_tables  # 🌱 Correct import path for seeding
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     ApplicationBuilder,
@@ -21,11 +22,14 @@ from telegram.ext import (
     ConversationHandler,
 )
 
+# Core utilities
 from handlers.utils import require_unlock
 
+# States for initdb conversation
 CONFIRM_INITDB, ENTER_OLD_PIN, SET_NEW_PIN, CONFIRM_NEW_PIN = range(4)
 UNLOCK_PIN = range(1)
 
+# Feature modules
 from handlers.customers         import register_customer_handlers,  show_customer_menu
 from handlers.stores            import register_store_handlers,     show_store_menu
 from handlers.partners          import register_partner_handlers,   show_partner_menu
@@ -35,6 +39,7 @@ from handlers.payouts           import register_payout_handlers,    show_payout_
 from handlers.stockin           import register_stockin_handlers,   show_stockin_menu
 from handlers.partner_sales     import register_partner_sales_handlers, show_partner_sales_menu
 
+# Reports
 from handlers.reports.customer_report import register_customer_report_handlers
 from handlers.reports.partner_report  import (
     register_partner_report_handlers,
@@ -48,8 +53,12 @@ from handlers.reports.store_report    import (
 )
 from handlers.reports.owner_report    import register_owner_report_handlers
 
+# Owner module
 from handlers.owner import register_owner_handlers, show_owner_menu
 
+# ════════════════════════════════════════════════════════════
+# Admin-only helper commands
+# ════════════════════════════════════════════════════════════
 async def restart_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("♻️ Bot is restarting…")
     logging.warning("⚠️ Admin issued /restart — restarting bot.")
@@ -61,8 +70,11 @@ async def kill_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logging.warning("⚠️ Admin issued /kill — shutting down cleanly.")
     raise SystemExit(0)
 
-# ========== InitDB Flow ==========
+# ════════════════════════════════════════════════════════════
+# InitDB flow with secure setup script and enforced PIN
+# ════════════════════════════════════════════════════════════
 async def initdb_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Ask for confirmation before resetting DB."""
     if not config.ENABLE_ENCRYPTION:
         await update.message.reply_text(
             "❌ Encryption must be enabled to initialize DB. Set ENABLE_ENCRYPTION = True in config.py."
@@ -147,7 +159,7 @@ async def confirm_new_pin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         storage=lambda p: EncryptedJSONStorage(p, secure_db.fernet)
     )
 
-    # Seed initial tables
+    # 🌱 Seed initial tables
     seed_tables(secure_db)
     secure_db.lock()
 
@@ -158,44 +170,66 @@ async def confirm_new_pin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     subprocess.Popen([sys.executable, os.path.abspath(sys.argv[0]), "child"])
     raise SystemExit(0)
 
-# ========== Unlock Flow ==========
+# ════════════════════════════════════════════════════════════
+# Unlock command flow
+# ════════════════════════════════════════════════════════════
 async def unlock_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    prompt = "🔑 *Enter your encryption PIN to unlock:*"
-    if update.message:
-        await update.message.reply_text(prompt, parse_mode="Markdown")
-    elif update.callback_query:
-        await update.callback_query.answer()
-        await update.callback_query.message.reply_text(prompt, parse_mode="Markdown")
+    context.user_data["unlock_attempts"] = 0
+    if hasattr(update, 'message') and update.message:
+        await update.message.reply_text("🔑 *Enter your encryption PIN to unlock:*", parse_mode="Markdown")
+    elif hasattr(update, 'callback_query') and update.callback_query:
+        await update.callback_query.edit_message_text("🔑 *Enter your encryption PIN to unlock:*", parse_mode="Markdown")
     return UNLOCK_PIN
 
 async def unlock_process(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pin = update.message.text.strip()
-    try:
-        secure_db.unlock(pin)
-        secure_db.mark_activity()
+    success = secure_db.unlock(pin)
+    if success:
+        # Optionally, call secure_db.mark_activity() if needed
         await update.message.reply_text("✅ *Database unlocked successfully!*", parse_mode="Markdown")
-    except Exception as e:
-        logging.error(f"Unlock failed: {e}")
-        await update.message.reply_text(f"❌ *Unlock failed:* {e}", parse_mode="Markdown")
-    return ConversationHandler.END
+        return ConversationHandler.END
+    else:
+        attempts = getattr(secure_db, "_failed_attempts", 0)
+        left = max(0, getattr(secure_db, "MAX_PIN_ATTEMPTS", 7) - attempts)
+        if left > 0:
+            await update.message.reply_text(
+                f"❌ *Unlock failed.* Attempts left: {left}\nTry again:",
+                parse_mode="Markdown"
+            )
+            return UNLOCK_PIN
+        else:
+            await update.message.reply_text(
+                "☠️ *Too many wrong attempts. DB wiped for security.*",
+                parse_mode="Markdown"
+            )
+            return ConversationHandler.END
 
-# ========== Auto-lock background ==========
+# ════════════════════════════════════════════════════════════
+# Auto-lock background task
+# ════════════════════════════════════════════════════════════
 async def auto_lock_task():
-    AUTOLOCK_TIMEOUT = 18000
+    AUTOLOCK_TIMEOUT = 180  # 3 minutes
     while True:
         await asyncio.sleep(10)
         if secure_db.is_unlocked():
             now = time.monotonic()
-            if now - secure_db.get_last_access() > AUTOLOCK_TIMEOUT:
+            try:
+                last = secure_db.get_last_access()
+            except AttributeError:
+                last = now  # fallback for old secure_db
+            if now - last > AUTOLOCK_TIMEOUT:
                 secure_db.lock()
                 logging.warning("🔒 Auto-lock triggered after inactivity.")
 
-# ========== Main Menu and Submenus ==========
+# ════════════════════════════════════════════════════════════
+# Main Menu and Nested Submenus
+# ════════════════════════════════════════════════════════════
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Main menu with DB status indicator and unlock/initdb shortcuts."""
     if not os.path.exists(config.DB_PATH):
         status_icon = "📂 No DB found: run /initdb"
         kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("Init DB", callback_data="initdb_menu")]
+            [InlineKeyboardButton("⚡️ InitDB", callback_data="initdb_menu")]
         ])
     elif secure_db.is_unlocked():
         status_icon = "🔓 Unlocked"
@@ -208,9 +242,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         status_icon = "🔒 Locked"
         kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("Unlock", callback_data="unlock_menu")],
-            [InlineKeyboardButton("Init DB", callback_data="initdb_menu")]
+            [InlineKeyboardButton("🔓 Unlock DB", callback_data="unlock_button")],
+            [InlineKeyboardButton("⚡️ InitDB", callback_data="initdb_menu")],
         ])
+
     text = f"Main Menu: choose a section\n\nStatus: *{status_icon}*"
     if update.callback_query:
         await update.callback_query.answer()
@@ -257,7 +292,9 @@ async def show_report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Reports: choose a type", reply_markup=kb
     )
 
-# ========== Main bot runner ==========
+# ════════════════════════════════════════════════════════════
+# Main bot runner
+# ════════════════════════════════════════════════════════════
 async def run_bot():
     logging.basicConfig(
         format="%(asctime)s — %(name)s — %(levelname)s — %(message)s",
@@ -265,6 +302,7 @@ async def run_bot():
     )
     app = ApplicationBuilder().token(config.BOT_TOKEN).build()
 
+    # Admin commands
     app.add_handler(CommandHandler("restart", restart_bot))
     app.add_handler(CommandHandler("kill",    kill_bot))
 
@@ -281,20 +319,24 @@ async def run_bot():
         fallbacks=[],
     ))
 
-    # Unlock handler
+    # Unlock handler (handles both /unlock and menu button)
     app.add_handler(ConversationHandler(
-        entry_points=[CommandHandler("unlock", unlock_start),
-                      CallbackQueryHandler(unlock_start, pattern="^unlock_menu$")],
+        entry_points=[
+            CommandHandler("unlock", unlock_start),
+            CallbackQueryHandler(unlock_start, pattern="^unlock_button$"),
+        ],
         states={UNLOCK_PIN: [MessageHandler(filters.TEXT & ~filters.COMMAND, unlock_process)]},
         fallbacks=[],
     ))
 
+    # Root / back
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(start, pattern="^main_menu$"))
     app.add_handler(CallbackQueryHandler(show_adduser_menu, pattern="^adduser_menu$"))
     app.add_handler(CallbackQueryHandler(show_addfinancial_menu, pattern="^addfinancial_menu$"))
     app.add_handler(CallbackQueryHandler(show_report_menu, pattern="^report_menu$"))
 
+    # Register feature handlers
     register_customer_handlers(app)
     register_store_handlers(app)
     register_partner_handlers(app)
@@ -306,6 +348,7 @@ async def run_bot():
     register_partner_sales_handlers(app)
     app.add_handler(CallbackQueryHandler(show_partner_sales_menu, pattern="^partner_sales_menu$"))
 
+    # Reports
     register_customer_report_handlers(app)
     register_partner_report_handlers(app)
     app.add_handler(CallbackQueryHandler(show_partner_report_menu, pattern="^rep_part$"))
@@ -314,6 +357,7 @@ async def run_bot():
     register_owner_report_handlers(app)
     app.add_handler(CallbackQueryHandler(show_owner_menu, pattern="^owner_menu$"))
 
+    # Start polling and background auto-lock
     asyncio.create_task(auto_lock_task())
     await app.initialize()
     await app.start()
@@ -325,6 +369,9 @@ async def run_bot():
         await app.stop()
         await app.shutdown()
 
+# ════════════════════════════════════════════════════════════
+# Simple self-supervisor — restarts on crash
+# ════════════════════════════════════════════════════════════
 def main_supervisor():
     while True:
         logging.warning("🔄 Starting bot process…")
