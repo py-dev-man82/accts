@@ -355,7 +355,10 @@ def register_backup_handlers(app: Application):
     app.add_handler(CommandHandler("backup", backup_command))
     app.add_handler(CommandHandler("backups", backups_command))
     restore_conv = ConversationHandler(
-        entry_points=[CommandHandler("restore", restore_command)],
+        entry_points=[
+            CommandHandler("restore", restore_command),
+            CallbackQueryHandler(restore_command, pattern="^backup_restore$"),
+        ],
         states={
             RESTORE_WAITING: [MessageHandler(filters.ALL, restore_receive)],
         },
