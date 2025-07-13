@@ -57,7 +57,7 @@ from handlers.reports.store_report    import (
 )
 from handlers.reports.owner_report    import (
     register_owner_report_handlers,
-    show_owner_position,        # <-- correct function
+    show_owner_position,        # <-- main entry for Owner report
 )
 
 # Owner module
@@ -301,7 +301,7 @@ async def show_addfinancial_menu(update: Update, context: ContextTypes.DEFAULT_T
         [
             [InlineKeyboardButton("Sales",          callback_data="sales_menu")],
             [InlineKeyboardButton("Payments",       callback_data="payment_menu")],
-            [InlineKeyboardButton("Expenses",       callback_data="expense_menu")],  # ← fixed
+            [InlineKeyboardButton("Expenses",       callback_data="expense_menu")],
             [InlineKeyboardButton("Payouts",        callback_data="payout_menu")],
             [InlineKeyboardButton("Stock-In",       callback_data="stockin_menu")],
             [InlineKeyboardButton("Partner Sales",  callback_data="partner_sales_menu")],
@@ -338,15 +338,22 @@ async def run_bot():
     # --- Admin commands ---
     app.add_handler(CommandHandler("restart", restart_bot))
     app.add_handler(CommandHandler("kill",    kill_bot))
+
+    # --- Top-level menu handlers (wiring for all patterns) ---
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CallbackQueryHandler(start, pattern="^main_menu$"))
+    app.add_handler(CallbackQueryHandler(show_adduser_menu,      pattern="^adduser_menu$"))
+    app.add_handler(CallbackQueryHandler(show_addfinancial_menu, pattern="^addfinancial_menu$"))
+    app.add_handler(CallbackQueryHandler(show_report_menu,       pattern="^report_menu$"))
+    app.add_handler(CallbackQueryHandler(unlock_start,           pattern="^unlock_button$"))  # Unlock DB button
+
+    # Top-level report menu buttons
     app.add_handler(CallbackQueryHandler(show_customer_report_menu, pattern="^rep_cust$"))
     app.add_handler(CallbackQueryHandler(show_partner_report_menu,  pattern="^rep_part$"))
     app.add_handler(CallbackQueryHandler(show_store_report_menu,    pattern="^rep_store$"))
-    app.add_handler(CallbackQueryHandler(show_owner_report_menu,    pattern="^rep_owner$"))
+    app.add_handler(CallbackQueryHandler(show_owner_position,       pattern="^rep_owner$"))  # Owner Summary
 
-
-    # ──────────────────────────────────────────────────────────
-    # InitDB conversation
-    # ──────────────────────────────────────────────────────────
+    # --- InitDB conversation ---
     app.add_handler(
         ConversationHandler(
             entry_points=[
@@ -355,20 +362,15 @@ async def run_bot():
             ],
             states={
                 CONFIRM_INITDB: [CallbackQueryHandler(initdb_confirm)],
-                ENTER_OLD_PIN:  [MessageHandler(filters.TEXT & ~filters.COMMAND,
-                                                enter_old_pin)],
-                SET_NEW_PIN:    [MessageHandler(filters.TEXT & ~filters.COMMAND,
-                                                set_new_pin)],
-                CONFIRM_NEW_PIN:[MessageHandler(filters.TEXT & ~filters.COMMAND,
-                                                confirm_new_pin)],
+                ENTER_OLD_PIN:  [MessageHandler(filters.TEXT & ~filters.COMMAND, enter_old_pin)],
+                SET_NEW_PIN:    [MessageHandler(filters.TEXT & ~filters.COMMAND, set_new_pin)],
+                CONFIRM_NEW_PIN:[MessageHandler(filters.TEXT & ~filters.COMMAND, confirm_new_pin)],
             },
             fallbacks=[],
         )
     )
 
-    # ──────────────────────────────────────────────────────────
-    # Unlock-DB conversation
-    # ──────────────────────────────────────────────────────────
+    # --- Unlock-DB conversation ---
     app.add_handler(
         ConversationHandler(
             entry_points=[
@@ -376,19 +378,11 @@ async def run_bot():
                 CallbackQueryHandler(unlock_start, pattern="^unlock_button$"),
             ],
             states={
-                UNLOCK_PIN: [MessageHandler(filters.TEXT & ~filters.COMMAND,
-                                            unlock_process)]
+                UNLOCK_PIN: [MessageHandler(filters.TEXT & ~filters.COMMAND, unlock_process)]
             },
             fallbacks=[],
         )
     )
-
-    # --- Root navigation handlers ---
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(start, pattern="^main_menu$"))
-    app.add_handler(CallbackQueryHandler(show_adduser_menu,      pattern="^adduser_menu$"))
-    app.add_handler(CallbackQueryHandler(show_addfinancial_menu, pattern="^addfinancial_menu$"))
-    app.add_handler(CallbackQueryHandler(show_report_menu,       pattern="^report_menu$"))
 
     # Register backup BEFORE owner
     from handlers.backup import register_backup_handlers
@@ -418,12 +412,6 @@ async def run_bot():
     register_partner_report_handlers(app)
     register_store_report_handlers(app)
     register_owner_report_handlers(app)
-
-    # Top-level report menu buttons
-    app.add_handler(CallbackQueryHandler(show_customer_report_menu, pattern="^rep_cust$"))
-    app.add_handler(CallbackQueryHandler(show_partner_report_menu,  pattern="^rep_part$"))
-    app.add_handler(CallbackQueryHandler(show_store_report_menu,    pattern="^rep_store$"))
-    app.add_handler(CallbackQueryHandler(show_owner_position,       pattern="^rep_owner$"))  # ← fixed
 
     # --- Start polling & auto-lock background task ---
     asyncio.create_task(auto_lock_task())
