@@ -3,7 +3,7 @@ import logging
 from datetime import datetime
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.ext import (
+from telegram.ext import (f
     ConversationHandler,
     CallbackQueryHandler,
     MessageHandler,
@@ -292,7 +292,11 @@ async def confirm_sale(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         if inv_rec:
             new_qty = inv_rec["quantity"] - qty
-            secure_db.update("store_inventory", {"quantity": new_qty}, [inv_rec.doc_id])
+            secure_db.update(
+                "store_inventory",
+                {"quantity": new_qty},
+                doc_ids=[inv_rec.doc_id]          # ← explicit, future-proof
+            )
             logging.debug("[confirm_sale] inventory updated store:%s item:%s  %s→%s",
                           store_id, item_id, inv_rec["quantity"], new_qty)
 
