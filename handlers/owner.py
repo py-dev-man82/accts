@@ -9,6 +9,7 @@ from telegram.ext import (
     ContextTypes,
     MessageHandler,
     filters,
+    CommandHandler,
     Application,
 )
 from secure_db import secure_db
@@ -30,7 +31,7 @@ from handlers.backup import (
 ) = range(4)
 
 # ────────────────────────────────────────────────
-# Owner Main Menu (now with nested Backup/Restore)
+# Owner Main Menu (with Backup/Restore)
 # ────────────────────────────────────────────────
 async def show_owner_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
@@ -56,35 +57,30 @@ async def show_backup_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🛡️ Backup & Restore:\nChoose an action.", reply_markup=kb
     )
 
-# --- Handle Backup/Restore submenu button clicks (safe for button or /commands) ---
+# --- Handle Backup/Restore submenu button clicks ---
 async def handle_backup_menu_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    data = query.data
-
-    # This lets us call backup handlers with .message (even from callback)
-    class FakeUpdate:
-        def __init__(self, orig_update):
-            self.message = orig_update.callback_query.message
-            self.effective_user = orig_update.effective_user
-            self.callback_query = orig_update.callback_query
-
-    fake_update = FakeUpdate(update)
-
+    data = update.callback_query.data
     if data == "backup_now":
-        await backup_command(fake_update, context)
+        await backup_command(update, context)
     elif data == "backup_list":
-        await backups_command(fake_update, context)
+        await backups_command(update, context)
     elif data == "backup_restore":
-        await restore_command(fake_update, context)
+        await restore_command(update, context)
     else:
-        await query.answer("Unknown action.", show_alert=True)
+        await update.callback_query.answer("Unknown action.", show_alert=True)
 
 # ════════════════════════════════════════════════
 # Adjust POT Balance flow (multi-step, ConversationHandler)
 # ════════════════════════════════════════════════
 @require_unlock
 async def adjust_pot_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.answer()
+    # This handler works for both commands and buttons
+    if hasattr(update, "callback_query") and update.callback_query:
+        await update.callback_query.answer()
+        msg_method = update.callback_query.edit_message_text
+    else:
+        msg_method = update.message.reply_text
+
     pot_balance = get_balance("owner", "POT")
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("➕ Add Funds", callback_data="pot_add"),
@@ -92,7 +88,7 @@ async def adjust_pot_balance(update: Update, context: ContextTypes.DEFAULT_TYPE)
         [InlineKeyboardButton("✏️ Set Exact Balance", callback_data="pot_set")],
         [InlineKeyboardButton("🔙 Back", callback_data="owner_menu")],
     ])
-    await update.callback_query.edit_message_text(
+    await msg_method(
         f"🏦 Current POT Balance: ${pot_balance:,.2f}\n\nChoose:", reply_markup=kb)
     return O_POT_ACTION
 
@@ -193,9 +189,12 @@ async def save_pot(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # --- Registration for all owner menu logic, including nested backup/restore ---
 def register_owner_handlers(app: Application):
-    # 1. Adjust POT: Conversation Handler (must be first)
+    # Adjust POT: ConversationHandler with BOTH /adjustpot and button entry
     pot_conv = ConversationHandler(
-        entry_points=[CallbackQueryHandler(adjust_pot_balance, pattern="^owner_adjust_pot$")],
+        entry_points=[
+            CallbackQueryHandler(adjust_pot_balance, pattern="^owner_adjust_pot$"),
+            CommandHandler("adjustpot", adjust_pot_balance),
+        ],
         states={
             O_POT_ACTION: [CallbackQueryHandler(get_pot_amount, pattern="^pot_add$|^pot_subtract$|^pot_set$")],
             O_POT_INPUT:  [MessageHandler(filters.TEXT & ~filters.COMMAND, get_pot_note)],
@@ -207,7 +206,12 @@ def register_owner_handlers(app: Application):
     )
     app.add_handler(pot_conv)
 
-    # 2. Owner menu and backup/restore handlers (single-step)
+    # Owner menu and backup/restore handlers (all work from both button and command)
     app.add_handler(CallbackQueryHandler(show_owner_menu, pattern="^owner_menu$"))
     app.add_handler(CallbackQueryHandler(show_backup_menu, pattern="^backup_menu$"))
     app.add_handler(CallbackQueryHandler(handle_backup_menu_button, pattern="^(backup_now|backup_list|backup_restore)$"))
+
+    # Register direct commands for backup actions if you want them too:
+    app.add_handler(CommandHandler("backup", backup_command))
+    app.add_handler(CommandHandler("backups", backups_command))
+    app.add_handler(CommandHandler("restore", restore_command))
