@@ -34,6 +34,7 @@ from handlers.stores            import register_store_handlers,     show_store_m
 from handlers.partners          import register_partner_handlers,   show_partner_menu
 from handlers.sales             import register_sales_handlers
 from handlers.payments          import register_payment_handlers,   show_payment_menu
+from handlers.expenses          import register_expense_handlers,   show_expense_menu  # <-- Added
 from handlers.payouts           import register_payout_handlers,    show_payout_menu
 from handlers.stockin           import register_stockin_handlers,   show_stockin_menu
 from handlers.partner_sales     import register_partner_sales_handlers, show_partner_sales_menu
@@ -150,8 +151,8 @@ async def confirm_new_pin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Failed to run secure DB setup script.")
         return ConversationHandler.END
 
-    pin = context.user_data["new_db_pin"].strip()   # (add strip for safety)
-    secure_db._passphrase = pin                     # <-- Just store as string!
+    pin = context.user_data["new_db_pin"].strip()
+    secure_db._passphrase = pin
     secure_db.fernet = secure_db._derive_key(pin)
     secure_db.db = TinyDB(
         config.DB_PATH,
@@ -276,7 +277,8 @@ async def show_addfinancial_menu(update: Update, context: ContextTypes.DEFAULT_T
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("Sales",          callback_data="sales_menu")],
         [InlineKeyboardButton("Payments",       callback_data="payment_menu")],
-        [InlineKeyboardButton("Expenses",       callback_data="payout_menu")],
+        [InlineKeyboardButton("Expenses",       callback_data="expense_menu")],
+        [InlineKeyboardButton("Payouts",        callback_data="payout_menu")],
         [InlineKeyboardButton("Stock-In",       callback_data="stockin_menu")],
         [InlineKeyboardButton("Partner Sales",  callback_data="partner_sales_menu")],
         [InlineKeyboardButton("🔙 Back",        callback_data="main_menu")],
@@ -350,7 +352,10 @@ async def run_bot():
     register_partner_handlers(app)
     register_sales_handlers(app)
     register_payment_handlers(app)
+    register_expense_handlers(app)   # <--- Expenses module registration
+    app.add_handler(CallbackQueryHandler(show_expense_menu, pattern="^expense_menu$"))
     register_payout_handlers(app)
+    app.add_handler(CallbackQueryHandler(show_payout_menu, pattern="^payout_menu$"))
     register_stockin_handlers(app)
     app.add_handler(CallbackQueryHandler(show_stockin_menu, pattern="^stockin_menu$"))
     register_partner_sales_handlers(app)
@@ -379,7 +384,6 @@ async def run_bot():
         await app.updater.stop()
         await app.stop()
         await app.shutdown()
-
 
 # ════════════════════════════════════════════════════════════
 # Simple self-supervisor — restarts on crash
