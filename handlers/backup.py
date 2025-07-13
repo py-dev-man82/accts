@@ -61,8 +61,22 @@ def upload_to_nextcloud(local_file_path, remote_filename):
         return False
 
 def is_admin(update: Update) -> bool:
-    uid = update.effective_user.id if update.effective_user else None
-    return uid in ADMIN_IDS
+    # Works for both messages and callbacks
+    user = update.effective_user
+    return user and user.id in ADMIN_IDS
+
+def _reply(update: Update, *args, **kwargs):
+    """Always reply in the correct context (message or callback)."""
+    if hasattr(update, "message") and update.message:
+        return update.message.reply_text(*args, **kwargs)
+    elif hasattr(update, "callback_query") and update.callback_query:
+        return update.callback_query.message.reply_text(*args, **kwargs)
+
+def _reply_document(update: Update, *args, **kwargs):
+    if hasattr(update, "message") and update.message:
+        return update.message.reply_document(*args, **kwargs)
+    elif hasattr(update, "callback_query") and update.callback_query:
+        return update.callback_query.message.reply_document(*args, **kwargs)
 
 def compute_hashes(files):
     lines = []
@@ -131,10 +145,11 @@ def make_backup_file(suffix=""):
 @require_unlock
 async def backup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update):
-        await update.callback_query.answer("❌ You are not authorized to use this command.", show_alert=True)
+        await _reply(update, "❌ You are not authorized to use this command.")
         return
     backup_file = make_backup_file()
-    await update.callback_query.message.reply_document(
+    await _reply_document(
+        update,
         document=InputFile(backup_file),
         filename=os.path.basename(backup_file),
         caption="🗄️ Encrypted DB backup (with SHA256 integrity check). Keep safe!"
@@ -146,9 +161,10 @@ async def backup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Restore (from uploaded file, with hash check)
 async def restore_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update):
-        await update.callback_query.answer("❌ You are not authorized to use this command.", show_alert=True)
+        await _reply(update, "❌ You are not authorized to use this command.")
         return ConversationHandler.END
-    await update.callback_query.message.reply_text(
+    await _reply(
+        update,
         "⚠️ Upload your backup archive (.zip) with DB, salt, and hash file. "
         "This will OVERWRITE your current DB if hashes match.\n"
         "Type /cancel to abort."
@@ -156,6 +172,7 @@ async def restore_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return RESTORE_WAITING
 
 async def restore_receive(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Always works from /restore (message)
     if not is_admin(update):
         await update.message.reply_text("❌ You are not authorized to restore.")
         return ConversationHandler.END
@@ -201,7 +218,7 @@ async def restore_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # List and download backups + restore from server
 async def backups_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update):
-        await update.callback_query.answer("❌ Not authorized.", show_alert=True)
+        await _reply(update, "❌ Not authorized.")
         return
     backups = sorted(
         [f for f in os.listdir(RETENTION_DIR) if f.endswith('.zip')],
@@ -209,7 +226,7 @@ async def backups_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reverse=True
     )
     if not backups:
-        await update.callback_query.message.reply_text("No backups found.")
+        await _reply(update, "No backups found.")
         return
     buttons = []
     for fname in backups:
@@ -218,7 +235,8 @@ async def backups_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton("🔄 Restore", callback_data=f"restorefile_{fname}")
         ])
     reply_markup = InlineKeyboardMarkup(buttons)
-    await update.callback_query.message.reply_text(
+    await _reply(
+        update,
         "Available backups:\nSelect to download or restore (rollback) a backup.",
         reply_markup=reply_markup
     )
@@ -296,7 +314,6 @@ async def autobackup_task(app: Application):
         try:
             backup_file = make_backup_file("-autobackup")
             logging.info(f"Weekly auto-backup created: {backup_file}")
-            # Upload to Nextcloud if configured
             cloud_result = upload_to_nextcloud(
                 backup_file,
                 os.path.basename(backup_file)
