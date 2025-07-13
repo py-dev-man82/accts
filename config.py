@@ -14,6 +14,7 @@ ENABLE_ENCRYPTION = True
 
 # config.py
 
-NEXTCLOUD_URL = "https://cloud.secu1.chat//nextcloud/remote.php/dav/files/pipe/accts/"
+NEXTCLOUD_URL = "https://cloud.secu1.chat/remote.php/dav/files/pipe/accts/"
 NEXTCLOUD_USER = "pipe"
 NEXTCLOUD_PASS = "epSxp-AfGbP-SHyRK-eWYks-2rJBo"
+
