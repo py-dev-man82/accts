@@ -1,13 +1,23 @@
-from secure_db import secure_db
+from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
+from cryptography.fernet import Fernet
+import base64
 
-PIN = "1122"
+with open("data/kdf_salt.bin", "rb") as f:
+    salt = f.read()
+pin = "1122"  # Use exactly what you entered
+kdf = Scrypt(
+    salt=salt,
+    length=32,
+    n=2**14,
+    r=8,
+    p=1,
+)
+key = kdf.derive(pin.encode("utf-8"))
+token = base64.urlsafe_b64encode(key)
+fernet = Fernet(token)
 
-if not secure_db.unlock(PIN):
-    print("Unlock failed! Wrong PIN or DB corrupted.")
-    exit()
-
-print("Before insert:", secure_db.all("customers"))
-secure_db.insert("customers", {"name": "Test User"})
-print("After insert:", secure_db.all("customers"))
-
-secure_db.lock()  # ONLY call when finished with all DB ops
+with open("data/db.json") as f:
+    raw = f.read()
+token = base64.urlsafe_b64decode(raw.encode())
+decrypted = fernet.decrypt(token)
+print(decrypted)  # Should print JSON
