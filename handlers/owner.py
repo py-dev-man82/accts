@@ -56,31 +56,40 @@ async def show_backup_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🛡️ Backup & Restore:\nChoose an action.", reply_markup=kb
     )
 
-# --- Handle Backup/Restore submenu button clicks ---
+# --- Handle Backup/Restore submenu button clicks (safe for button or /commands) ---
 async def handle_backup_menu_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     data = query.data
+
+    class FakeUpdate:
+        def __init__(self, orig_update):
+            self.message = orig_update.callback_query.message
+            self.effective_user = orig_update.effective_user
+            self.callback_query = orig_update.callback_query
+
+    fake_update = FakeUpdate(update)
+
     if data == "backup_now":
-        await backup_command(update, context)
+        await backup_command(fake_update, context)
     elif data == "backup_list":
-        await backups_command(update, context)
+        await backups_command(fake_update, context)
     elif data == "backup_restore":
-        await restore_command(update, context)
+        await restore_command(fake_update, context)
     else:
         await query.answer("Unknown action.", show_alert=True)
 
 # ════════════════════════════════════════════════
-# Adjust POT Balance flow (all in ledger)
+# Adjust POT Balance flow (all in ledger, ConversationHandler)
 # ════════════════════════════════════════════════
 @require_unlock
 async def adjust_pot_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     pot_balance = get_balance("owner", "POT")
     kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("➕ Add Funds",callback_data="pot_add"),
-         InlineKeyboardButton("➖ Subtract Funds",callback_data="pot_subtract")],
-        [InlineKeyboardButton("✏️ Set Exact Balance",callback_data="pot_set")],
-        [InlineKeyboardButton("🔙 Back",callback_data="owner_menu")],
+        [InlineKeyboardButton("➕ Add Funds", callback_data="pot_add"),
+         InlineKeyboardButton("➖ Subtract Funds", callback_data="pot_subtract")],
+        [InlineKeyboardButton("✏️ Set Exact Balance", callback_data="pot_set")],
+        [InlineKeyboardButton("🔙 Back", callback_data="owner_menu")],
     ])
     await update.callback_query.edit_message_text(
         f"🏦 Current POT Balance: ${pot_balance:,.2f}\n\nChoose:", reply_markup=kb)
@@ -88,10 +97,12 @@ async def adjust_pot_balance(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def get_pot_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
-    context.user_data["pot_action"]=update.callback_query.data  # pot_add|pot_subtract|pot_set
-    prompt={"pot_add":"Enter amount to add:",
-            "pot_subtract":"Enter amount to subtract:",
-            "pot_set":"Enter new POT balance:"}[update.callback_query.data]
+    context.user_data["pot_action"] = update.callback_query.data  # pot_add|pot_subtract|pot_set
+    prompt = {
+        "pot_add": "Enter amount to add:",
+        "pot_subtract": "Enter amount to subtract:",
+        "pot_set": "Enter new POT balance:"
+    }[update.callback_query.data]
     await update.callback_query.edit_message_text(prompt)
     # Reset in case someone was halfway through a previous flow
     context.user_data.pop("pot_amount", None)
@@ -120,8 +131,8 @@ async def get_pot_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
     note = update.message.text.strip()
     context.user_data["pot_note"] = note
     kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ Confirm",callback_data="pot_conf_yes"),
-         InlineKeyboardButton("❌ Cancel",callback_data="pot_conf_no")]
+        [InlineKeyboardButton("✅ Confirm", callback_data="pot_conf_yes"),
+         InlineKeyboardButton("❌ Cancel", callback_data="pot_conf_no")]
     ])
     amt = context.user_data["pot_amount"]
     action = context.user_data["pot_action"]
@@ -130,7 +141,7 @@ async def get_pot_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
         diff = amt - old
         txt = f"Set POT balance from ${old:,.2f} to ${amt:,.2f}?\n(Change: {diff:+.2f})"
     else:
-        txt = f"{'Add' if action=='pot_add' else 'Subtract'} ${amt:,.2f} to POT?"
+        txt = f"{'Add' if action == 'pot_add' else 'Subtract'} ${amt:,.2f} to POT?"
     if note:
         txt += f"\nNote: {note}"
     await update.message.reply_text(txt, reply_markup=kb)
@@ -144,8 +155,8 @@ async def save_pot(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
     action = context.user_data.get("pot_action")
-    amt    = context.user_data.get("pot_amount", 0.0)
-    note   = context.user_data.get("pot_note", "")
+    amt = context.user_data.get("pot_amount", 0.0)
+    note = context.user_data.get("pot_note", "")
     if action == "pot_set":
         old = context.user_data.get("pot_old_balance", 0.0)
         adj = amt - old
@@ -180,12 +191,22 @@ async def save_pot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 # --- Registration for all owner menu logic, including nested backup/restore ---
-def register_owner_handlers(app):
+def register_owner_handlers(app: Application):
+    # Adjust POT: Conversation Handler
+    pot_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(adjust_pot_balance, pattern="^owner_adjust_pot$")],
+        states={
+            O_POT_ACTION: [CallbackQueryHandler(get_pot_amount, pattern="^pot_add$|^pot_subtract$|^pot_set$")],
+            O_POT_INPUT:  [MessageHandler(filters.TEXT & ~filters.COMMAND, get_pot_note)],
+            O_POT_NOTE:   [MessageHandler(filters.TEXT & ~filters.COMMAND, get_pot_note)],
+            O_POT_CONFIRM:[CallbackQueryHandler(save_pot, pattern="^pot_conf_yes$|^pot_conf_no$")]
+        },
+        fallbacks=[CallbackQueryHandler(show_owner_menu, pattern="^owner_menu$")],
+        name="pot_conv"
+    )
+    app.add_handler(pot_conv)
+
+    # Owner menu and backup/restore handlers
     app.add_handler(CallbackQueryHandler(show_owner_menu, pattern="^owner_menu$"))
-    app.add_handler(CallbackQueryHandler(adjust_pot_balance, pattern="^owner_adjust_pot$"))
-    app.add_handler(CallbackQueryHandler(get_pot_amount, pattern="^pot_add$|^pot_subtract$|^pot_set$"))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, get_pot_note))
-    app.add_handler(CallbackQueryHandler(save_pot, pattern="^pot_conf_yes$|^pot_conf_no$"))
-    # Backup/Restore menu handlers
     app.add_handler(CallbackQueryHandler(show_backup_menu, pattern="^backup_menu$"))
     app.add_handler(CallbackQueryHandler(handle_backup_menu_button, pattern="^(backup_now|backup_list|backup_restore)$"))
