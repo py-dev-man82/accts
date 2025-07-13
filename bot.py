@@ -338,6 +338,11 @@ async def run_bot():
     # --- Admin commands ---
     app.add_handler(CommandHandler("restart", restart_bot))
     app.add_handler(CommandHandler("kill",    kill_bot))
+    app.add_handler(CallbackQueryHandler(show_customer_report_menu, pattern="^rep_cust$"))
+    app.add_handler(CallbackQueryHandler(show_partner_report_menu,  pattern="^rep_part$"))
+    app.add_handler(CallbackQueryHandler(show_store_report_menu,    pattern="^rep_store$"))
+    app.add_handler(CallbackQueryHandler(show_owner_report_menu,    pattern="^rep_owner$"))
+
 
     # ──────────────────────────────────────────────────────────
     # InitDB conversation
