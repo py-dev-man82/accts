@@ -234,7 +234,7 @@ def register_owner_handlers(app: Application):
     # Owner menu and backup/restore handlers (all work from both button and command)
     app.add_handler(CallbackQueryHandler(show_owner_menu, pattern="^owner_menu$"))
     app.add_handler(CallbackQueryHandler(show_backup_menu, pattern="^backup_menu$"))
-    app.add_handler(CallbackQueryHandler(handle_backup_menu_button, pattern="^(backup_now|backup_list|backup_restore)$"))
+    app.add_handler(CallbackQueryHandler(handle_backup_menu_button, pattern="^(backup_now|backup_list)$"))
 
     # Register direct commands for backup actions if you want them too:
     app.add_handler(CommandHandler("backup", backup_command))
