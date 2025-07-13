@@ -357,7 +357,7 @@ def register_backup_handlers(app: Application):
     restore_conv = ConversationHandler(
         entry_points=[
             CommandHandler("restore", restore_command),
-            CallbackQueryHandler(restore_command, pattern="^backup_restore$"),  # now supports menu button!
+            CallbackQueryHandler(restore_command, pattern="^backup_restore$"),
         ],
         states={
             RESTORE_WAITING: [MessageHandler(filters.ALL, restore_receive)],
