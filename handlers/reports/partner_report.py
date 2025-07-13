@@ -7,7 +7,7 @@ from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.ext import CallbackQueryHandler, ConversationHandler, ContextTypes, MessageHandler, filters
+from telegram.ext import CallbackQueryHandler, ConversationHandler, ContextTypes
 
 from handlers.utils import require_unlock, fmt_money, fmt_date
 from handlers.ledger import get_ledger
@@ -80,7 +80,10 @@ async def show_partner_report_menu(update: Update, context: ContextTypes.DEFAULT
     )
     return PARTNER_SELECT
 
+@require_unlock
 async def select_date_range(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    print("DEBUG: select_date_range called, data =", update.callback_query.data)
+    logging.warning("DEBUG: select_date_range called, data = %s", update.callback_query.data)
     pid = int(update.callback_query.data.split("_")[-1])
     context.user_data["partner_id"] = pid
 
@@ -352,7 +355,6 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     return REPORT_PAGE
 
-
 @require_unlock
 async def paginate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.callback_query.data == "page_next":
@@ -603,7 +605,6 @@ def register_partner_report_handlers(app):
                 CallbackQueryHandler(_goto_main_menu, pattern="^main_menu$"),
             ],
             CUSTOM_DATE_INPUT: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, save_custom_start),
                 CallbackQueryHandler(_goto_main_menu, pattern="^main_menu$"),
             ],
             REPORT_SCOPE_SELECT: [
@@ -620,3 +621,5 @@ def register_partner_report_handlers(app):
         per_message=False,
     )
     app.add_handler(conv)
+    # Add this top-level handler to catch direct button presses after bot restart or loss of state
+    app.add_handler(CallbackQueryHandler(select_date_range, pattern="^preport_\\d+$"))
