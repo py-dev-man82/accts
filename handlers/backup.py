@@ -261,7 +261,7 @@ async def backup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await _reply(
             update,
-            f"🗄️ Backup created and uploaded to Nextcloud as: <code>{os.path.basename(backup_file)}</code>\n"
+            f"🗄️ Backup created and uploaded to encrypted cloud as: <code>{os.path.basename(backup_file)}</code>\n"
             f"To restore, use the server restore option and select this file.",
             parse_mode="HTML"
         )
