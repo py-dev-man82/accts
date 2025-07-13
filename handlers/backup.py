@@ -144,6 +144,14 @@ def make_backup_file(suffix=""):
         logging.error("Backup zip file not created or is empty")
         raise IOError("Backup zip creation failed")
 
+    # --- Pad the zip file if it's <128KB to avoid Telegram bug ---
+    MIN_SIZE = 128 * 1024
+    zip_size = os.path.getsize(BACKUP_TMP)
+    if zip_size < MIN_SIZE:
+        with open(BACKUP_TMP, "ab") as f:
+            f.write(b"\0" * (MIN_SIZE - zip_size))
+        logging.info(f"Padded backup zip to {MIN_SIZE} bytes (was {zip_size})")
+
     try:
         with ZipFile(BACKUP_TMP, 'r') as testzip:
             badfile = testzip.testzip()
@@ -190,8 +198,8 @@ async def backup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if os.path.exists(BACKUP_TMP):
         os.remove(BACKUP_TMP)
 
-# (the rest is unchanged)
-# ... [Keep your restore, list, and auto-backup logic as before]
+# (restore/restore_receive/backups_command/backups_callback/autobackup_task/register_backup_handlers remain unchanged)
+# ... [the rest of your logic as before]
 
 
 # ──────────────────────────────
