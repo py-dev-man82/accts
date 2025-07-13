@@ -1,4 +1,3 @@
-# bot.py
 #!/usr/bin/env python3
 import logging
 import asyncio
@@ -163,6 +162,12 @@ async def confirm_new_pin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     seed_tables(secure_db)
     secure_db.lock()
 
+    # Lock down the salt file (read-only) after successful DB creation
+    try:
+        os.chmod("data/kdf_salt.bin", 0o444)
+    except Exception as e:
+        logging.warning(f"Failed to lock salt file as read-only: {e}")
+
     await update.message.reply_text(
         "✅ New PIN set and DB encrypted successfully.\n"
         "♻️ Restarting bot to apply changes…"
@@ -185,7 +190,6 @@ async def unlock_process(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pin = update.message.text.strip()
     success = secure_db.unlock(pin)
     if success:
-        # Optionally, call secure_db.mark_activity() if needed
         await update.message.reply_text("✅ *Database unlocked successfully!*", parse_mode="Markdown")
         return ConversationHandler.END
     else:
@@ -216,7 +220,7 @@ async def auto_lock_task():
             try:
                 last = secure_db.get_last_access()
             except AttributeError:
-                last = now  # fallback for old secure_db
+                last = now
             if now - last > AUTOLOCK_TIMEOUT:
                 secure_db.lock()
                 logging.warning("🔒 Auto-lock triggered after inactivity.")
