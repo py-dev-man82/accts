@@ -146,6 +146,17 @@ def make_backup_file(suffix=""):
         logging.error("Backup zip file not created or is empty")
         raise IOError("Backup zip creation failed")
 
+    # --- VERIFY ZIP --- #
+    try:
+        with ZipFile(BACKUP_TMP, 'r') as testzip:
+            badfile = testzip.testzip()
+            if badfile:
+                logging.error(f"Backup zip integrity failed (corrupt file: {badfile})")
+                raise IOError(f"Backup zip integrity failed: bad file in archive: {badfile}")
+    except Exception as e:
+        logging.error(f"Backup zip failed verification: {e}")
+        raise
+
     nowtag = datetime.now().strftime("%Y%m%d-%H%M%S")
     backup_copy_path = os.path.join(RETENTION_DIR, f"backup-{nowtag}{suffix}.zip")
     shutil.copy2(BACKUP_TMP, backup_copy_path)
@@ -163,7 +174,11 @@ async def backup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update):
         await _reply(update, "❌ You are not authorized to use this command.")
         return
-    backup_file = make_backup_file()
+    try:
+        backup_file = make_backup_file()
+    except Exception as e:
+        await _reply(update, f"❌ Failed to create backup: {e}")
+        return
     await _reply_document(
         update,
         document=InputFile(backup_file),
