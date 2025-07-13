@@ -61,12 +61,10 @@ def upload_to_nextcloud(local_file_path, remote_filename):
         return False
 
 def is_admin(update: Update) -> bool:
-    # Works for both messages and callbacks
     user = update.effective_user
     return user and user.id in ADMIN_IDS
 
 def _reply(update: Update, *args, **kwargs):
-    """Always reply in the correct context (message or callback)."""
     if hasattr(update, "message") and update.message:
         return update.message.reply_text(*args, **kwargs)
     elif hasattr(update, "callback_query") and update.callback_query:
@@ -141,7 +139,7 @@ def make_backup_file(suffix=""):
     return backup_copy_path
 
 # ──────────────────────────────
-# Manual backup (creates zip and sends to admin)
+# Manual backup (command or button)
 @require_unlock
 async def backup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update):
@@ -158,7 +156,7 @@ async def backup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         os.remove(BACKUP_TMP)
 
 # ──────────────────────────────
-# Restore (from uploaded file, with hash check)
+# Restore (upload backup zip)
 async def restore_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update):
         await _reply(update, "❌ You are not authorized to use this command.")
@@ -172,7 +170,6 @@ async def restore_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return RESTORE_WAITING
 
 async def restore_receive(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Always works from /restore (message)
     if not is_admin(update):
         await update.message.reply_text("❌ You are not authorized to restore.")
         return ConversationHandler.END
@@ -211,7 +208,10 @@ async def restore_receive(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 async def restore_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("❌ Restore cancelled.")
+    if hasattr(update, "message") and update.message:
+        await update.message.reply_text("❌ Restore cancelled.")
+    elif hasattr(update, "callback_query") and update.callback_query:
+        await update.callback_query.message.reply_text("❌ Restore cancelled.")
     return ConversationHandler.END
 
 # ──────────────────────────────
@@ -340,6 +340,7 @@ async def autobackup_task(app: Application):
 # ──────────────────────────────
 def register_backup_handlers(app: Application):
     app.add_handler(CommandHandler("backup", backup_command))
+    app.add_handler(CommandHandler("backups", backups_command))
     restore_conv = ConversationHandler(
         entry_points=[CommandHandler("restore", restore_command)],
         states={
@@ -349,6 +350,5 @@ def register_backup_handlers(app: Application):
         name="restore_conv",
     )
     app.add_handler(restore_conv)
-    app.add_handler(CommandHandler("backups", backups_command))
     app.add_handler(CallbackQueryHandler(backups_callback, pattern="^(downloadbackup_|restorefile_|restorefile_confirm|restorefile_cancel)"))
     app.create_task(autobackup_task(app))
