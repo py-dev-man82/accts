@@ -408,11 +408,16 @@ async def run_bot():
     register_owner_handlers(app)
     app.add_handler(CallbackQueryHandler(show_owner_menu, pattern="^owner_menu$"))
 
-    # ── Register all report handlers ──
+    # ... after all handler registrations:
     register_customer_report_handlers(app)
     register_partner_report_handlers(app)
     register_store_report_handlers(app)
     register_owner_report_handlers(app)
+
+    # Wire up "dangling" partner report select if not in ConversationHandler
+    from handlers.reports.partner_report import select_date_range
+    app.add_handler(CallbackQueryHandler(select_date_range, pattern="^preport_\\d+$"))
+
 
     # --- Start polling & auto-lock background task ---
     asyncio.create_task(auto_lock_task())
