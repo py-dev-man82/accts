@@ -83,7 +83,8 @@ async def initdb_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Ask for confirmation before resetting DB."""
     if not config.ENABLE_ENCRYPTION:
         await update.message.reply_text(
-            "❌ Encryption must be enabled to initialize DB. Set ENABLE_ENCRYPTION = True in config.py."
+            "❌ Encryption must be enabled to initialize DB. "
+            "Set ENABLE_ENCRYPTION = True in config.py."
         )
         return ConversationHandler.END
 
@@ -95,12 +96,16 @@ async def initdb_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "⚠️ *This will DELETE all data and create a fresh encrypted database.*\n\n"
             "Are you sure you want to proceed?",
-            parse_mode="Markdown", reply_markup=kb)
-    elif update.callback_query:
+            parse_mode="Markdown",
+            reply_markup=kb,
+        )
+    else:  # callback
         await update.callback_query.message.reply_text(
             "⚠️ *This will DELETE all data and create a fresh encrypted database.*\n\n"
             "Are you sure you want to proceed?",
-            parse_mode="Markdown", reply_markup=kb)
+            parse_mode="Markdown",
+            reply_markup=kb,
+        )
     return CONFIRM_INITDB
 
 async def initdb_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -110,7 +115,9 @@ async def initdb_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
     if secure_db.has_pin():
-        await update.callback_query.edit_message_text("🔒 Enter current DB password (PIN) to reset:")
+        await update.callback_query.edit_message_text(
+            "🔒 Enter current DB password (PIN) to reset:"
+        )
         return ENTER_OLD_PIN
 
     await update.callback_query.edit_message_text("🔑 Enter new DB password (PIN):")
@@ -143,11 +150,13 @@ async def confirm_new_pin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ PINs do not match. Start over with /initdb.")
         return ConversationHandler.END
 
+    # Inform user
     if update.message:
         await update.message.reply_text("⚙️ Setting up secure DB (generating new salt)…")
-    elif update.callback_query:
+    else:
         await update.callback_query.message.reply_text("⚙️ Setting up secure DB (generating new salt)…")
 
+    # Run setup script
     try:
         subprocess.run(["chmod", "+x", "./setup_secure_db.sh"], check=True)
         subprocess.run(["bash", "./setup_secure_db.sh"], check=True)
@@ -169,7 +178,7 @@ async def confirm_new_pin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     seed_tables(secure_db)
     secure_db.lock()
 
-    # Lock down the salt file (read-only) after successful DB creation
+    # Protect salt
     try:
         os.chmod("data/kdf_salt.bin", 0o444)
     except Exception as e:
@@ -187,10 +196,11 @@ async def confirm_new_pin(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ════════════════════════════════════════════════════════════
 async def unlock_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["unlock_attempts"] = 0
-    if hasattr(update, 'message') and update.message:
-        await update.message.reply_text("🔑 *Enter your encryption PIN to unlock:*", parse_mode="Markdown")
-    elif hasattr(update, 'callback_query') and update.callback_query:
-        await update.callback_query.edit_message_text("🔑 *Enter your encryption PIN to unlock:*", parse_mode="Markdown")
+    prompt = "🔑 *Enter your encryption PIN to unlock:*"
+    if update.message:
+        await update.message.reply_text(prompt, parse_mode="Markdown")
+    else:
+        await update.callback_query.edit_message_text(prompt, parse_mode="Markdown")
     return UNLOCK_PIN
 
 async def unlock_process(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -199,21 +209,21 @@ async def unlock_process(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if success:
         await update.message.reply_text("✅ *Database unlocked successfully!*", parse_mode="Markdown")
         return ConversationHandler.END
-    else:
-        attempts = getattr(secure_db, "_failed_attempts", 0)
-        left = max(0, getattr(secure_db, "MAX_PIN_ATTEMPTS", 7) - attempts)
-        if left > 0:
-            await update.message.reply_text(
-                f"❌ *Unlock failed.* Attempts left: {left}\nTry again:",
-                parse_mode="Markdown"
-            )
-            return UNLOCK_PIN
-        else:
-            await update.message.reply_text(
-                "☠️ *Too many wrong attempts. DB wiped for security.*",
-                parse_mode="Markdown"
-            )
-            return ConversationHandler.END
+
+    attempts = getattr(secure_db, "_failed_attempts", 0)
+    remaining = max(0, secure_db.MAX_PIN_ATTEMPTS - attempts)
+    if remaining:
+        await update.message.reply_text(
+            f"❌ *Unlock failed.* Attempts left: {remaining}\nTry again:",
+            parse_mode="Markdown",
+        )
+        return UNLOCK_PIN
+
+    await update.message.reply_text(
+        "☠️ *Too many wrong attempts. DB wiped for security.*",
+        parse_mode="Markdown",
+    )
+    return ConversationHandler.END
 
 # ════════════════════════════════════════════════════════════
 # Auto-lock background task
@@ -223,50 +233,39 @@ async def auto_lock_task():
     while True:
         await asyncio.sleep(10)
         if secure_db.is_unlocked():
-            now = time.monotonic()
-            try:
-                last = secure_db.get_last_access()
-            except AttributeError:
-                last = now
-            if now - last > AUTOLOCK_TIMEOUT:
+            if time.monotonic() - secure_db.get_last_access() > AUTOLOCK_TIMEOUT:
                 secure_db.lock()
                 logging.warning("🔒 Auto-lock triggered after inactivity.")
 
 # ════════════════════════════════════════════════════════════
-# Main Menu and Nested Submenus
+# Main menu + sub-menus
 # ════════════════════════════════════════════════════════════
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Main menu with DB status indicator and unlock/initdb shortcuts."""
     if not os.path.exists(config.DB_PATH):
-        status_icon = "📂 No DB found: run /initdb"
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("⚡️ InitDB", callback_data="initdb_menu")]
-        ])
+        status = "📂 No DB found: run /initdb"
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("⚡️ InitDB", callback_data="initdb_menu")]])
     elif secure_db.is_unlocked():
-        status_icon = "🔓 Unlocked"
+        status = "🔓 Unlocked"
         kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("ADD USER", callback_data="adduser_menu"),
-             InlineKeyboardButton("ADD FINANCIAL", callback_data="addfinancial_menu")],
-            [InlineKeyboardButton("👑 Owner", callback_data="owner_menu"),
-             InlineKeyboardButton("📊 Reports", callback_data="report_menu")],
+            [InlineKeyboardButton("ADD USER",       callback_data="adduser_menu"),
+             InlineKeyboardButton("ADD FINANCIAL",  callback_data="addfinancial_menu")],
+            [InlineKeyboardButton("👑 Owner",        callback_data="owner_menu"),
+             InlineKeyboardButton("📊 Reports",      callback_data="report_menu")],
         ])
     else:
-        status_icon = "🔒 Locked"
+        status = "🔒 Locked"
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("🔓 Unlock DB", callback_data="unlock_button")],
-            [InlineKeyboardButton("⚡️ InitDB", callback_data="initdb_menu")],
+            [InlineKeyboardButton("⚡️ InitDB",   callback_data="initdb_menu")],
         ])
 
-    text = f"Main Menu: choose a section\n\nStatus: *{status_icon}*"
+    text = f"Main Menu: choose a section\n\nStatus: *{status}*"
     if update.callback_query:
         await update.callback_query.answer()
-        await update.callback_query.edit_message_text(
-            text, reply_markup=kb, parse_mode="Markdown"
-        )
+        await update.callback_query.edit_message_text(text, reply_markup=kb, parse_mode="Markdown")
     else:
-        await update.message.reply_text(
-            text, reply_markup=kb, parse_mode="Markdown"
-        )
+        await update.message.reply_text(text, reply_markup=kb, parse_mode="Markdown")
 
 async def show_adduser_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
@@ -281,13 +280,13 @@ async def show_adduser_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def show_addfinancial_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("Sales",          callback_data="sales_menu")],
-        [InlineKeyboardButton("Payments",       callback_data="payment_menu")],
-        [InlineKeyboardButton("Expenses",       callback_data="expense_menu")],
-        [InlineKeyboardButton("Payouts",        callback_data="payout_menu")],
-        [InlineKeyboardButton("Stock-In",       callback_data="stockin_menu")],
-        [InlineKeyboardButton("Partner Sales",  callback_data="partner_sales_menu")],
-        [InlineKeyboardButton("🔙 Back",        callback_data="main_menu")],
+        [InlineKeyboardButton("Sales",         callback_data="sales_menu")],
+        [InlineKeyboardButton("Payments",      callback_data="payment_menu")],
+        [InlineKeyboardButton("Expenses",      callback_data="expense_menu")],
+        [InlineKeyboardButton("Payouts",       callback_data="payout_menu")],
+        [InlineKeyboardButton("Stock-In",      callback_data="stockin_menu")],
+        [InlineKeyboardButton("Partner Sales", callback_data="partner_sales_menu")],
+        [InlineKeyboardButton("🔙 Back",       callback_data="main_menu")],
     ])
     await update.callback_query.edit_message_text("ADD FINANCIAL Menu:", reply_markup=kb)
 
@@ -300,9 +299,7 @@ async def show_report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("📄 Owner Summary",   callback_data="rep_owner")],
         [InlineKeyboardButton("🔙 Back",            callback_data="main_menu")],
     ])
-    await update.callback_query.edit_message_text(
-        "Reports: choose a type", reply_markup=kb
-    )
+    await update.callback_query.edit_message_text("Reports: choose a type", reply_markup=kb)
 
 # ──────────────────────────────
 # Main bot runner
@@ -318,7 +315,7 @@ async def run_bot():
     app.add_handler(CommandHandler("restart", restart_bot))
     app.add_handler(CommandHandler("kill",    kill_bot))
 
-    # InitDB handler
+    # InitDB conversation
     app.add_handler(ConversationHandler(
         entry_points=[CommandHandler("initdb", initdb_start),
                       CallbackQueryHandler(initdb_start, pattern="^initdb_menu$")],
@@ -331,7 +328,7 @@ async def run_bot():
         fallbacks=[],
     ))
 
-    # Unlock handler (handles both /unlock and menu button)
+    # Unlock conversation
     app.add_handler(ConversationHandler(
         entry_points=[
             CommandHandler("unlock", unlock_start),
@@ -341,49 +338,49 @@ async def run_bot():
         fallbacks=[],
     ))
 
-    # Root / back commands
+    # Root / back menus
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(start, pattern="^main_menu$"))
-    app.add_handler(CallbackQueryHandler(show_adduser_menu, pattern="^adduser_menu$"))
+    app.add_handler(CallbackQueryHandler(start,                pattern="^main_menu$"))
+    app.add_handler(CallbackQueryHandler(show_adduser_menu,    pattern="^adduser_menu$"))
     app.add_handler(CallbackQueryHandler(show_addfinancial_menu, pattern="^addfinancial_menu$"))
-    app.add_handler(CallbackQueryHandler(show_report_menu, pattern="^report_menu$"))
+    app.add_handler(CallbackQueryHandler(show_report_menu,     pattern="^report_menu$"))
 
-    # **Register backup handlers BEFORE owner handlers!**
+    # **Backup handlers BEFORE owner handlers!**
     from handlers.backup import register_backup_handlers
     register_backup_handlers(app)
 
-    # Register feature handlers
+    # Feature handlers
     register_customer_handlers(app)
     register_store_handlers(app)
     register_partner_handlers(app)
     register_sales_handlers(app)
     register_payment_handlers(app)
     register_expense_handlers(app)
-    app.add_handler(CallbackQueryHandler(show_expense_menu, pattern="^expense_menu$"))
+    app.add_handler(CallbackQueryHandler(show_expense_menu,    pattern="^expense_menu$"))
     register_payout_handlers(app)
-    app.add_handler(CallbackQueryHandler(show_payout_menu, pattern="^payout_menu$"))
+    app.add_handler(CallbackQueryHandler(show_payout_menu,     pattern="^payout_menu$"))
     register_stockin_handlers(app)
-    app.add_handler(CallbackQueryHandler(show_stockin_menu, pattern="^stockin_menu$"))
+    app.add_handler(CallbackQueryHandler(show_stockin_menu,    pattern="^stockin_menu$"))
     register_partner_sales_handlers(app)
     app.add_handler(CallbackQueryHandler(show_partner_sales_menu, pattern="^partner_sales_menu$"))
 
-    # Register owner handlers AFTER backup handlers
+    # Owner handlers AFTER backup
     register_owner_handlers(app)
     app.add_handler(CallbackQueryHandler(show_owner_menu, pattern="^owner_menu$"))
 
-    # ── Reports ──────────────────────────────────────────────────────────
+    # Reports
     register_customer_report_handlers(app)
     register_partner_report_handlers(app)
     register_store_report_handlers(app)
     register_owner_report_handlers(app)
 
-# Top-level “Reports” menu buttons
+    # Top-level report shortcuts
     app.add_handler(CallbackQueryHandler(show_customer_report_menu, pattern="^rep_cust$"))
     app.add_handler(CallbackQueryHandler(show_partner_report_menu,  pattern="^rep_part$"))
     app.add_handler(CallbackQueryHandler(show_store_report_menu,    pattern="^rep_store$"))
     app.add_handler(CallbackQueryHandler(show_owner_report_menu,    pattern="^rep_owner$"))
 
-    # Start polling and background auto-lock
+    # Start polling + auto-lock watchdog
     asyncio.create_task(auto_lock_task())
     await app.initialize()
     await app.start()
