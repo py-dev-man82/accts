@@ -339,8 +339,44 @@ async def run_bot():
     app.add_handler(CommandHandler("restart", restart_bot))
     app.add_handler(CommandHandler("kill",    kill_bot))
 
-    # --- InitDB / Unlock conversations ---
-    # (existing code unchanged)
+    # ──────────────────────────────────────────────────────────
+    # InitDB conversation
+    # ──────────────────────────────────────────────────────────
+    app.add_handler(
+        ConversationHandler(
+            entry_points=[
+                CommandHandler("initdb", initdb_start),
+                CallbackQueryHandler(initdb_start, pattern="^initdb_menu$"),
+            ],
+            states={
+                CONFIRM_INITDB: [CallbackQueryHandler(initdb_confirm)],
+                ENTER_OLD_PIN:  [MessageHandler(filters.TEXT & ~filters.COMMAND,
+                                                enter_old_pin)],
+                SET_NEW_PIN:    [MessageHandler(filters.TEXT & ~filters.COMMAND,
+                                                set_new_pin)],
+                CONFIRM_NEW_PIN:[MessageHandler(filters.TEXT & ~filters.COMMAND,
+                                                confirm_new_pin)],
+            },
+            fallbacks=[],
+        )
+    )
+
+    # ──────────────────────────────────────────────────────────
+    # Unlock-DB conversation
+    # ──────────────────────────────────────────────────────────
+    app.add_handler(
+        ConversationHandler(
+            entry_points=[
+                CommandHandler("unlock", unlock_start),
+                CallbackQueryHandler(unlock_start, pattern="^unlock_button$"),
+            ],
+            states={
+                UNLOCK_PIN: [MessageHandler(filters.TEXT & ~filters.COMMAND,
+                                            unlock_process)]
+            },
+            fallbacks=[],
+        )
+    )
 
     # --- Root navigation handlers ---
     app.add_handler(CommandHandler("start", start))
