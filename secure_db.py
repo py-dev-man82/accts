@@ -19,14 +19,15 @@ class EncryptedJSONStorage(JSONStorage):
     def __init__(self, path, fernet: Fernet, **kwargs):
         super().__init__(path, **kwargs)
         self.fernet = fernet
+        self._my_path = path  # Use this for all file I/O
 
     def read(self):
         logger.info("READ CALLED")
         try:
-            if not os.path.exists(self._storage_path):
+            if not os.path.exists(self._my_path):
                 logger.warning("📂 DB file does not exist, returning {}")
                 return {}
-            with open(self._storage_path, "r", encoding="utf-8") as f:
+            with open(self._my_path, "r", encoding="utf-8") as f:
                 raw = f.read()
             if not raw:
                 logger.warning("📂 DB file is empty, returning {}")
@@ -47,7 +48,7 @@ class EncryptedJSONStorage(JSONStorage):
             json_str = json.dumps(data, separators=(",", ":")).encode()
             token = self.fernet.encrypt(json_str)
             encoded = base64.urlsafe_b64encode(token).decode()
-            with open(self._storage_path, "w", encoding="utf-8") as f:
+            with open(self._my_path, "w", encoding="utf-8") as f:
                 f.seek(0)
                 f.truncate()
                 f.write(encoded)
