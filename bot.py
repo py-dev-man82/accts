@@ -153,7 +153,7 @@ async def confirm_new_pin(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     pin = context.user_data["new_db_pin"]
     secure_db._passphrase = pin.encode('utf-8')
-    secure_db.fernet = secure_db._derive_fernet()
+    secure_db.fernet = secure_db._derive_key(pin)
     secure_db.db = TinyDB(
         config.DB_PATH,
         storage=lambda p: EncryptedJSONStorage(p, secure_db.fernet)
