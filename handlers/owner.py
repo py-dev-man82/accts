@@ -21,6 +21,7 @@ from handlers.backup import (
     backup_command,
     backups_command,
     restore_command,
+    cloud_restore_command,  # <-- NEW: import this function to handle cloud restores
 )
 
 (
@@ -53,6 +54,7 @@ async def show_backup_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("🗄️ Backup Now", callback_data="backup_now")],
         [InlineKeyboardButton("🗄️ Restore Server Backup", callback_data="backup_list")],
         [InlineKeyboardButton("♻️ Restore From File", callback_data="backup_restore")],
+        [InlineKeyboardButton("☁️ Restore From Cloud", callback_data="backup_cloud_restore")],  # NEW
         [InlineKeyboardButton("🔙 Back", callback_data="owner_menu")],
     ])
     await update.callback_query.edit_message_text(
@@ -72,6 +74,9 @@ async def handle_backup_menu_button(update: Update, context: ContextTypes.DEFAUL
     elif data == "backup_restore":
         print("[DEBUG] Calling restore_command")
         await restore_command(update, context)
+    elif data == "backup_cloud_restore":  # NEW
+        print("[DEBUG] Calling cloud_restore_command")
+        await cloud_restore_command(update, context)
     else:
         print("[DEBUG] Unknown backup menu button:", data)
         await update.callback_query.answer("Unknown action.", show_alert=True)
@@ -234,7 +239,7 @@ def register_owner_handlers(app: Application):
     # Owner menu and backup/restore handlers (all work from both button and command)
     app.add_handler(CallbackQueryHandler(show_owner_menu, pattern="^owner_menu$"))
     app.add_handler(CallbackQueryHandler(show_backup_menu, pattern="^backup_menu$"))
-    app.add_handler(CallbackQueryHandler(handle_backup_menu_button, pattern="^(backup_now|backup_list)$"))
+    app.add_handler(CallbackQueryHandler(handle_backup_menu_button, pattern="^(backup_now|backup_list|backup_restore|backup_cloud_restore)$"))
 
     # Register direct commands for backup actions if you want them too:
     app.add_handler(CommandHandler("backup", backup_command))
