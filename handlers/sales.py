@@ -229,47 +229,38 @@ async def get_sale_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return S_CONFIRM
 
 # ───────────────────────────────────────────────────────────────
-#  CONFIRM-SALE (patched with verbose DEBUG logging)
+#  Confirm-Sale handler  (add + ledger + inventory)
 # ───────────────────────────────────────────────────────────────
 @require_unlock
 async def confirm_sale(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Final confirmation step for a sale:  
-       • write sale row  
-       • update inventory & store_payments  
-       • create all ledger entries  
-       • robust rollback on any error
-    """
     await update.callback_query.answer()
     if update.callback_query.data != "sale_yes":
         await show_sales_menu(update, context)
         return ConversationHandler.END
 
-    # ── Extract details from conversation state ─────────────────
-    d           = context.user_data
-    store_row   = secure_db.table("stores").get(doc_id=d["sale_store"])
-    cur         = store_row["currency"]
-    total_fee   = d["sale_fee"]  * d["sale_qty"]
-    total_sale  = d["sale_qty"]  * d["sale_price"]
-    sale_date   = datetime.utcnow().strftime("%d%m%Y")
-    sale_ts     = datetime.utcnow().isoformat()
-    item_id     = d["sale_item"]
-    qty         = d["sale_qty"]
-    unit_price  = d["sale_price"]
-    note        = d["sale_note"]
+    d            = context.user_data
+    store_row    = secure_db.table("stores").get(doc_id=d["sale_store"])
+    cur          = store_row["currency"]
+    total_fee    = d["sale_fee"] * d["sale_qty"]
+    total_sale   = d["sale_qty"] * d["sale_price"]
+    sale_date    = datetime.utcnow().strftime("%d%m%Y")
+    sale_ts      = datetime.utcnow().isoformat()
+    item_id      = d["sale_item"]
+    qty          = d["sale_qty"]
+    unit_price   = d["sale_price"]
+    note         = d["sale_note"]
 
-    # Identify buyer type (regular customer vs partner)
-    buyer       = secure_db.table("customers").get(doc_id=d["sale_customer"])
-    buyer_type  = buyer.get("type", "customer") if buyer else "customer"
-    store_id    = d["sale_store"]
-    customer_id = d["sale_customer"]
+    # ── identify buyer type (customer / partner) ─────────────────
+    buyer        = secure_db.table("customers").get(doc_id=d["sale_customer"])
+    buyer_type   = buyer.get("type", "customer") if buyer else "customer"
+    store_id     = d["sale_store"]
+    customer_id  = d["sale_customer"]
 
-    sale_id: int | None = None           # will hold DocID of new sale
-    ledger_written: list[tuple[str, int | str, int]] = []  # [(acct_type, acct_id, related_id), ...]
+    sale_id          = None
+    ledger_written   = []
 
     try:
-        # ─────────────────────────────────────────────────────────
-        # 1️⃣  Insert the sale record  (need sale_id for ledger links)
-        # ─────────────────────────────────────────────────────────
+        # 1️⃣  sales row ----------------------------------------------------
         sale_id = secure_db.insert("sales", {
             "customer_id":  customer_id,
             "store_id":     store_id,
@@ -281,28 +272,27 @@ async def confirm_sale(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "currency":     cur,
             "timestamp":    sale_ts,
         })
-        logging.debug("[confirm_sale] wrote sales row id=%s", sale_id)
 
-        # ─────────────────────────────────────────────────────────
-        # 2️⃣  Update store inventory  (subtract quantity sold)
-        # ─────────────────────────────────────────────────────────
-        q = Query()
-        inv_rec = secure_db.table("store_inventory").get(
+        # 2️⃣  inventory decrement ----------------------------------------
+        q        = Query()
+        inv_rec  = secure_db.table("store_inventory").get(
             (q.store_id == store_id) & (q.item_id == item_id)
         )
-        if inv_rec:
-            new_qty = inv_rec["quantity"] - qty
-            secure_db.update(
-                "store_inventory",
-                {"quantity": new_qty},
-                doc_ids=[inv_rec.doc_id]          # ← explicit, future-proof
-            )
-            logging.debug("[confirm_sale] inventory updated store:%s item:%s  %s→%s",
-                          store_id, item_id, inv_rec["quantity"], new_qty)
+        if inv_rec is None or inv_rec["quantity"] < qty:
+            raise Exception(f"Not enough stock for item '{item_id}'.")
+        new_qty = inv_rec["quantity"] - qty
 
-        # ─────────────────────────────────────────────────────────
-        # 3️⃣  Store-payments row for handling-fee, if any
-        # ─────────────────────────────────────────────────────────
+        logger.debug(
+            "[confirm_sale] inventory-update store:%s item:%s  %s → %s",
+            store_id, item_id, inv_rec["quantity"], new_qty
+        )
+        secure_db.update(
+            "store_inventory",
+            {"quantity": new_qty},
+            [inv_rec.doc_id]                # ← list of doc-ids  ✅
+        )
+
+        # 3️⃣  handling-fee tracking (store_payments) ----------------------
         if total_fee > 0:
             secure_db.insert("store_payments", {
                 "store_id":  store_id,
@@ -311,146 +301,147 @@ async def confirm_sale(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "note":      "Handling fee for sale",
                 "timestamp": sale_ts,
             })
-            logging.debug("[confirm_sale] handling-fee payment row inserted  fee=%s %s", total_fee, cur)
 
-        # ─────────────────────────────────────────────────────────
-        # 4️⃣  LEDGER ENTRIES
-        # ─────────────────────────────────────────────────────────
-        ## a) Buyer ledger (money out, inventory change for partner sales)
-        logging.debug("[confirm_sale] → buyer ledger  %s:%s  sale_id=%s  amount=%s",
-                      buyer_type, customer_id, sale_id, -total_sale)
+        # 4️⃣  LEDGER WRITES ───────────────────────────────────────────────
+        logger.debug(
+            "[confirm_sale] → buyer ledger  %s:%s  sale_id=%s",
+            buyer_type, customer_id, sale_id
+        )
         add_ledger_entry(
-            account_type=buyer_type,
-            account_id=customer_id,
-            entry_type="sale",
-            related_id=sale_id,
-            amount=-total_sale,
-            currency=cur,
-            note=note,
-            date=sale_date,
-            timestamp=sale_ts,
-            item_id=item_id,
-            quantity=-qty,          # inventory leaving buyer
-            unit_price=unit_price,
-            store_id=store_id,
+            account_type = buyer_type,
+            account_id   = customer_id,
+            entry_type   = "sale",
+            related_id   = sale_id,
+            amount       = -total_sale,
+            currency     = cur,
+            note         = note,
+            date         = sale_date,
+            timestamp    = sale_ts,
+            item_id      = item_id,
+            quantity     = -qty,            # inventory out
+            unit_price   = unit_price,
+            store_id     = store_id,
         )
         ledger_written.append((buyer_type, customer_id, sale_id))
 
-        ## b) Store ledger – track inventory leaving the store
-        logging.debug("[confirm_sale] → store inventory ledger  store:%s sale_id=%s qty=%s",
-                      store_id, sale_id, -qty)
+        logger.debug(
+            "[confirm_sale] → store ledger (inventory) store:%s  sale_id=%s",
+            store_id, sale_id
+        )
         add_ledger_entry(
-            account_type="store",
-            account_id=store_id,
-            entry_type="sale",
-            related_id=sale_id,
-            amount=0,               # revenue tracked via payments, not here
-            currency=cur,
-            note="",
-            date=sale_date,
-            timestamp=sale_ts,
-            item_id=item_id,
-            quantity=-qty,
-            unit_price=unit_price,
-            store_id=store_id,
+            account_type = "store",
+            account_id   = store_id,
+            entry_type   = "sale",
+            related_id   = sale_id,
+            amount       = 0,               # revenue accounted elsewhere
+            currency     = cur,
+            note         = "",
+            date         = sale_date,
+            timestamp    = sale_ts,
+            item_id      = item_id,
+            quantity     = -qty,
+            unit_price   = unit_price,
+            store_id     = store_id,
         )
         ledger_written.append(("store", store_id, sale_id))
 
-        ## c) Handling-fee ledgers (if fee > 0)
+        # 4c. handling-fee ledger (only when a fee exists) -----------------
         if total_fee > 0:
             if buyer_type == "customer":
-                logging.debug("[confirm_sale] → handling-fee ledger (store) store:%s sale_id=%s fee=%s",
-                              store_id, sale_id, total_fee)
+                logger.debug(
+                    "[confirm_sale] → handling-fee ledger store:%s sale_id=%s",
+                    store_id, sale_id
+                )
                 add_ledger_entry(
-                    account_type="store",
-                    account_id=store_id,
-                    entry_type="handling_fee",
-                    related_id=sale_id,
-                    amount=total_fee,
-                    currency=cur,
-                    note="",
-                    date=sale_date,
-                    timestamp=sale_ts,
-                    item_id=item_id,
-                    quantity=qty,
-                    unit_price=d["sale_fee"],
-                    store_id=store_id,
+                    account_type = "store",
+                    account_id   = store_id,
+                    entry_type   = "handling_fee",
+                    related_id   = sale_id,
+                    amount       = total_fee,
+                    currency     = cur,
+                    note         = "",
+                    date         = sale_date,
+                    timestamp    = sale_ts,
+                    item_id      = item_id,
+                    quantity     = qty,
+                    unit_price   = d["sale_fee"],
+                    store_id     = store_id,
                 )
                 ledger_written.append(("store", store_id, sale_id))
-
-            else:  # buyer_type == "partner"
-                logging.debug("[confirm_sale] → handling-fee ledger partner:%s & store:%s sale_id=%s fee=%s",
-                              customer_id, store_id, sale_id, total_fee)
-                # partner side (fee expense)
+            else:  # partner buyer
+                logger.debug(
+                    "[confirm_sale] → handling-fee ledger partner:%s & store:%s sale_id=%s",
+                    customer_id, store_id, sale_id
+                )
+                # partner (debit)
                 add_ledger_entry(
-                    account_type="partner",
-                    account_id=customer_id,
-                    entry_type="handling_fee",
-                    related_id=sale_id,
-                    amount=-total_fee,
-                    currency=cur,
-                    note="",
-                    date=sale_date,
-                    timestamp=sale_ts,
-                    item_id=item_id,
-                    quantity=qty,
-                    unit_price=d["sale_fee"],
-                    store_id=store_id,
+                    account_type = "partner",
+                    account_id   = customer_id,
+                    entry_type   = "handling_fee",
+                    related_id   = sale_id,
+                    amount       = -total_fee,
+                    currency     = cur,
+                    note         = "",
+                    date         = sale_date,
+                    timestamp    = sale_ts,
+                    item_id      = item_id,
+                    quantity     = qty,
+                    unit_price   = d["sale_fee"],
+                    store_id     = store_id,
                 )
                 ledger_written.append(("partner", customer_id, sale_id))
-                # store side (fee income)
+                # store (credit)
                 add_ledger_entry(
-                    account_type="store",
-                    account_id=store_id,
-                    entry_type="handling_fee",
-                    related_id=sale_id,
-                    amount=total_fee,
-                    currency=cur,
-                    note="",
-                    date=sale_date,
-                    timestamp=sale_ts,
-                    item_id=item_id,
-                    quantity=qty,
-                    unit_price=d["sale_fee"],
-                    store_id=store_id,
+                    account_type = "store",
+                    account_id   = store_id,
+                    entry_type   = "handling_fee",
+                    related_id   = sale_id,
+                    amount       = total_fee,
+                    currency     = cur,
+                    note         = "",
+                    date         = sale_date,
+                    timestamp    = sale_ts,
+                    item_id      = item_id,
+                    quantity     = qty,
+                    unit_price   = d["sale_fee"],
+                    store_id     = store_id,
                 )
                 ledger_written.append(("store", store_id, sale_id))
 
-    # ─────────────────────────────────────────────────────────────
     except Exception as e:
-        # Any failure ⇒ rollback everything we just touched
-        logging.exception("[confirm_sale] exception – rolling back")
-        # a) remove sales row
+        logger.exception("[confirm_sale] exception – rolling back")
+        # rollback sales row
         if sale_id is not None:
             try:
                 secure_db.remove("sales", [sale_id])
             except Exception:
                 pass
-        # b) delete any ledger rows we managed to write
-        for acct_type, acct_id, rel in ledger_written:
+        # rollback ledger rows
+        for acct_type, acct_id, rel_id in ledger_written:
             try:
-                delete_ledger_entries_by_related(acct_type, acct_id, rel)
+                delete_ledger_entries_by_related(acct_type, acct_id, rel_id)
             except Exception:
                 pass
-        # c) restore inventory
+        # rollback inventory
         try:
             q = Query()
-            inv_rec = secure_db.table("store_inventory").get(
+            rec = secure_db.table("store_inventory").get(
                 (q.store_id == store_id) & (q.item_id == item_id)
             )
-            if inv_rec:
-                secure_db.update("store_inventory",
-                                 {"quantity": inv_rec["quantity"] + qty},
-                                 [inv_rec.doc_id])
+            if rec:
+                secure_db.update(
+                    "store_inventory",
+                    {"quantity": rec["quantity"] + qty},
+                    [rec.doc_id]
+                )
         except Exception:
             pass
-
-        await update.callback_query.edit_message_text(f"❌ Sale aborted, error: {e}")
+        await update.callback_query.edit_message_text(
+            f"❌ Sale aborted, error: {e}"
+        )
         return ConversationHandler.END
 
-    # ─────────────────────────────────────────────────────────────
-    # Success!
-    # ─────────────────────────────────────────────────────────────
+    # success message
     await update.callback_query.edit_message_text(
         "✅ Sale recorded, inventory and ledger updated.",
         reply_markup=InlineKeyboardMarkup(
@@ -458,7 +449,6 @@ async def confirm_sale(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ),
     )
     return ConversationHandler.END
-# ───────────────────────────────────────────────────────────────
 
 
 # ======================================================================
