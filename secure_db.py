@@ -15,6 +15,7 @@ MAX_PIN_ATTEMPTS = 7
 logger = logging.getLogger("secure_db")
 logger.setLevel(logging.INFO)
 
+
 class EncryptedJSONStorage(JSONStorage):
     def __init__(self, path, fernet: Fernet, **kwargs):
         super().__init__(path, **kwargs)
@@ -58,6 +59,7 @@ class EncryptedJSONStorage(JSONStorage):
             logger.error(f"❌ Failed to write DB: {e}")
             raise
 
+
 class SecureDB:
     def __init__(self):
         self.db = None
@@ -67,6 +69,9 @@ class SecureDB:
         self._failed_attempts = 0
         self._last_access = time.monotonic()
 
+    # ------------------------------------------------------------------ #
+    #  Internal helpers
+    # ------------------------------------------------------------------ #
     def _load_salt(self):
         if not os.path.exists(SALT_FILE):
             raise RuntimeError(
@@ -88,9 +93,12 @@ class SecureDB:
         )
         key = kdf.derive(pin.encode("utf-8"))
         token = base64.urlsafe_b64encode(key)
-        logger.debug(f"🔑 Derived encryption key from PIN and salt")
+        logger.debug("🔑 Derived encryption key from PIN and salt")
         return Fernet(token)
 
+    # ------------------------------------------------------------------ #
+    #  Unlock / lock
+    # ------------------------------------------------------------------ #
     def unlock(self, pin: str) -> bool:
         if self._unlocked:
             logger.info("🔓 Database already unlocked")
@@ -98,11 +106,8 @@ class SecureDB:
 
         self.fernet = self._derive_key(pin)
         try:
-            self.db = TinyDB(
-                DB_FILE,
-                storage=lambda p: EncryptedJSONStorage(p, self.fernet),
-            )
-            _ = self.db.all()
+            self.db = TinyDB(DB_FILE, storage=lambda p: EncryptedJSONStorage(p, self.fernet))
+            _ = self.db.all()  # force read to verify key
             logger.info("✅ Database unlocked successfully")
             self._passphrase = pin
             self._unlocked = True
@@ -145,19 +150,27 @@ class SecureDB:
         self._failed_attempts = 0
         logger.critical("💥 Database and salt wiped due to security policy")
 
+    # ------------------------------------------------------------------ #
+    #  Activity / access helpers
+    # ------------------------------------------------------------------ #
     def mark_activity(self):
         self._last_access = time.monotonic()
 
     def get_last_access(self):
         return self._last_access
 
-    # ===== Pass-through TinyDB methods for use in handlers =====
+    def ensure_unlocked(self):
+        if not self._unlocked:
+            raise RuntimeError("🔒 Database is locked. Unlock it first.")
 
+    # ------------------------------------------------------------------ #
+    #  TinyDB convenience wrappers
+    # ------------------------------------------------------------------ #
     def insert(self, table, doc):
         self.ensure_unlocked()
         result = self.db.table(table).insert(doc)
-        self.db.close()  # force write to disk
-        self.unlock(self._passphrase)  # re-open for next access
+        self.db.close()
+        self.unlock(self._passphrase)
         return result
 
     def all(self, table):
@@ -168,16 +181,42 @@ class SecureDB:
         self.ensure_unlocked()
         return self.db.table(table).search(cond)
 
+    # --------- PATCHED: accepts list / set / tuple of DocIDs ---------- #
     def update(self, table, fields, cond):
+        """
+        Update documents in *table*.
+
+        * If *cond* is a TinyDB Query / callable ➜ use it as such.
+        * If *cond* is an iterable of DocIDs ➜ pass via `doc_ids=`.
+        """
         self.ensure_unlocked()
-        result = self.db.table(table).update(fields, cond)
+        tab = self.db.table(table)
+
+        if isinstance(cond, (list, set, tuple)):
+            result = tab.update(fields, doc_ids=list(cond))
+        else:
+            result = tab.update(fields, cond)
+
         self.db.close()
         self.unlock(self._passphrase)
         return result
 
+    # --------- PATCHED: accepts list / set / tuple of DocIDs ---------- #
     def remove(self, table, cond):
+        """
+        Remove documents in *table*.
+
+        * If *cond* is a TinyDB Query / callable ➜ use it as such.
+        * If *cond* is an iterable of DocIDs ➜ pass via `doc_ids=`.
+        """
         self.ensure_unlocked()
-        result = self.db.table(table).remove(cond)
+        tab = self.db.table(table)
+
+        if isinstance(cond, (list, set, tuple)):
+            result = tab.remove(doc_ids=list(cond))
+        else:
+            result = tab.remove(cond)
+
         self.db.close()
         self.unlock(self._passphrase)
         return result
@@ -190,8 +229,5 @@ class SecureDB:
         self.ensure_unlocked()
         return self.db.table(name)
 
-    def ensure_unlocked(self):
-        if not self._unlocked:
-            raise RuntimeError("🔒 Database is locked. Unlock it first.")
 
 secure_db = SecureDB()
