@@ -55,7 +55,7 @@ from handlers.reports.partner_report  import (
     register_partner_report_handlers,
     show_partner_report_menu,
     save_custom_start,
-    select_date_range as select_partner_date_range,
+    select_date_range as select_partner_date_range,   # <--- ALIAS HERE
     ask_custom_start as ask_partner_custom_start,
     choose_scope as choose_partner_scope,
     show_report as show_partner_report,
@@ -78,7 +78,6 @@ from handlers.reports.owner_report    import (
     show_owner_position,
 )
 
-# Owner module
 from handlers.owner import register_owner_handlers, show_owner_menu
 
 # ═══════════════════════════════════════
@@ -95,11 +94,10 @@ async def kill_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logging.warning("⚠️ Admin issued /kill — shutting down cleanly.")
     raise SystemExit(0)
 
-# ════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════
 # InitDB flow with secure setup script and enforced PIN
-# ════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════
 async def initdb_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Ask for confirmation before resetting DB."""
     if not config.ENABLE_ENCRYPTION:
         await update.message.reply_text(
             "❌ Encryption must be enabled to initialize DB. "
@@ -193,11 +191,9 @@ async def confirm_new_pin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         storage=lambda p: EncryptedJSONStorage(p, secure_db.fernet)
     )
 
-    # 🌱 Seed initial tables
     seed_tables(secure_db)
     secure_db.lock()
 
-    # Protect salt
     try:
         os.chmod("data/kdf_salt.bin", 0o444)
     except Exception as e:
@@ -210,9 +206,9 @@ async def confirm_new_pin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     subprocess.Popen([sys.executable, os.path.abspath(sys.argv[0]), "child"])
     raise SystemExit(0)
 
-# ════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════
 # Unlock command flow
-# ════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════
 async def unlock_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["unlock_attempts"] = 0
     prompt = "🔑 *Enter your encryption PIN to unlock:*"
@@ -244,9 +240,9 @@ async def unlock_process(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     return ConversationHandler.END
 
-# ════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════
 # Auto-lock background task
-# ════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════
 async def auto_lock_task():
     AUTOLOCK_TIMEOUT = 180  # 3 minutes
     while True:
@@ -260,7 +256,6 @@ async def auto_lock_task():
 # Main Menu & sub-menus
 # ═══════════════════════════════════════
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Main menu with DB status indicator and unlock/initdb shortcuts."""
     if not os.path.exists(config.DB_PATH):
         status_icon = "📂 No DB found: run /initdb"
         kb = InlineKeyboardMarkup(
@@ -342,12 +337,6 @@ async def show_report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Reports: choose a type", reply_markup=kb
     )
 
-# ========= DEBUG CALLBACK HANDLER ==========
-async def debug_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    print("[DEBUG CALLBACK HANDLER] Got callback data:", update.callback_query.data)
-    await update.callback_query.answer()
-    await update.callback_query.edit_message_text("Debug: Button pressed!\n\n" + update.callback_query.data)
-
 # ═══════════════════════════════════════
 # run_bot() – handler registration
 # ═══════════════════════════════════════
@@ -358,9 +347,7 @@ async def run_bot():
     )
     app = ApplicationBuilder().token(config.BOT_TOKEN).build()
 
-    # 1. ── Register ConversationHandlers FIRST ──
-
-    # Unlock handler
+    # Register ConversationHandlers FIRST
     app.add_handler(
         ConversationHandler(
             entry_points=[
@@ -373,8 +360,6 @@ async def run_bot():
             fallbacks=[],
         )
     )
-
-    # InitDB handler
     app.add_handler(
         ConversationHandler(
             entry_points=[
@@ -391,8 +376,7 @@ async def run_bot():
         )
     )
 
-    # 2. ── Register root navigation and top-level callback handlers ──
-
+    # Register navigation and core menu handlers
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(start, pattern="^main_menu$"))
     app.add_handler(CallbackQueryHandler(show_adduser_menu,      pattern="^adduser_menu$"))
@@ -403,17 +387,17 @@ async def run_bot():
     app.add_handler(CommandHandler("restart", restart_bot))
     app.add_handler(CommandHandler("kill",    kill_bot))
 
-    # ── Reports menu buttons
+    # Reports menu buttons
     app.add_handler(CallbackQueryHandler(show_customer_report_menu, pattern="^rep_cust$"))
     app.add_handler(CallbackQueryHandler(show_partner_report_menu,  pattern="^rep_part$"))
     app.add_handler(CallbackQueryHandler(show_store_report_menu,    pattern="^rep_store$"))
     app.add_handler(CallbackQueryHandler(show_owner_position,       pattern="^rep_owner$"))
 
-    # ── Register backup BEFORE owner ──
+    # Register backup BEFORE owner
     from handlers.backup import register_backup_handlers
     register_backup_handlers(app)
 
-    # ── Feature handlers ──
+    # Feature handlers
     register_customer_handlers(app)
     register_store_handlers(app)
     register_partner_handlers(app)
@@ -432,14 +416,13 @@ async def run_bot():
     register_owner_handlers(app)
     app.add_handler(CallbackQueryHandler(show_owner_menu, pattern="^owner_menu$"))
 
-    # ── Register all report handlers ──
+    # Register all report handlers (for ConversationHandler flows)
     register_customer_report_handlers(app)
     register_partner_report_handlers(app)
     register_store_report_handlers(app)
     register_owner_report_handlers(app)
 
-    # --- Reports direct callback wiring (critical for nav!) ---
-    # Customer report direct callbacks
+    # --- Reports direct callback wiring (critical for nav/recovery!) ---
     app.add_handler(CallbackQueryHandler(select_customer_date_range, pattern="^custrep_\\d+$"))
     app.add_handler(CallbackQueryHandler(choose_customer_report_scope, pattern="^daterange_"))
     app.add_handler(CallbackQueryHandler(get_customer_custom_date, pattern="^daterange_custom$"))
@@ -447,24 +430,19 @@ async def run_bot():
     app.add_handler(CallbackQueryHandler(paginate_customer_report, pattern="^page_(prev|next)$"))
     app.add_handler(CallbackQueryHandler(export_customer_pdf, pattern="^export_pdf$"))
 
-    # Partner report direct callbacks
-    app.add_handler(CallbackQueryHandler(select_partner_date_range, pattern="^preport_\\d+$"))
+    app.add_handler(CallbackQueryHandler(select_partner_date_range, pattern="^preport_\\d+$"))  # <---- CRITICAL FOR PARTNER REPORT
     app.add_handler(CallbackQueryHandler(choose_partner_scope, pattern="^range_(week|custom)$"))
     app.add_handler(CallbackQueryHandler(ask_partner_custom_start, pattern="^range_custom$"))
     app.add_handler(CallbackQueryHandler(show_partner_report, pattern="^scope_"))
     app.add_handler(CallbackQueryHandler(paginate_partner_report, pattern="^page_(next|prev)$"))
     app.add_handler(CallbackQueryHandler(export_partner_pdf, pattern="^export_pdf$"))
 
-    # Store report direct callbacks
     app.add_handler(CallbackQueryHandler(select_store_date_range, pattern="^sreport_\\d+$"))
     app.add_handler(CallbackQueryHandler(choose_store_scope, pattern="^range_(week|custom)$"))
     app.add_handler(CallbackQueryHandler(ask_store_custom_start, pattern="^range_custom$"))
     app.add_handler(CallbackQueryHandler(show_store_report, pattern="^scope_"))
     app.add_handler(CallbackQueryHandler(paginate_store_report, pattern="^page_(next|prev)$"))
     app.add_handler(CallbackQueryHandler(export_store_pdf, pattern="^export_pdf$"))
-
-    # --- Register debug handler LAST ---
-    app.add_handler(CallbackQueryHandler(debug_callback, pattern=".*"))
 
     # --- Start polling & auto-lock background task ---
     asyncio.create_task(auto_lock_task())
