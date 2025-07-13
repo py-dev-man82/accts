@@ -1,5 +1,3 @@
-# handlers/reports/partner_report.py
-
 import logging
 from datetime import datetime, timedelta
 from typing import List, Dict
@@ -9,7 +7,7 @@ from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.ext import CallbackQueryHandler, ConversationHandler, ContextTypes
+from telegram.ext import CallbackQueryHandler, ConversationHandler, ContextTypes, MessageHandler, filters
 
 from handlers.utils import require_unlock, fmt_money, fmt_date
 from handlers.ledger import get_ledger
@@ -588,12 +586,37 @@ async def export_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     return REPORT_PAGE
 
-
 def register_partner_report_handlers(app):
-    app.add_handler(CallbackQueryHandler(show_partner_report_menu, pattern="^rep_part$"))
-    app.add_handler(CallbackQueryHandler(select_date_range, pattern="^preport_\\d+$"))
-    app.add_handler(CallbackQueryHandler(choose_scope, pattern="^range_(week|custom)$"))
-    app.add_handler(CallbackQueryHandler(show_report, pattern="^scope_(full|sales|payments)$"))
-    app.add_handler(CallbackQueryHandler(paginate, pattern="^page_(next|prev)$"))
-    app.add_handler(CallbackQueryHandler(export_pdf, pattern="^export_pdf$"))
-    app.add_handler(CallbackQueryHandler(_goto_main_menu, pattern="^main_menu$"))
+    conv = ConversationHandler(
+        entry_points=[
+            CallbackQueryHandler(show_partner_report_menu, pattern="^rep_part$"),
+            CallbackQueryHandler(show_partner_report_menu, pattern="^partner_report_menu$"),
+            CallbackQueryHandler(_goto_main_menu, pattern="^main_menu$"),
+        ],
+        states={
+            PARTNER_SELECT: [
+                CallbackQueryHandler(select_date_range, pattern="^preport_\\d+$"),
+                CallbackQueryHandler(_goto_main_menu, pattern="^main_menu$"),
+            ],
+            DATE_RANGE_SELECT: [
+                CallbackQueryHandler(choose_scope, pattern="^range_(week|custom)$"),
+                CallbackQueryHandler(_goto_main_menu, pattern="^main_menu$"),
+            ],
+            CUSTOM_DATE_INPUT: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, save_custom_start),
+                CallbackQueryHandler(_goto_main_menu, pattern="^main_menu$"),
+            ],
+            REPORT_SCOPE_SELECT: [
+                CallbackQueryHandler(show_report, pattern="^scope_(full|sales|payments)$"),
+                CallbackQueryHandler(_goto_main_menu, pattern="^main_menu$"),
+            ],
+            REPORT_PAGE: [
+                CallbackQueryHandler(paginate, pattern="^page_(next|prev)$"),
+                CallbackQueryHandler(export_pdf, pattern="^export_pdf$"),
+                CallbackQueryHandler(_goto_main_menu, pattern="^main_menu$"),
+            ],
+        },
+        fallbacks=[],
+        per_message=False,
+    )
+    app.add_handler(conv)
