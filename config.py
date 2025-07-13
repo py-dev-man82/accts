@@ -14,6 +14,6 @@ ENABLE_ENCRYPTION = True
 
 # config.py
 
-NEXTCLOUD_URL = "https://your.nextcloud.server/remote.php/dav/files/YOURUSERNAME/BACKUPS/"
-NEXTCLOUD_USER = "YOURUSERNAME"
-NEXTCLOUD_PASS = "YOUR_SUPER_STRONG_PASSWORD"
+NEXTCLOUD_URL = "davs://cloud.secu1.chat//nextcloud/remote.php/dav/files/pipe/"
+NEXTCLOUD_USER = "pipe"
+NEXTCLOUD_PASS = "epSxp-AfGbP-SHyRK-eWYks-2rJBo"
