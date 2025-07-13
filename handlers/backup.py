@@ -28,6 +28,7 @@ import config
 BACKUP_FILES = ["data/db.json", "data/kdf_salt.bin"]
 BACKUP_TMP = "data/telegram_backup.zip"
 HASH_FILE = "backup.sha256"
+PAD_FILE = "__pad.bin"
 RETENTION_DIR = "data/backups"
 MAX_BACKUPS = 5
 ADMIN_TELEGRAM_ID = getattr(config, "ADMIN_TELEGRAM_ID", None)
@@ -128,29 +129,34 @@ def make_backup_file(suffix=""):
         hout.write(hash_txt)
 
     try:
-        # No compression (ZIP_STORED)
+        # Create main zip first (no padding yet)
         with ZipFile(BACKUP_TMP, 'w', compression=ZIP_STORED) as zf:
             for filepath in BACKUP_FILES:
                 zf.write(filepath, arcname=os.path.basename(filepath))
             zf.write(HASH_FILE, arcname=HASH_FILE)
+        if os.path.exists(HASH_FILE):
+            os.remove(HASH_FILE)
+
+        # If the archive is too small, add a pad file inside
+        MIN_SIZE = 128 * 1024
+        zip_size = os.path.getsize(BACKUP_TMP)
+        if zip_size < MIN_SIZE:
+            pad_size = MIN_SIZE - zip_size
+            with open(PAD_FILE, "wb") as pf:
+                pf.write(b"\0" * pad_size)
+            # Add pad file to archive
+            with ZipFile(BACKUP_TMP, 'a', compression=ZIP_STORED) as zf:
+                zf.write(PAD_FILE, arcname="__pad.bin")
+            os.remove(PAD_FILE)
+            logging.info(f"Added internal pad file to reach {MIN_SIZE} bytes.")
+
     except Exception as e:
         logging.error(f"Failed to create zip archive: {e}")
         raise
-    finally:
-        if os.path.exists(HASH_FILE):
-            os.remove(HASH_FILE)
 
     if not os.path.isfile(BACKUP_TMP) or os.path.getsize(BACKUP_TMP) == 0:
         logging.error("Backup zip file not created or is empty")
         raise IOError("Backup zip creation failed")
-
-    # --- Pad the zip file if it's <128KB to avoid Telegram bug ---
-    MIN_SIZE = 128 * 1024
-    zip_size = os.path.getsize(BACKUP_TMP)
-    if zip_size < MIN_SIZE:
-        with open(BACKUP_TMP, "ab") as f:
-            f.write(b"\0" * (MIN_SIZE - zip_size))
-        logging.info(f"Padded backup zip to {MIN_SIZE} bytes (was {zip_size})")
 
     try:
         with ZipFile(BACKUP_TMP, 'r') as testzip:
@@ -185,32 +191,33 @@ async def backup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _reply(update, f"❌ Failed to create backup: {e}")
         return
 
-    # --- Patch: send as .dbk file to avoid Telegram "zip" bugs ---
-    dbk_file = backup_file.replace('.zip', '.dbk')
-    shutil.copy2(backup_file, dbk_file)
+    # Send as .txt to avoid Telegram zip bug
+    txt_file = backup_file.replace('.zip', '.txt')
+    shutil.copy2(backup_file, txt_file)
+
     await _reply_document(
         update,
-        document=InputFile(dbk_file),
-        filename=os.path.basename(dbk_file),
-        caption="🗄️ Encrypted DB backup (SHA256 included). After download, **rename to .zip** before extracting!",
+        document=InputFile(txt_file),
+        filename=os.path.basename(txt_file),
+        caption=(
+            "🗄️ Encrypted DB backup (SHA256 included). "
+            "After download, rename to .zip before extracting! "
+            "(The archive may contain a '__pad.bin' file for compatibility.)"
+        ),
     )
-    os.remove(dbk_file)
+    os.remove(txt_file)
     if os.path.exists(BACKUP_TMP):
         os.remove(BACKUP_TMP)
 
-# (restore/restore_receive/backups_command/backups_callback/autobackup_task/register_backup_handlers remain unchanged)
-# ... [the rest of your logic as before]
-
-
 # ──────────────────────────────
-# Restore (upload backup zip)
+# Restore (upload backup zip, txt, dbk, bin, etc.)
 async def restore_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update):
         await _reply(update, "❌ You are not authorized to use this command.")
         return ConversationHandler.END
     await _reply(
         update,
-        "⚠️ Upload your backup archive (.zip) with DB, salt, and hash file. "
+        "⚠️ Upload your backup archive (any extension, must be a .zip format) with DB, salt, and hash file. "
         "This will OVERWRITE your current DB if hashes match.\n"
         "Type /cancel to abort."
     )
@@ -223,8 +230,8 @@ async def restore_receive(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
     doc = update.message.document
-    if not doc or not doc.file_name.endswith(".zip"):
-        await update.message.reply_text("❌ Please upload a .zip backup archive.")
+    if not doc or not doc.file_name:
+        await update.message.reply_text("❌ Please upload a backup archive file.")
         return RESTORE_WAITING
 
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -232,10 +239,14 @@ async def restore_receive(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file = await doc.get_file()
         await file.download_to_drive(file_path)
         try:
+            # Accept any file extension, just check it's a valid zip
             with ZipFile(file_path, "r") as zf:
                 names = zf.namelist()
-                if not all(f in names for f in ["db.json", "kdf_salt.bin", "backup.sha256"]):
-                    await update.message.reply_text("❌ Archive missing db.json, kdf_salt.bin, or backup.sha256.")
+                needed = ["db.json", "kdf_salt.bin", "backup.sha256"]
+                if not all(f in names for f in needed):
+                    await update.message.reply_text(
+                        f"❌ Archive missing one of: {', '.join(needed)}"
+                    )
                     return RESTORE_WAITING
                 zf.extract("db.json", path=tmpdir)
                 zf.extract("kdf_salt.bin", path=tmpdir)
@@ -260,6 +271,9 @@ async def restore_receive(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "✅ Restore complete and hash verified! Please /unlock with your PIN."
     )
     return ConversationHandler.END
+
+# [rest of file remains unchanged...]
+# ... previous code from above ...
 
 async def restore_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if hasattr(update, "message") and update.message:
@@ -333,7 +347,8 @@ async def backups_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             with tempfile.TemporaryDirectory() as tmpdir:
                 with ZipFile(full_path, "r") as zf:
                     names = zf.namelist()
-                    if not all(f in names for f in ["db.json", "kdf_salt.bin", "backup.sha256"]):
+                    needed = ["db.json", "kdf_salt.bin", "backup.sha256"]
+                    if not all(f in names for f in needed):
                         await update.callback_query.message.reply_text("❌ Archive missing required files.")
                         return
                     zf.extract("db.json", path=tmpdir)
@@ -413,6 +428,5 @@ def register_backup_handlers(app: Application):
         name="restore_conv",
     )
     app.add_handler(restore_conv)
-    # Patch: only match base restorefile_ not confirm/cancel for confirmation step, those are checked below!
     app.add_handler(CallbackQueryHandler(backups_callback, pattern="^(downloadbackup_|restorefile_|restorefile_confirm|restorefile_cancel)"))
     app.create_task(autobackup_task(app))
