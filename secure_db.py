@@ -111,18 +111,12 @@ class SecureDB:
             self._failed_attempts = 0
             self._last_access = time.monotonic()
             return True
-        except InvalidToken:
+        except Exception as e:
             self._failed_attempts += 1
-            logger.warning(
-                f"❌ Unlock failed ({self._failed_attempts}/{MAX_PIN_ATTEMPTS}). "
-                f"Attempts left: {MAX_PIN_ATTEMPTS - self._failed_attempts}"
-            )
+            logger.error(f"❌ Unlock failed ({self._failed_attempts}/{MAX_PIN_ATTEMPTS}): {e}")
             if self._failed_attempts >= MAX_PIN_ATTEMPTS:
                 logger.critical("☠️ Maximum PIN attempts exceeded. Wiping DB and salt!")
                 self._wipe_db()
-            return False
-        except Exception as e:
-            logger.error(f"❌ Unexpected error while unlocking DB: {e}")
             return False
 
     def lock(self):
