@@ -342,6 +342,12 @@ async def show_report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Reports: choose a type", reply_markup=kb
     )
 
+# ========= DEBUG CALLBACK HANDLER ==========
+async def debug_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    print("[DEBUG CALLBACK HANDLER] Got callback data:", update.callback_query.data)
+    await update.callback_query.answer()
+    await update.callback_query.edit_message_text("Debug: Button pressed!\n\n" + update.callback_query.data)
+
 # ═══════════════════════════════════════
 # run_bot() – handler registration
 # ═══════════════════════════════════════
@@ -367,10 +373,6 @@ async def run_bot():
             fallbacks=[],
         )
     )
-async def debug_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    print("[DEBUG CALLBACK HANDLER] Got callback data:", update.callback_query.data)
-    await update.callback_query.answer()
-    await update.callback_query.edit_message_text("Debug: Button pressed!\n\n" + update.callback_query.data)
 
     # InitDB handler
     app.add_handler(
@@ -461,9 +463,8 @@ async def debug_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     app.add_handler(CallbackQueryHandler(paginate_store_report, pattern="^page_(next|prev)$"))
     app.add_handler(CallbackQueryHandler(export_store_pdf, pattern="^export_pdf$"))
 
-    # --- Start polling & auto-lock background task ---
+    # --- Register debug handler LAST ---
     app.add_handler(CallbackQueryHandler(debug_callback, pattern=".*"))
-
 
     # --- Start polling & auto-lock background task ---
     asyncio.create_task(auto_lock_task())
