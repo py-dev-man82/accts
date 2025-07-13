@@ -70,14 +70,14 @@ class SecureDB:
         self._last_access = time.monotonic()
 
     def _load_salt(self):
-        if os.path.exists(SALT_FILE):
-            salt = open(SALT_FILE, "rb").read()
-            logger.debug(f"🔑 Loaded existing KDF salt ({len(salt)} bytes)")
-        else:
-            salt = os.urandom(16)
-            open(SALT_FILE, "wb").write(salt)
-            logger.info(f"🔑 Generated new KDF salt and saved to disk")
-        return salt
+    if not os.path.exists(SALT_FILE):
+        raise RuntimeError(
+            f"KDF salt file missing: {SALT_FILE}. "
+            "Run setup_secure_db.sh to create a new salt before /initdb."
+        )
+    salt = open(SALT_FILE, "rb").read()
+    logger.debug(f"🔑 Loaded existing KDF salt ({len(salt)} bytes)")
+    return saltt
 
     def _derive_key(self, pin: str) -> Fernet:
         salt = self._load_salt()
