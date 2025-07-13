@@ -6,6 +6,7 @@ import tempfile
 import logging
 import hashlib
 import requests
+import stat
 from zipfile import ZipFile
 from datetime import datetime, timedelta
 import asyncio
@@ -195,8 +196,13 @@ async def restore_receive(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not ok:
                 await update.message.reply_text(f"❌ Hash check failed: {msg}. Restore aborted.")
                 return ConversationHandler.END
+            # PATCH: Unlock the salt file for writing
+            if os.path.exists("data/kdf_salt.bin"):
+                os.chmod("data/kdf_salt.bin", stat.S_IWRITE | stat.S_IREAD)
             shutil.move(os.path.join(tmpdir, "db.json"), "data/db.json")
             shutil.move(os.path.join(tmpdir, "kdf_salt.bin"), "data/kdf_salt.bin")
+            # PATCH: Lock down the salt file again
+            os.chmod("data/kdf_salt.bin", 0o444)
         except Exception as e:
             logging.error(f"Restore failed: {e}")
             await update.message.reply_text(f"❌ Restore failed: {e}")
@@ -289,8 +295,13 @@ async def backups_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if not ok:
                     await update.callback_query.message.reply_text(f"❌ Hash check failed: {msg}. Restore aborted.")
                     return
+                # PATCH: Unlock the salt file for writing
+                if os.path.exists("data/kdf_salt.bin"):
+                    os.chmod("data/kdf_salt.bin", stat.S_IWRITE | stat.S_IREAD)
                 shutil.move(os.path.join(tmpdir, "db.json"), "data/db.json")
                 shutil.move(os.path.join(tmpdir, "kdf_salt.bin"), "data/kdf_salt.bin")
+                # PATCH: Lock down the salt file again
+                os.chmod("data/kdf_salt.bin", 0o444)
             await update.callback_query.message.reply_text(
                 f"✅ Restore from <b>{fname}</b> complete and hash verified! Please /unlock with your PIN.",
                 parse_mode="HTML"
