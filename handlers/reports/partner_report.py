@@ -132,11 +132,11 @@ async def choose_scope(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kb = InlineKeyboardMarkup(
         [
             [
-                InlineKeyboardButton("📝 Full Report", callback_data="scope_full"),
-                InlineKeyboardButton("🛒 Sales Only", callback_data="scope_sales"),
+                InlineKeyboardButton("📝 Full Report", callback_data="partner_scope_full"),
+                InlineKeyboardButton("🛒 Sales Only", callback_data="partner_scope_sales"),
             ],
             [
-                InlineKeyboardButton("💵 Payments Only", callback_data="scope_payments")
+                InlineKeyboardButton("💵 Payments Only", callback_data="partner_scope_payments")
             ],
             [InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu")],
         ]
@@ -343,8 +343,8 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     nav = []
     if ctx["page"] > 0:
-        nav.append(InlineKeyboardButton("⬅️ Prev", callback_data="page_prev"))
-    nav.append(InlineKeyboardButton("📄 Export PDF", callback_data="export_pdf"))
+        nav.append(InlineKeyboardButton("⬅️ Prev", callback_data="partner_page_prev"))
+    nav.append(InlineKeyboardButton("📄 Export PDF", callback_data="partner_export_pdf"))
     nav.append(InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu"))
 
     await update.callback_query.edit_message_text(
@@ -357,9 +357,9 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @require_unlock
 async def paginate(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.callback_query.data == "page_next":
+    if update.callback_query.data == "partner_page_next":
         context.user_data["page"] += 1
-    elif update.callback_query.data == "page_prev":
+    elif update.callback_query.data == "partner_page_prev":
         context.user_data["page"] = max(0, context.user_data["page"] - 1)
     return await show_report(update, context)
 
@@ -593,7 +593,7 @@ def register_partner_report_handlers(app):
     app.add_handler(CallbackQueryHandler(show_partner_report_menu, pattern="^rep_part$"))
     app.add_handler(CallbackQueryHandler(select_date_range, pattern="^preport_\\d+$"))
     app.add_handler(CallbackQueryHandler(choose_scope, pattern="^range_(week|custom)$"))
-    app.add_handler(CallbackQueryHandler(show_report, pattern="^scope_(full|sales|payments)$"))
-    app.add_handler(CallbackQueryHandler(paginate, pattern="^page_(next|prev)$"))
-    app.add_handler(CallbackQueryHandler(export_pdf, pattern="^export_pdf$"))
+    app.add_handler(CallbackQueryHandler(show_report, pattern="^partner_scope_(full|sales|payments)$"))
+    app.add_handler(CallbackQueryHandler(paginate, pattern="^partner_page_(next|prev)$"))
+    app.add_handler(CallbackQueryHandler(export_pdf, pattern="^partner_export_pdf$"))
     app.add_handler(CallbackQueryHandler(_goto_main_menu, pattern="^main_menu$"))
