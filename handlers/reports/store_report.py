@@ -485,4 +485,4 @@ def register_store_report_handlers(app):
     app.add_handler(CallbackQueryHandler(select_date_range, pattern="^store_sreport_"))
     app.add_handler(CallbackQueryHandler(choose_scope, pattern="^store_range_"))
     app.add_handler(CallbackQueryHandler(show_report, pattern="^store_scope_"))
-    app.add_handler(CallbackQueryHandler(export_pdf, pattern="^store_export_pdf"))
+    app.add_handler(CallbackQueryHandler(export_pdf, pattern="^store_export_pdf")) 
