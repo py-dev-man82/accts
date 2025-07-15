@@ -1,10 +1,6 @@
-# handlers/payments.py
-"""
-Payments module – now with expanded ledger fields!
-
-- fee_perc, fee_amt, fx_rate, usd_amt are always written as separate columns on every payment.
-- User note is only stored in note.
-"""
+# ======================================================================
+#   PAYMENTS MODULE – LEDGER-LINKED, RELATED-ID, AND UI CONSISTENT
+# ======================================================================
 
 import logging
 from datetime import datetime
@@ -22,6 +18,7 @@ from telegram.ext import (
 from handlers.utils import require_unlock, fmt_money, fmt_date
 from handlers.ledger import add_ledger_entry, delete_ledger_entries_by_related
 from secure_db import secure_db
+from tinydb import Query
 
 logger = logging.getLogger(__name__)
 
@@ -44,8 +41,21 @@ logger = logging.getLogger(__name__)
 ROWS_PER_PAGE = 20
 
 # ───────────────────────────────────────────────────────────────
-#  Helpers
+#  Helpers / Formatters
 # ───────────────────────────────────────────────────────────────
+
+def _short_date(dstr):
+    """DDMMYYYY -> DD/MM/YY"""
+    try:
+        dt = datetime.strptime(dstr, "%d%m%Y")
+        return dt.strftime("%d/%m/%y")
+    except Exception:
+        return dstr
+
+def _cust_currency(cid: int) -> str:
+    row = secure_db.table("customers").get(doc_id=cid) or {}
+    return row.get("currency", "USD")
+
 def _months_filter(rows, months: int):
     if months <= 0:
         return rows
@@ -62,13 +72,20 @@ def _months_filter(rows, months: int):
         if datetime.strptime(r.get("date", "01011970"), "%d%m%Y") >= cutoff
     ]
 
-def _cust_currency(cid: int) -> str:
-    row = secure_db.table("customers").get(doc_id=cid) or {}
-    return row.get("currency", "USD")
+def _format_payment_row(r, currency):
+    rid = r.get("related_id", r.doc_id)
+    shortd = _short_date(r.get("date", ""))
+    fee_amt = r["local_amt"] * r.get("fee_perc", 0) / 100
+    net = r["local_amt"] - fee_amt
+    fx = (net / r["usd_amt"]) if r.get("usd_amt") else 0
+    return (f"{rid}: {shortd}: {fmt_money(r['local_amt'], currency)} ➜ "
+            f"{fmt_money(r['usd_amt'], 'USD')} | FX {fx:.4f}")
+
 
 # ───────────────────────────────────────────────────────────────
 #  Sub-menu & universal Back handler
 # ───────────────────────────────────────────────────────────────
+
 async def show_payment_menu(update: Update,
                             context: ContextTypes.DEFAULT_TYPE):
     if update.callback_query:
@@ -96,6 +113,7 @@ async def payment_back(update: Update,
 # ======================================================================
 #                               ADD FLOW
 # ======================================================================
+
 @require_unlock
 async def add_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
@@ -177,7 +195,7 @@ async def get_add_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [[InlineKeyboardButton("📅 Skip date",
                                callback_data="pay_add_date_skip")]]
     )
-    prompt = f"Enter payment date DDMMYYYY or Skip ({fmt_date(today)}):"
+    prompt = f"Enter payment date DDMMYYYY or Skip ({_short_date(today)}):"
     if update.callback_query:
         await update.callback_query.edit_message_text(prompt, reply_markup=kb)
     else:
@@ -211,7 +229,7 @@ async def confirm_add_prompt(update: Update,
         f"USD Recv: {fmt_money(d['usd_amt'], 'USD')}\n"
         f"FX Rate: {fx:.4f}\n"
         f"Note: {d.get('note') or '—'}\n"
-        f"Date: {fmt_date(d['date'])}"
+        f"Date: {_short_date(d['date'])}"
     )
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("✅ Confirm", callback_data="pay_add_conf_yes"),
@@ -231,29 +249,19 @@ async def confirm_add_payment(update: Update,
         return await payment_back(update, context)
     d = context.user_data
 
-    # 1. Write main payment
-    payment_id = secure_db.insert("customer_payments", {
-        "customer_id": d["customer_id"],
-        "local_amt":   d["local_amt"],
-        "fee_perc":    d["fee_perc"],
-        "usd_amt":     d["usd_amt"],
-        "note":        d["note"],
-        "date":        d["date"],
-        "timestamp":   datetime.utcnow().isoformat(),
-    })
-
-    # 2. Prepare expanded fields for ledger
+    # === Ledger-linked: write ledger first, save related_id ===
     cur = _cust_currency(d["customer_id"])
     fee_amt = d["local_amt"] * d["fee_perc"] / 100
     fx      = (d["local_amt"] - fee_amt) / d["usd_amt"] if d["usd_amt"] else 0
+    payment_id = None
 
     try:
-        # Customer ledger entry (local currency)
-        add_ledger_entry(
+        # 1. Write ledger for customer (local currency, related_id=None)
+        related_id = add_ledger_entry(
             account_type="customer",
             account_id=d["customer_id"],
             entry_type="payment",
-            related_id=payment_id,
+            related_id=None,
             amount=d["local_amt"],
             currency=cur,
             note=d.get('note', ''),
@@ -263,12 +271,12 @@ async def confirm_add_payment(update: Update,
             fx_rate=fx,
             usd_amt=d["usd_amt"]
         )
-        # Owner ledger entry (USD/POT)
+        # 2. Write ledger for owner (USD/POT, same related_id)
         add_ledger_entry(
             account_type="owner",
             account_id="POT",
             entry_type="payment_recv",
-            related_id=payment_id,
+            related_id=related_id,
             amount=d["usd_amt"],
             currency="USD",
             note=d.get('note', ''),
@@ -278,9 +286,21 @@ async def confirm_add_payment(update: Update,
             fx_rate=fx,
             usd_amt=d["usd_amt"]
         )
+        # 3. Insert payment record with related_id
+        payment_id = secure_db.insert("customer_payments", {
+            "customer_id": d["customer_id"],
+            "local_amt":   d["local_amt"],
+            "fee_perc":    d["fee_perc"],
+            "usd_amt":     d["usd_amt"],
+            "note":        d["note"],
+            "date":        d["date"],
+            "timestamp":   datetime.utcnow().isoformat(),
+            "related_id":  related_id
+        })
     except Exception as e:
-        logger.error(f"Ledger failed for payment {payment_id}: {e}")
-        secure_db.remove("customer_payments", [payment_id])
+        logger.error(f"Ledger failed for payment: {e}")
+        if payment_id:
+            secure_db.remove("customer_payments", [payment_id])
         await update.callback_query.edit_message_text(
             "❌ Error: Failed to write to ledger. Payment not recorded.",
             reply_markup=InlineKeyboardMarkup(
@@ -300,6 +320,15 @@ async def confirm_add_payment(update: Update,
 # ======================================================================
 #                       VIEW FLOW  (Customer → Period → Pages)
 # ======================================================================
+
+def _short_date(date_str):
+    # Convert DDMMYYYY to DD/MM/YY for compact display
+    try:
+        dt = datetime.strptime(date_str, "%d%m%Y")
+        return dt.strftime("%d/%m/%y")
+    except Exception:
+        return date_str
+
 @require_unlock
 async def view_payment_start(update: Update,
                              context: ContextTypes.DEFAULT_TYPE):
@@ -373,15 +402,17 @@ async def render_view_page(update: Update,
             fee_amt = r["local_amt"] * r["fee_perc"] / 100
             net     = r["local_amt"] - fee_amt
             fx      = (net / r["usd_amt"]) if r["usd_amt"] else 0
-            lines.append(
-                f"[{r.doc_id}] "
-                f"{fmt_money(r['local_amt'], cur)} ➜ "
-                f"{fmt_money(r['usd_amt'], 'USD')} "
-                f"on {fmt_date(r['date'])} | FX {fx:.4f}"
+            # Use related_id if present, else doc_id for legacy
+            ref_id = r.get("related_id", r.doc_id)
+            text_line = (
+                f"{ref_id}: {_short_date(r['date'])}: {fmt_money(r['local_amt'], cur)} ➜ "
+                f"{fmt_money(r['usd_amt'], 'USD')} | FX {fx:.4f}"
             )
+            lines.append(text_line)
         text = (f"💰 Payments  P{page}/"
                 f"{(total+ROWS_PER_PAGE-1)//ROWS_PER_PAGE}\n\n"
-                + "\n".join(lines))
+                + "\n".join(lines)
+                + "\n\nReply with reference number or use arrows.")
 
     nav = []
     if start > 0:
@@ -404,6 +435,7 @@ async def view_paginate(update: Update,
 # ======================================================================
 #                       EDIT FLOW  (Customer → Period → Pages)
 # ======================================================================
+
 @require_unlock
 async def edit_payment_start(update: Update,
                              context: ContextTypes.DEFAULT_TYPE):
@@ -474,13 +506,18 @@ async def render_edit_page(update: Update,
     if not chunk:
         text = "No payments."
     else:
-        lines = [f"[{r.doc_id}] {fmt_money(r['local_amt'], cur)} ➜ "
-                 f"{fmt_money(r['usd_amt'],'USD')}"
-                 for r in chunk]
+        lines = []
+        for r in chunk:
+            ref_id = r.get("related_id", r.doc_id)
+            text_line = (
+                f"{ref_id}: {_short_date(r['date'])}: {fmt_money(r['local_amt'], cur)} ➜ "
+                f"{fmt_money(r['usd_amt'],'USD')}"
+            )
+            lines.append(text_line)
         text = (f"✏️ Edit Payments  P{page}/"
                 f"{(total+ROWS_PER_PAGE-1)//ROWS_PER_PAGE}\n\n"
                 + "\n".join(lines)
-                + "\n\nSend DocID to edit:")
+                + "\n\nReply with reference number to edit or use arrows.")
 
     nav = []
     if start > 0:
@@ -501,13 +538,18 @@ async def edit_page_nav(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def edit_pick_doc(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        pid = int(update.message.text.strip())
-        rec = secure_db.table("customer_payments").get(doc_id=pid)
-        assert rec and rec["customer_id"] == context.user_data["edit_cid"]
+        rid = int(update.message.text.strip())
     except Exception:
-        await update.message.reply_text("❌ Invalid ID; try again:")
+        await update.message.reply_text("❌ Enter numeric reference number.")
+        return P_EDIT_PAGE
+    # Search using related_id, fallback to doc_id for legacy
+    q = Query()
+    rec = secure_db.table("customer_payments").get((q.related_id == rid) | (q.doc_id == rid))
+    if not rec or rec["customer_id"] != context.user_data["edit_cid"]:
+        await update.message.reply_text("❌ ID not in current list.")
         return P_EDIT_PAGE
     context.user_data["edit_rec"] = rec
+    context.user_data["edit_rid"] = rec.get("related_id", rec.doc_id)
     await update.message.reply_text("New local amount:")
     return P_EDIT_LOCAL
 
@@ -546,7 +588,7 @@ async def edit_new_usd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [[InlineKeyboardButton("📅 Skip",
                                callback_data="pay_edit_date_skip")]]
     )
-    await update.message.reply_text(f"New date DDMMYYYY or Skip ({fmt_date(today)}):",
+    await update.message.reply_text(f"New date DDMMYYYY or Skip ({_short_date(today)}):",
                                     reply_markup=kb)
     return P_EDIT_DATE
 
@@ -568,7 +610,7 @@ async def edit_new_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Local: {fmt_money(d['new_local'], cur)}\n"
         f"Fee: {d['new_fee']:.2f}%\n"
         f"USD: {fmt_money(d['new_usd'],'USD')}\n"
-        f"Date: {fmt_date(date_str)}\n\nSave?"
+        f"Date: {_short_date(date_str)}\n\nSave?"
     )
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("✅ Save", callback_data="pay_edit_conf_yes"),
@@ -588,29 +630,32 @@ async def edit_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     rec = context.user_data["edit_rec"]
     cid = rec["customer_id"]
-    pid = rec.doc_id
+    rid = context.user_data["edit_rid"]
     cur = _cust_currency(cid)
     d = context.user_data
 
+    # Save new values to DB (using doc_id)
     secure_db.update("customer_payments", {
         "local_amt": d["new_local"],
         "fee_perc":  d["new_fee"],
         "usd_amt":   d["new_usd"],
         "date":      d["new_date"],
-    }, [pid])
+    }, [rec.doc_id])
 
     try:
-        delete_ledger_entries_by_related("customer", cid, pid)
-        delete_ledger_entries_by_related("owner", "POT", pid)
+        # Remove ledger entries by related_id
+        delete_ledger_entries_by_related("customer", cid, rid)
+        delete_ledger_entries_by_related("owner", "POT", rid)
 
         fee_amt = d["new_local"] * d["new_fee"] / 100
         fx      = (d["new_local"] - fee_amt) / d["new_usd"] if d["new_usd"] else 0
 
+        # Re-add ledger with updated values (using related_id for linkage)
         add_ledger_entry(
             account_type="customer",
             account_id=cid,
             entry_type="payment",
-            related_id=pid,
+            related_id=rid,
             amount=d["new_local"],
             currency=cur,
             note=rec.get("note", ""),
@@ -624,7 +669,7 @@ async def edit_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
             account_type="owner",
             account_id="POT",
             entry_type="payment_recv",
-            related_id=pid,
+            related_id=rid,
             amount=d["new_usd"],
             currency="USD",
             note=rec.get("note", ""),
@@ -635,7 +680,7 @@ async def edit_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
             usd_amt=d["new_usd"]
         )
     except Exception as e:
-        logger.error(f"Ledger update failed for payment {pid}: {e}")
+        logger.error(f"Ledger update failed for payment {rid}: {e}")
         await update.callback_query.edit_message_text(
             "❌ Error: Failed to update ledger. Payment not edited.",
             reply_markup=InlineKeyboardMarkup(
@@ -655,6 +700,7 @@ async def edit_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ======================================================================
 #                       DELETE FLOW  (Customer → Period → Pages)
 # ======================================================================
+
 @require_unlock
 async def del_payment_start(update: Update,
                             context: ContextTypes.DEFAULT_TYPE):
@@ -724,13 +770,18 @@ async def render_del_page(update: Update,
     if not chunk:
         text = "No payments."
     else:
-        lines = [f"[{r.doc_id}] {fmt_money(r['local_amt'], cur)} ➜ "
-                 f"{fmt_money(r['usd_amt'],'USD')}"
-                 for r in chunk]
+        lines = []
+        for r in chunk:
+            ref_id = r.get("related_id", r.doc_id)
+            text_line = (
+                f"{ref_id}: {_short_date(r['date'])}: {fmt_money(r['local_amt'], cur)} ➜ "
+                f"{fmt_money(r['usd_amt'],'USD')}"
+            )
+            lines.append(text_line)
         text = (f"🗑️ Delete Payments  P{page}/"
                 f"{(total+ROWS_PER_PAGE-1)//ROWS_PER_PAGE}\n\n"
                 + "\n".join(lines)
-                + "\n\nSend DocID to delete:")
+                + "\n\nReply with reference number to delete or use arrows.")
 
     nav = []
     if start > 0:
@@ -743,8 +794,7 @@ async def render_del_page(update: Update,
     await update.callback_query.edit_message_text(text, reply_markup=kb)
     return P_DEL_PAGE
 
-async def del_page_nav(update: Update,
-                       context: ContextTypes.DEFAULT_TYPE):
+async def del_page_nav(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     context.user_data["del_page"] += \
         (-1 if update.callback_query.data.endswith("prev") else 1)
@@ -752,18 +802,23 @@ async def del_page_nav(update: Update,
 
 async def del_pick_doc(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        pid = int(update.message.text.strip())
-        rec = secure_db.table("customer_payments").get(doc_id=pid)
-        assert rec and rec["customer_id"] == context.user_data["del_cid"]
+        rid = int(update.message.text.strip())
     except Exception:
-        await update.message.reply_text("❌ Invalid ID; try again:")
+        await update.message.reply_text("❌ Enter numeric reference number.")
+        return P_DEL_PAGE
+    # Search by related_id, fallback to doc_id for legacy
+    q = Query()
+    rec = secure_db.table("customer_payments").get((q.related_id == rid) | (q.doc_id == rid))
+    if not rec or rec["customer_id"] != context.user_data["del_cid"]:
+        await update.message.reply_text("❌ ID not in current list.")
         return P_DEL_PAGE
     context.user_data["del_rec"] = rec
+    context.user_data["del_rid"] = rec.get("related_id", rec.doc_id)
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("✅ Yes", callback_data="pay_del_conf_yes"),
          InlineKeyboardButton("❌ No",  callback_data="pay_del_conf_no")]
     ])
-    await update.message.reply_text(f"Delete Payment [{pid}]?",
+    await update.message.reply_text(f"Delete Payment {context.user_data['del_rid']}?",
                                     reply_markup=kb)
     return P_DEL_CONFIRM
 
@@ -774,14 +829,14 @@ async def del_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await payment_back(update, context)
     rec = context.user_data["del_rec"]
     cid = rec["customer_id"]
-    pid = rec.doc_id
+    rid = context.user_data["del_rid"]
 
-    secure_db.remove("customer_payments", [pid])
+    secure_db.remove("customer_payments", [rec.doc_id])
     try:
-        delete_ledger_entries_by_related("customer", cid, pid)
-        delete_ledger_entries_by_related("owner", "POT", pid)
+        delete_ledger_entries_by_related("customer", cid, rid)
+        delete_ledger_entries_by_related("owner", "POT", rid)
     except Exception as e:
-        logger.error(f"Ledger delete failed for payment {pid}: {e}")
+        logger.error(f"Ledger delete failed for payment {rid}: {e}")
         await update.callback_query.edit_message_text(
             "❌ Error: Failed to update ledger. Payment deleted in DB but not in ledger.",
             reply_markup=InlineKeyboardMarkup(
@@ -798,9 +853,11 @@ async def del_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     return ConversationHandler.END
 
+
 # ======================================================================
 #                  REGISTER  ALL HANDLERS  FOR MODULE
 # ======================================================================
+
 def register_payment_handlers(app: Application):
     """Attach Payments submenu + all conversations to the Telegram app."""
 
@@ -998,3 +1055,13 @@ def register_payment_handlers(app: Application):
         per_message=False,
     )
     app.add_handler(del_conv)
+
+# ---------------------- Utility: Short date formatter -----------------------
+
+def _short_date(d: str) -> str:
+    """Return DD/MM/YY from DDMMYYYY."""
+    try:
+        dt = datetime.strptime(d, "%d%m%Y")
+        return dt.strftime("%d/%m/%y")
+    except Exception:
+        return d
