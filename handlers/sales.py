@@ -1,4 +1,4 @@
-# handlers/sales.py 
+# handlers/sales.py  
 import logging
 from datetime import datetime
 
