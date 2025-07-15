@@ -23,8 +23,6 @@ from tinydb import Query
 
 from handlers.utils import require_unlock, fmt_money, fmt_date
 from secure_db       import secure_db
-
-# PATCH: Import shared ledger function
 from handlers.ledger import add_ledger_entry
 
 def _extract_doc_id(text: str) -> int | None:
@@ -82,7 +80,7 @@ async def show_stockin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(msg, reply_markup=kb)
 
 # ╔══════════════════════════════════════════════════════════════╗
-# ║                       ADD  FLOW                              ║
+# ║                       ADD  FLOW                             ║
 # ╚══════════════════════════════════════════════════════════════╝
 @require_unlock
 async def add_stockin(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -91,37 +89,30 @@ async def add_stockin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not partners:
         await update.callback_query.edit_message_text(
             "No partners available.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back",
-                                                                     callback_data="stockin_menu")]])
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="stockin_menu")]])
         )
         return ConversationHandler.END
-    btns = [InlineKeyboardButton(p["name"], callback_data=f"si_part_{p.doc_id}")
-            for p in partners]
+    btns = [InlineKeyboardButton(p["name"], callback_data=f"si_part_{p.doc_id}") for p in partners]
     rows = [btns[i:i+2] for i in range(0, len(btns), 2)]
     rows.append([InlineKeyboardButton("🔙 Back", callback_data="stockin_menu")])
-    await update.callback_query.edit_message_text("Select partner:",
-                                                  reply_markup=InlineKeyboardMarkup(rows))
+    await update.callback_query.edit_message_text("Select partner:", reply_markup=InlineKeyboardMarkup(rows))
     return SI_PARTNER_SELECT
 
 async def get_stockin_partner(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     pid = int(update.callback_query.data.split("_")[-1])
     context.user_data["partner_id"] = pid
-
     stores = secure_db.all("stores")
     if not stores:
         await update.callback_query.edit_message_text(
             "No stores defined.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back",
-                                                                     callback_data="stockin_menu")]]))
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="stockin_menu")]])
+        )
         return ConversationHandler.END
-    btns = [InlineKeyboardButton(f"{s['name']} ({s['currency']})",
-                                 callback_data=f"si_store_{s.doc_id}")
-            for s in stores]
+    btns = [InlineKeyboardButton(f"{s['name']} ({s['currency']})", callback_data=f"si_store_{s.doc_id}") for s in stores]
     rows = [btns[i:i+2] for i in range(0, len(btns), 2)]
     rows.append([InlineKeyboardButton("🔙 Back", callback_data="stockin_menu")])
-    await update.callback_query.edit_message_text("Select store:",
-                                                  reply_markup=InlineKeyboardMarkup(rows))
+    await update.callback_query.edit_message_text("Select store:", reply_markup=InlineKeyboardMarkup(rows))
     return SI_STORE_SELECT
 
 async def get_stockin_store(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -208,31 +199,48 @@ async def get_stockin_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("✅ Yes", callback_data="si_yes"),
          InlineKeyboardButton("❌ No",  callback_data="si_no")]
     ])
-    await (update.callback_query.edit_message_text if update.callback_query
-          else update.message.reply_text)(summary, reply_markup=kb)
+    await (update.callback_query.edit_message_text if update.callback_query else update.message.reply_text)(summary, reply_markup=kb)
     return SI_CONFIRM
 
 @require_unlock
 async def confirm_stockin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     if update.callback_query.data != "si_yes":
-        await show_stockin_menu(update, context); return ConversationHandler.END
+        await show_stockin_menu(update, context)
+        return ConversationHandler.END
 
     d = context.user_data
     cur = _store_currency(d["store_id"])
     try:
+        # === PATCH: Ledger first for unique related_id ===
+        related_id = add_ledger_entry(
+            account_type="partner",
+            account_id=d["partner_id"],
+            entry_type="stockin",
+            related_id=None,
+            amount=0,
+            currency=cur,
+            note=d.get("note", ""),
+            date=d["date"],
+            item_id=str(d["item_id"]),
+            quantity=d["qty"],
+            unit_price=d["cost"],
+            store_id=d["store_id"]
+        )
+        # Now insert partner_inventory with this related_id
         partner_inv_id = secure_db.insert("partner_inventory", {
             "partner_id": d["partner_id"],
             "store_id":   d["store_id"],
             "item_id":    d["item_id"],
             "quantity":   d["qty"],
             "unit_cost":  d["cost"],
-            "note":       d.get("note",""),
+            "note":       d.get("note", ""),
             "date":       d["date"],
             "currency":   cur,
             "timestamp":  datetime.utcnow().isoformat(),
+            "related_id": related_id  # always matches ledger
         })
-        # store_inventory update
+        # store_inventory update unchanged...
         q = Query()
         rec = secure_db.table("store_inventory").get((q.store_id == d["store_id"]) &
                                                      (q.item_id  == d["item_id"]))
@@ -250,21 +258,6 @@ async def confirm_stockin(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "unit_cost":d["cost"],
                 "currency": cur,
             })
-        # PATCH: Use global ledger function
-        add_ledger_entry(
-            account_type="partner",
-            account_id=d["partner_id"],
-            entry_type="stockin",
-            related_id=partner_inv_id,
-            amount=0,  # Stock-in is inventory, not financial
-            currency=cur,
-            note=d.get("note", ""),
-            date=d["date"],
-            item_id=str(d["item_id"]),
-            quantity=d["qty"],
-            unit_price=d["cost"],
-            store_id=d["store_id"]
-        )
     except Exception as e:
         try:
             if 'partner_inv_id' in locals():
@@ -292,30 +285,28 @@ async def confirm_stockin(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                                                  callback_data="stockin_menu")]]))
     return ConversationHandler.END
 
-# ... (all other view/edit/delete/add flows unchanged, except use add_ledger_entry from handlers.ledger for all ledger writes)
 
-# ╔══════════════════════════════════════════════════════════════╗
-# ║  The rest of the code for edit/delete/view flows remain the same,
-# ║  simply update any call to add_ledger_entry to use the imported version.
-# ╚══════════════════════════════════════════════════════════════╝
 
 
 # ╔══════════════════════════════════════════════════════════════╗
-# ║                       VIEW  FLOW                             ║
+# ║                       VIEW  FLOW (FIXED RE-ENTRY)            ║
 # ╚══════════════════════════════════════════════════════════════╝
+
 @require_unlock
 async def view_stockin_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
+    # Clean up any old filter vars
+    context.user_data.pop("view_partner_id", None)
+    context.user_data.pop("view_time_filter", None)
+    context.user_data.pop("view_page", None)
     partners = secure_db.all("partners")
     if not partners:
         await update.callback_query.edit_message_text(
             "No partners.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back",
-                                                                     callback_data="stockin_menu")]]))
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="stockin_menu")]]))
         return ConversationHandler.END
 
-    buttons = [InlineKeyboardButton(p["name"], callback_data=f"si_view_part_{p.doc_id}")
-               for p in partners]
+    buttons = [InlineKeyboardButton(p["name"], callback_data=f"si_view_part_{p.doc_id}") for p in partners]
     buttons.append(InlineKeyboardButton("🔙 Back", callback_data="stockin_menu"))
     kb = InlineKeyboardMarkup([buttons[i:i+2] for i in range(0, len(buttons), 2)])
     await update.callback_query.edit_message_text("Select partner:", reply_markup=kb)
@@ -324,7 +315,7 @@ async def view_stockin_start(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def view_choose_period(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     pid = int(update.callback_query.data.split("_")[-1])
-    context.user_data.update({"view_partner_id": pid, "view_page": 1})
+    context.user_data.update({"view_partner_id": pid, "view_page": 1, "view_time_filter": None})
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("📅 Last 3 M", callback_data="view_time_3m"),
          InlineKeyboardButton("📅 Last 6 M", callback_data="view_time_6m")],
@@ -341,20 +332,25 @@ async def view_set_filter(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return await send_view_page(update, context)
 
 async def send_view_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    pid   = context.user_data["view_partner_id"]
-    period= context.user_data["view_time_filter"]
-    page  = context.user_data["view_page"]
+    pid   = context.user_data.get("view_partner_id")
+    period= context.user_data.get("view_time_filter")
+    page  = context.user_data.get("view_page", 1)
     size  = 20
+
+    if pid is None or period is None:
+        # Something went wrong, reset to view start
+        return await view_stockin_start(update, context)
 
     rows = [r for r in secure_db.all("partner_inventory") if r["partner_id"] == pid]
     rows = _filter_by_time(rows, period)
+    rows = sorted(rows, key=lambda r: r.get("related_id", 0), reverse=True)
+
     total_pages = max(1, (len(rows)+size-1)//size)
     chunk = rows[(page-1)*size : page*size]
     if not chunk:
         await update.callback_query.edit_message_text(
             "No stock-ins in that window.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back",
-                                                                     callback_data="view_stockin")]]))
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="view_stockin")]]))
         return ConversationHandler.END
 
     lines = []
@@ -362,7 +358,7 @@ async def send_view_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
         unit  = fmt_money(r["unit_cost"], r["currency"])
         tot   = fmt_money(r["unit_cost"]*r["quantity"], r["currency"])
         sname = secure_db.table("stores").get(doc_id=r["store_id"])["name"]
-        lines.append(f"{r.doc_id}: Store {sname}  Item {r['item_id']} ×{r['quantity']}  "
+        lines.append(f"{r['related_id']}: Store {sname}  Item {r['item_id']} ×{r['quantity']}  "
                      f"@ {unit} = {tot}  on {fmt_date(r['date'])}")
     text = f"📄 **Stock-Ins**  P{page}/{total_pages}\n\n" + "\n".join(lines)
 
@@ -370,8 +366,7 @@ async def send_view_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if page > 1:  nav.append(InlineKeyboardButton("⬅️ Prev", callback_data="view_prev"))
     if page < total_pages: nav.append(InlineKeyboardButton("➡️ Next", callback_data="view_next"))
     nav.append(InlineKeyboardButton("🔙 Back", callback_data="view_stockin"))
-    await update.callback_query.edit_message_text(text,
-        reply_markup=InlineKeyboardMarkup([nav]))
+    await update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup([nav]))
     return SI_VIEW_PAGE
 
 async def handle_view_pagination(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -380,7 +375,10 @@ async def handle_view_pagination(update: Update, context: ContextTypes.DEFAULT_T
         context.user_data["view_page"] -= 1
     elif update.callback_query.data == "view_next":
         context.user_data["view_page"] += 1
+    # Re-entry guard: always check the state vars
     return await send_view_page(update, context)
+
+
 
 # ╔══════════════════════════════════════════════════════════════╗
 # ║                       EDIT  FLOW                             ║
@@ -464,16 +462,19 @@ async def handle_edit_pagination(update: Update, context: ContextTypes.DEFAULT_T
     return await send_edit_page(update, context)
 
 async def edit_pick_doc(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    sid = _extract_doc_id(update.message.text)
-    if sid is None:
+    # PATCH: Now select by related_id, not doc_id
+    rid = _extract_doc_id(update.message.text)
+    if rid is None:
         await update.message.reply_text("Numeric ID, please.")
         return SI_EDIT_PAGE
-    rec = secure_db.table("partner_inventory").get(doc_id=sid)
-    if not rec or rec["partner_id"] != context.user_data["edit_partner_id"]:
+    q = Query()
+    recs = secure_db.table("partner_inventory").search(q.related_id == rid)
+    if not recs or recs[0]["partner_id"] != context.user_data["edit_partner_id"]:
         await update.message.reply_text("ID not in this list.")
         return SI_EDIT_PAGE
+    rec = recs[0]
     context.user_data.update({
-        "edit_stock_id": sid,
+        "edit_stock_related_id": rid,
         "orig_qty":      rec["quantity"],
         "store_id":      rec["store_id"],
     })
@@ -484,8 +485,9 @@ async def edit_pick_doc(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("Note",       callback_data="edit_field_note")],
         [InlineKeyboardButton("🔙 Cancel",  callback_data="edit_stockin")],
     ])
-    await update.message.reply_text(f"Editing record #{sid}. Choose field:", reply_markup=kb)
+    await update.message.reply_text(f"Editing record #{rid}. Choose field:", reply_markup=kb)
     return SI_EDIT_FIELD
+
 
 async def get_edit_field(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
@@ -518,14 +520,19 @@ async def save_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def confirm_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     if update.callback_query.data != "edit_conf_yes":
-        await show_stockin_menu(update, context); return ConversationHandler.END
+        await show_stockin_menu(update, context)
+        return ConversationHandler.END
 
-    sid   = context.user_data["edit_stock_id"]
+    rid   = context.user_data["edit_stock_related_id"]
     field = context.user_data["edit_field"]
     val   = context.user_data["new_value"]
 
-    # fetch current record for delta math
-    rec = secure_db.table("partner_inventory").get(doc_id=sid)
+    q = Query()
+    recs = secure_db.table("partner_inventory").search(q.related_id == rid)
+    if not recs:
+        await update.callback_query.edit_message_text("Record not found.")
+        return ConversationHandler.END
+    rec = recs[0]
     store_id = rec["store_id"]
 
     # Ledger edit tracking variables
@@ -533,57 +540,85 @@ async def confirm_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ledger_args = {}
 
     try:
+        # Always update by doc_id found from related_id search
+        doc_id = rec.doc_id
         if field == "qty":
             new_qty = int(val)
             delta   = new_qty - rec["quantity"]
-            secure_db.update("partner_inventory", {"quantity": new_qty}, [sid])
+            secure_db.update("partner_inventory", {"quantity": new_qty}, [doc_id])
 
-            q = Query()
-            inv = secure_db.table("store_inventory").get((q.store_id == store_id) &
-                                                        (q.item_id == rec["item_id"]))
+            q2 = Query()
+            inv = secure_db.table("store_inventory").get((q2.store_id == store_id) &
+                                                        (q2.item_id == rec["item_id"]))
             if inv:
                 secure_db.update("store_inventory",
                                 {"quantity": inv["quantity"] + delta},
                                 [inv.doc_id])
-            # ------ Ledger for quantity change ------
             ledger_type = "stockin_edit_qty"
             ledger_args = dict(
-                partner_id=rec["partner_id"], store_id=rec["store_id"],
-                item_id=rec["item_id"], quantity=new_qty,
-                unit_cost=rec["unit_cost"], currency=rec["currency"],
+                account_type="partner",
+                account_id=rec["partner_id"],
+                store_id=rec["store_id"],
+                item_id=rec["item_id"],
+                quantity=new_qty,
+                unit_price=rec["unit_cost"],
+                amount=0,
+                currency=rec["currency"],
                 note=f"Edit qty (was {rec['quantity']})",
-                date=rec["date"], related_id=sid, delta=delta,
-                old_qty=rec["quantity"], old_cost=rec["unit_cost"]
+                date=rec["date"],
+                related_id=rid
             )
         elif field == "cost":
             old_cost = rec["unit_cost"]
-            secure_db.update("partner_inventory", {"unit_cost": float(val)}, [sid])
-            # also update last cost on store_inventory
-            q = Query()
-            inv = secure_db.table("store_inventory").get((q.store_id == store_id) &
-                                                        (q.item_id == rec["item_id"]))
+            secure_db.update("partner_inventory", {"unit_cost": float(val)}, [doc_id])
+            q2 = Query()
+            inv = secure_db.table("store_inventory").get((q2.store_id == store_id) &
+                                                        (q2.item_id == rec["item_id"]))
             if inv:
                 secure_db.update("store_inventory", {"unit_cost": float(val)}, [inv.doc_id])
-            # ------ Ledger for cost change ------
             ledger_type = "stockin_edit_cost"
             ledger_args = dict(
-                partner_id=rec["partner_id"], store_id=rec["store_id"],
-                item_id=rec["item_id"], quantity=rec["quantity"],
-                unit_cost=float(val), currency=rec["currency"],
+                account_type="partner",
+                account_id=rec["partner_id"],
+                store_id=rec["store_id"],
+                item_id=rec["item_id"],
+                quantity=rec["quantity"],
+                unit_price=float(val),
+                amount=0,
+                currency=rec["currency"],
                 note=f"Edit cost (was {old_cost})",
-                date=rec["date"], related_id=sid, delta=0,
-                old_qty=rec["quantity"], old_cost=old_cost
+                date=rec["date"],
+                related_id=rid
             )
         elif field == "date":
-            secure_db.update("partner_inventory", {"date": val}, [sid])
+            secure_db.update("partner_inventory", {"date": val}, [doc_id])
         elif field == "note":
             secure_db.update("partner_inventory",
-                            {"note": "" if val == "-" else val}, [sid])
-
-        # Only add to ledger for qty/cost edits
+                            {"note": "" if val == "-" else val}, [doc_id])
         if ledger_type:
-            add_ledger_entry(type=ledger_type, **ledger_args)
+            add_ledger_entry(entry_type=ledger_type, **ledger_args)
+
     except Exception as e:
+        if field == "qty":
+            secure_db.update("partner_inventory", {"quantity": rec["quantity"]}, [doc_id])
+            q2 = Query()
+            inv = secure_db.table("store_inventory").get((q2.store_id == store_id) & (q2.item_id == rec["item_id"]))
+            if inv:
+                secure_db.update(
+                    "store_inventory",
+                    {"quantity": inv["quantity"] - (int(val) - rec["quantity"])},
+                    [inv.doc_id]
+                )
+        elif field == "cost":
+            secure_db.update("partner_inventory", {"unit_cost": rec["unit_cost"]}, [doc_id])
+            q2 = Query()
+            inv = secure_db.table("store_inventory").get((q2.store_id == store_id) & (q2.item_id == rec["item_id"]))
+            if inv:
+                secure_db.update(
+                    "store_inventory",
+                    {"unit_cost": rec["unit_cost"]},
+                    [inv.doc_id]
+                )
         await update.callback_query.edit_message_text(
             f"❌ Stock-In edit failed: {str(e)}"
         )
@@ -594,6 +629,7 @@ async def confirm_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back",
                                                                  callback_data="stockin_menu")]]))
     return ConversationHandler.END
+
 
 # ╔══════════════════════════════════════════════════════════════╗
 # ║                       DELETE  FLOW                           ║
@@ -675,49 +711,70 @@ async def handle_del_pagination(update: Update, context: ContextTypes.DEFAULT_TY
     return await send_del_page(update, context)
 
 async def del_pick_doc(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    sid = _extract_doc_id(update.message.text)
-    if sid is None:
+    rid = _extract_doc_id(update.message.text)
+    if rid is None:
         await update.message.reply_text("Numeric ID, please.")
         return SI_DEL_PAGE
-    rec = secure_db.table("partner_inventory").get(doc_id=sid)
-    if not rec or rec["partner_id"] != context.user_data["del_partner_id"]:
+    q = Query()
+    recs = secure_db.table("partner_inventory").search(q.related_id == rid)
+    if not recs or recs[0]["partner_id"] != context.user_data["del_partner_id"]:
         await update.message.reply_text("ID not in this list.")
         return SI_DEL_PAGE
-    context.user_data["del_id"] = sid
+    context.user_data["del_related_id"] = rid
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("✅ Yes", callback_data="del_conf_yes"),
          InlineKeyboardButton("❌ No",  callback_data="del_conf_no")]
     ])
-    await update.message.reply_text(f"Delete record #{sid} ?", reply_markup=kb)
+    await update.message.reply_text(f"Delete record #{rid} ?", reply_markup=kb)
     return SI_DEL_CONFIRM
+
 
 @require_unlock
 async def del_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     if update.callback_query.data != "del_conf_yes":
-        await show_stockin_menu(update, context); return ConversationHandler.END
-    sid = context.user_data["del_id"]
-    rec = secure_db.table("partner_inventory").get(doc_id=sid)
+        await show_stockin_menu(update, context)
+        return ConversationHandler.END
+    rid = context.user_data["del_related_id"]
+    q = Query()
+    recs = secure_db.table("partner_inventory").search(q.related_id == rid)
+    if not recs:
+        await update.callback_query.edit_message_text("Record not found.")
+        return ConversationHandler.END
+    rec = recs[0]
+    doc_id = rec.doc_id
+
+    try:
+        add_ledger_entry(
+            entry_type="stockin_delete",
+            account_type="partner",
+            account_id=rec["partner_id"],
+            related_id=rid,
+            amount=0,
+            currency=rec["currency"],
+            note=f"Stock-in deleted: {rec.get('note','')}",
+            date=rec["date"],
+            item_id=rec["item_id"],
+            quantity=rec["quantity"],
+            unit_price=rec["unit_cost"],
+            store_id=rec["store_id"]
+        )
+    except Exception as e:
+        await update.callback_query.edit_message_text(
+            f"❌ Stock-In delete failed: {str(e)}"
+        )
+        return ConversationHandler.END
 
     try:
         if rec:
-            q = Query()
-            inv = secure_db.table("store_inventory").get((q.store_id == rec["store_id"]) &
-                                                        (q.item_id  == rec["item_id"]))
+            q2 = Query()
+            inv = secure_db.table("store_inventory").get((q2.store_id == rec["store_id"]) &
+                                                        (q2.item_id  == rec["item_id"]))
             if inv:
                 secure_db.update("store_inventory",
                                 {"quantity": inv["quantity"] - rec["quantity"]},
                                 [inv.doc_id])
-            # Ledger: mark removal
-            add_ledger_entry(
-                type="stockin_delete",
-                partner_id=rec["partner_id"], store_id=rec["store_id"],
-                item_id=rec["item_id"], quantity=rec["quantity"],
-                unit_cost=rec["unit_cost"], currency=rec["currency"],
-                note=f"Stock-in deleted: {rec.get('note','')}",
-                date=rec["date"], related_id=sid
-            )
-        secure_db.remove("partner_inventory", [sid])
+        secure_db.remove("partner_inventory", [doc_id])
     except Exception as e:
         await update.callback_query.edit_message_text(
             f"❌ Stock-In delete failed: {str(e)}"
@@ -725,10 +782,11 @@ async def del_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
     await update.callback_query.edit_message_text(
-        f"✅ Stock-In #{sid} deleted.",
+        f"✅ Stock-In #{rid} deleted.",
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back",
                                                                  callback_data="stockin_menu")]]))
     return ConversationHandler.END
+
 
 # ╔══════════════════════════════════════════════════════════════╗
 # ║        ConversationHandlers and Registration                 ║
@@ -757,7 +815,8 @@ view_conv = ConversationHandler(
     entry_points=[CallbackQueryHandler(view_stockin_start, pattern="^view_stockin$")],
     states={
         SI_VIEW_PARTNER:[CallbackQueryHandler(view_choose_period, pattern="^si_view_part_"),
-                         CallbackQueryHandler(show_stockin_menu,  pattern="^stockin_menu$")],
+                         CallbackQueryHandler(show_stockin_menu,  pattern="^stockin_menu$"),
+                         CallbackQueryHandler(view_stockin_start, pattern="^view_stockin$")],
         SI_VIEW_TIME:   [CallbackQueryHandler(view_set_filter,    pattern="^view_time_"),
                          CallbackQueryHandler(view_stockin_start, pattern="^view_stockin$")],
         SI_VIEW_PAGE:   [CallbackQueryHandler(handle_view_pagination, pattern="^view_(prev|next)$"),
