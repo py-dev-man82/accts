@@ -1,4 +1,4 @@
-# handlers/partners.py
+# handlers/partners.py 
 
 import logging
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
