@@ -77,33 +77,63 @@ def calc_total_reconciliation_needed():
         if unreconciled > 0:
             needed[iid] = unreconciled
     return needed
+def _format_psale_row(r):
+    # Use related_id if present, else fallback to doc_id (for backward compatibility)
+    ref = r.get("related_id", r.doc_id)
+    try:
+        dt = datetime.strptime(r["date"], "%d%m%Y")
+    except Exception:
+        dt = datetime.fromisoformat(r["timestamp"])
+    date = dt.strftime("%d/%m/%y")
+    item = r["item_id"]
+    qty  = r["quantity"]
+    unit = fmt_money(r["unit_price"], r["currency"])
+    tot  = fmt_money(r["unit_price"] * r["quantity"], r["currency"])
+    return f"{date}: {item} ×{qty} @ {unit} = {tot}"
 
 # ╔══════════════════════════════════════════════════════════════╗
 # ║   LEDGER-BASED PARTNER INVENTORY CALCULATION                ║
 # ╚══════════════════════════════════════════════════════════════╝
 def calc_partner_inventory_from_ledger(partner_id):
-    """Return {item_id: available_qty, ...} for this partner from the ledger."""
+    """Return {item_id: available_qty, ...} for this partner from the ledger, including stockin deletes/edits."""
     pledger = get_ledger("partner", partner_id)
     cledger = get_ledger("customer", partner_id)
 
-    stockin = {}
-    # 1. Tally all stockin
+    # 1. Track deletes and edits
+    deleted_ids = set(
+        e.get("related_id") for e in pledger if e.get("entry_type") == "stockin_delete"
+    )
+    edit_qty_map = {}
     for e in pledger:
-        if e.get("entry_type") == "stockin":
-            iid = e.get("item_id")
-            stockin[iid] = stockin.get(iid, 0) + e.get("quantity", 0)
-    # 2. Subtract all customer account sales for this partner
+        if e.get("entry_type") == "stockin_edit_qty":
+            edit_qty_map[e.get("related_id")] = e
+
+    # 2. Collect valid stockins with latest quantity from edits
+    stockin = {}
+    for e in pledger:
+        if e.get("entry_type") != "stockin":
+            continue
+        relid = e.get("related_id")
+        if relid in deleted_ids:
+            continue
+        iid = e.get("item_id")
+        qty = edit_qty_map.get(relid, {}).get("quantity", e.get("quantity", 0))
+        stockin[iid] = stockin.get(iid, 0) + qty
+
+    # 3. Subtract all customer account sales for this partner
     for e in cledger:
         if e.get("entry_type") == "sale":
             iid = e.get("item_id")
             stockin[iid] = stockin.get(iid, 0) - abs(e.get("quantity", 0))
-    # 3. Subtract all direct partner sales
+    # 4. Subtract all direct partner sales
     for e in pledger:
         if e.get("entry_type") == "sale":
             iid = e.get("item_id")
             stockin[iid] = stockin.get(iid, 0) - abs(e.get("quantity", 0))
+
     # Remove 0/neg items (optional)
     return {iid: qty for iid, qty in stockin.items() if qty > 0}
+
 
 # ────────────────────────────────────────────────────────────────
 #  Conversation-state constants
@@ -295,7 +325,7 @@ async def psale_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     logger.info("Partner-sale confirm: partner=%s items=%s", pid, items)
 
-    inserted_ids: list[tuple[str, int, int]] = []   # [(item_id, doc_id, qty)]
+    inserted_ids: list[tuple[str, int, int, int]] = []   # [(item_id, doc_id, qty, related_id)]
     try:
         inv_now = calc_partner_inventory_from_ledger(pid)
         for iid, det in items.items():
@@ -303,12 +333,27 @@ async def psale_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
             unit_price  = det["unit_price"]
             total_value = qty * unit_price
 
-            # **LEDGER INVENTORY CHECK**
+            # LEDGER INVENTORY CHECK
             available = inv_now.get(iid, 0)
             if available < qty:
                 raise Exception(f"Insufficient stock for '{iid}'. Have {available}, need {qty}.")
 
-            # 1️⃣  partner_sales row  (one per item)
+            # 1. Create LEDGER entry FIRST to get related_id
+            related_id = add_ledger_entry(
+                account_type="partner",
+                account_id=pid,
+                entry_type="sale",
+                related_id=None,
+                amount=total_value,
+                currency=cur,
+                note=note,
+                date=date,
+                item_id=iid,
+                quantity=qty,
+                unit_price=unit_price,
+            )
+
+            # 2. partner_sales row now saves related_id
             sale_doc_id = secure_db.insert("partner_sales", {
                 "partner_id": pid,
                 "item_id":    iid,
@@ -318,32 +363,17 @@ async def psale_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "note":       note,
                 "date":       date,
                 "timestamp":  datetime.utcnow().isoformat(),
+                "related_id": related_id,    # NEW FIELD
             })
-            inserted_ids.append((iid, sale_doc_id, qty))
+            inserted_ids.append((iid, sale_doc_id, qty, related_id))
 
-            # 2️⃣  partner_inventory decrement is now purely for legacy/audit—ledger is source of truth!
-
-            # 3️⃣  LEDGER — credit partner
-            add_ledger_entry(
-                account_type="partner",
-                account_id=pid,
-                entry_type="sale",
-                related_id=sale_doc_id,
-                amount=total_value,            # credit
-                currency=cur,
-                note=note,
-                date=date,
-                item_id=iid,
-                quantity=qty,
-                unit_price=unit_price,
-            )
-            # 4️⃣  LEDGER — debit owner
+            # 3. Owner ledger, linked with same related_id
             add_ledger_entry(
                 account_type="owner",
                 account_id=OWNER_ACCOUNT_ID,
                 entry_type="partner_sale",
-                related_id=sale_doc_id,
-                amount=-total_value,           # debit
+                related_id=related_id,
+                amount=-total_value,
                 currency=cur,
                 note=f"Partner {pid} sale (item {iid})",
                 date=date,
@@ -354,10 +384,10 @@ async def psale_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         # ── Rollback everything for this confirm action ──
         logger.error("Partner-sale ERROR, rolling back: %s", e, exc_info=True)
-        for iid, sid, qty in inserted_ids:
+        for iid, sid, qty, related_id in inserted_ids:
             try:
                 secure_db.remove("partner_sales", [sid])
-            except Exception:       # best-effort rollback
+            except Exception:
                 pass
         await update.callback_query.edit_message_text(
             "❌ Partner Sale failed. No changes saved.\n\n" + str(e)
@@ -369,6 +399,7 @@ async def psale_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="partner_sales_menu")]])
     )
     return ConversationHandler.END
+
 
 # (THE REST OF THE FILE IS UNCHANGED)
 # ╔══════════════════════════════════════════════════════════════╗
@@ -420,12 +451,9 @@ async def send_psale_view_page(update: Update, context: ContextTypes.DEFAULT_TYP
         )
         return ConversationHandler.END
 
-    lines = [
-        f"{r.doc_id}: {r['item_id']} ×{r['quantity']}  "
-        f"{fmt_money(r['unit_price'], r['currency'])}  "
-        f"on {fmt_date(r['date'])}"
-        for r in chunk
-    ]
+    lines = [_format_psale_row(r) for r in chunk]
+
+    
     msg = f"📄 **Partner Sales**  P{page}/{total_pages}\n\n" + "\n".join(lines)
 
     nav = []
@@ -494,12 +522,13 @@ async def send_psale_edit_page(update: Update, context: ContextTypes.DEFAULT_TYP
         )
         return ConversationHandler.END
 
-    lines = [
-        f"{r.doc_id}: {r['item_id']} ×{r['quantity']} @ {fmt_money(r['unit_price'], r['currency'])}"
-        for r in chunk
-    ]
+    lines = [_format_psale_row(r) for r in chunk]
+
+    
     msg = f"✏️ **Edit Partner Sales**  P{page}/{total_pages}\n\n" + "\n".join(lines) + \
-          "\n\nReply with record ID or use ⬅️➡️"
+      "\n\nReply with reference number (leftmost) or use ⬅️➡️"
+
+
 
     nav = []
     if page > 1:
@@ -520,22 +549,30 @@ async def handle_psale_edit_nav(update: Update, context: ContextTypes.DEFAULT_TY
 
 async def edit_psale_pick_doc(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        sid = int(update.message.text.strip())
+        rid = int(update.message.text.strip())
     except Exception:
-        await update.message.reply_text("Enter numeric ID.")
+        await update.message.reply_text("Enter numeric reference number.")
         return PS_EDIT_PAGE
-    rec = secure_db.table("partner_sales").get(doc_id=sid)
+
+    # Search for record using related_id
+    q = Query()
+    rec = secure_db.table("partner_sales").get(q.related_id == rid)
     if not rec or rec["partner_id"] != context.user_data["edit_pid"]:
         await update.message.reply_text("ID not in current list.")
         return PS_EDIT_PAGE
-    context.user_data.update({"edit_sid": sid})       # only date & note editable
+
+    context.user_data["edit_rid"] = rid
+    context.user_data["edit_sid"] = rec.doc_id  # Save doc_id for DB ops
+
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("Date", callback_data="ps_edit_field_date")],
         [InlineKeyboardButton("Note", callback_data="ps_edit_field_note")],
         [InlineKeyboardButton("🔙 Cancel", callback_data="edit_psale")],
     ])
-    await update.message.reply_text(f"Editing record #{sid}. Choose field:", reply_markup=kb)
+    await update.message.reply_text(f"Editing record #{rid}. Choose field:", reply_markup=kb)
     return PS_EDIT_FIELD
+
+
 
 async def edit_psale_choose_field(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
@@ -561,23 +598,28 @@ async def edit_psale_newval(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return PS_EDIT_CONFIRM
 
 @require_unlock
+@require_unlock
 async def confirm_edit_psale(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     if update.callback_query.data != "ps_edit_conf_yes":
         await show_partner_sales_menu(update, context)
         return ConversationHandler.END
 
+    rid   = context.user_data["edit_rid"]
     sid   = context.user_data["edit_sid"]
     field = context.user_data["edit_field"]
     newv  = context.user_data["edit_newval"]
 
     try:
+        # Always update via doc_id found by related_id
         if field == "date":
             datetime.strptime(newv, "%d%m%Y")   # validate
             secure_db.update("partner_sales", {"date": newv}, [sid])
         else:                                   # note
             secure_db.update("partner_sales",
                              {"note": "" if newv == "-" else newv}, [sid])
+        # Here, if you have any ledger sync (not shown in original), use related_id = rid
+        # (Optional: add ledger_entry to mark edit event for audit)
     except Exception as e:
         await update.callback_query.edit_message_text(
             f"❌ Edit failed: {e}"
@@ -588,6 +630,7 @@ async def confirm_edit_psale(update: Update, context: ContextTypes.DEFAULT_TYPE)
         "✅ Partner Sale updated.",
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="partner_sales_menu")]]))
     return ConversationHandler.END
+
 
 # ╔══════════════════════════════════════════════════════════════╗
 # ║                        DELETE                               ║
@@ -638,10 +681,9 @@ async def send_psale_del_page(update: Update, context: ContextTypes.DEFAULT_TYPE
         )
         return ConversationHandler.END
 
-    lines = [
-        f"{r.doc_id}: {r['item_id']} ×{r['quantity']} @ {fmt_money(r['unit_price'], r['currency'])}"
-        for r in chunk
-    ]
+    lines = [_format_psale_row(r) for r in chunk]
+
+    
     msg = f"🗑️ **Delete Partner Sales**  P{page}/{total_pages}\n\n" + "\n".join(lines) + \
           "\n\nReply with record ID or use ⬅️➡️"
 
@@ -664,22 +706,31 @@ async def handle_psale_del_nav(update: Update, context: ContextTypes.DEFAULT_TYP
 
 async def del_psale_pick_doc(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        sid = int(update.message.text.strip())
+        rid = int(update.message.text.strip())
     except Exception:
-        await update.message.reply_text("Enter numeric ID.")
+        await update.message.reply_text("Enter numeric reference number.")
         return PS_DEL_PAGE
-    rec = secure_db.table("partner_sales").get(doc_id=sid)
+
+    # Search for record using related_id
+    q = Query()
+    rec = secure_db.table("partner_sales").get(q.related_id == rid)
     if not rec or rec["partner_id"] != context.user_data["del_pid"]:
         await update.message.reply_text("ID not in current list.")
         return PS_DEL_PAGE
-    context.user_data["del_sid"] = sid
+
+    context.user_data["del_rid"] = rid
+    context.user_data["del_sid"] = rec.doc_id  # Save doc_id for DB ops
+
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("✅ Yes", callback_data="ps_del_conf_yes"),
          InlineKeyboardButton("❌ No",  callback_data="ps_del_conf_no")]
     ])
-    await update.message.reply_text(f"Delete record #{sid} ?", reply_markup=kb)
+    await update.message.reply_text(f"Delete record #{rid} ?", reply_markup=kb)
     return PS_DEL_CONFIRM
 
+
+
+@require_unlock
 @require_unlock
 async def confirm_delete_psale(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
@@ -687,6 +738,7 @@ async def confirm_delete_psale(update: Update, context: ContextTypes.DEFAULT_TYP
         await show_partner_sales_menu(update, context)
         return ConversationHandler.END
 
+    rid  = context.user_data["del_rid"]
     sid  = context.user_data["del_sid"]
     rec  = secure_db.table("partner_sales").get(doc_id=sid)
     if not rec:
@@ -697,7 +749,7 @@ async def confirm_delete_psale(update: Update, context: ContextTypes.DEFAULT_TYP
         # 1️⃣ remove partner_sales row
         secure_db.remove("partner_sales", [sid])
 
-        # 2️⃣ restore partner inventory
+        # 2️⃣ restore partner inventory (legacy only, if needed)
         Q   = Query()
         row = secure_db.table("partner_inventory").get(
             (Q.partner_id == rec["partner_id"]) & (Q.item_id == rec["item_id"])
@@ -707,13 +759,13 @@ async def confirm_delete_psale(update: Update, context: ContextTypes.DEFAULT_TYP
                              {"quantity": row["quantity"] + rec["quantity"]},
                              [row.doc_id])
 
-        # 3️⃣ reverse LEDGER entries (credit owner, debit partner)
+        # 3️⃣ reverse LEDGER entries (credit owner, debit partner) — use related_id=rid
         total_value = rec["quantity"] * rec["unit_price"]
         add_ledger_entry(
             account_type="partner",
             account_id=rec["partner_id"],
             entry_type="sale_delete",
-            related_id=sid,
+            related_id=rid,
             amount=-total_value,
             currency=rec["currency"],
             note=f"Delete sale of item {rec['item_id']}",
@@ -726,7 +778,7 @@ async def confirm_delete_psale(update: Update, context: ContextTypes.DEFAULT_TYP
             account_type="owner",
             account_id=OWNER_ACCOUNT_ID,
             entry_type="partner_sale_delete",
-            related_id=sid,
+            related_id=rid,
             amount=total_value,
             currency=rec["currency"],
             note=f"Reversal partner {rec['partner_id']} sale",
@@ -746,6 +798,7 @@ async def confirm_delete_psale(update: Update, context: ContextTypes.DEFAULT_TYP
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="partner_sales_menu")]])
     )
     return ConversationHandler.END
+
 
 # ╔══════════════════════════════════════════════════════════════╗
 # ║              ConversationHandlers & registration             ║
