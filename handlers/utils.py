@@ -54,6 +54,6 @@ def fmt_date(ddmmyyyy: str | None) -> str:
     if not ddmmyyyy:
         return ""
     try:
-        return datetime.strptime(ddmmyyyy, "%d%m%Y").strftime("%d/%m/%Y")
+        return datetime.strptime(ddmmyyyy, "%d%m%Y").strftime("%d/%m/%y")
     except ValueError:
         return ddmmyyyy
