@@ -1,4 +1,4 @@
-# handlers/stores.py
+# handlers/stores.py 
 
 import logging
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
