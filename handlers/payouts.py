@@ -19,11 +19,13 @@ from telegram.ext import (
     filters,
 )
 from tinydb import Query
-from handlers.utils import require_unlock, fmt_money, fmt_date  # helpers
+from handlers.utils import require_unlock, fmt_money, fmt_date
 from handlers.ledger import add_ledger_entry, delete_ledger_entries_by_related
 from secure_db import secure_db
 
 logger = logging.getLogger("payouts")
+
+OWNER_ACCOUNT_ID = "POT"
 
 # Conversation-state constants
 (
@@ -33,11 +35,10 @@ logger = logging.getLogger("payouts")
     PO_VIEW_PARTNER, PO_VIEW_TIME, PO_VIEW_PAGE,
 
     PO_EDIT_PARTNER, PO_EDIT_TIME, PO_EDIT_PAGE,
-    PO_EDIT_LOCAL,   PO_EDIT_FEE,  PO_EDIT_USD,
-    PO_EDIT_NOTE,    PO_EDIT_DATE, PO_EDIT_CONFIRM,
+    PO_EDIT_FIELD,   PO_EDIT_CONFIRM,
 
     PO_DEL_PARTNER,  PO_DEL_TIME,  PO_DEL_PAGE, PO_DEL_CONFIRM,
-) = range(23)
+) = range(19)
 
 ROWS_PER_PAGE = 20
 
@@ -59,50 +60,6 @@ def _calc_fx(local_amt: float, fee_amt: float, usd: float) -> float:
 def _partner_currency(pid: int) -> str:
     row = secure_db.table("partners").get(doc_id=pid) or {}
     return row.get("currency", "USD")
-
-OWNER_ACCOUNT_ID = "POT"
-
-def _ledger_delete_payout(partner_id, related_id):
-    # Always use related_id for ledger deletions
-    delete_ledger_entries_by_related("partner", partner_id, related_id)
-    delete_ledger_entries_by_related("owner", OWNER_ACCOUNT_ID, related_id)
-
-def _ledger_add_payout(partner_id, local_amt, usd_amt, cur, fee_perc, fee_amt, fx, note, date, timestamp):
-    """
-    Add partner and owner ledger entries for payout.
-    Returns: related_id (ledger doc_id) of the partner entry.
-    """
-    related_id = add_ledger_entry(
-        account_type="partner",
-        account_id=partner_id,
-        entry_type="payment",  # so it shows in partner report
-        amount=local_amt,
-        currency=cur,
-        note=note,
-        date=date,
-        timestamp=timestamp,
-        fee_perc=fee_perc,
-        fee_amt=fee_amt,
-        fx_rate=fx,
-        usd_amt=usd_amt,
-        return_id=True,   # must be supported by your ledger module
-    )
-    add_ledger_entry(
-        account_type="owner",
-        account_id=OWNER_ACCOUNT_ID,
-        entry_type="payout_sent",
-        related_id=related_id,
-        amount=-usd_amt,
-        currency="USD",
-        note=f"Payout to partner {partner_id}. {note}",
-        date=date,
-        timestamp=timestamp,
-        fee_perc=fee_perc,
-        fee_amt=fee_amt,
-        fx_rate=fx,
-        usd_amt=usd_amt,
-    )
-    return related_id
 
 # ────────────────────────────────────────────────────────────
 #  Sub-menu  +  universal Back handler
@@ -131,7 +88,7 @@ async def payout_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 # ======================================================================
-#                              ADD  FLOW
+#                              ADD  FLOW (sales-style)
 # ======================================================================
 @require_unlock
 async def add_payout(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -242,14 +199,41 @@ async def confirm_add_payout(update: Update, context: ContextTypes.DEFAULT_TYPE)
     fx  = _calc_fx(d["local_amt"], d["fee_amt"], d["usd_amt"])
     timestamp = datetime.utcnow().isoformat()
     payout_id = None
-    related_id = None
+    ledger_related_id = None
     try:
-        # 1️⃣ Write to ledger first, get related_id (the canonical reference number)
-        related_id = _ledger_add_payout(
-            d["partner_id"], d["local_amt"], d["usd_amt"], cur, d["fee_perc"], d["fee_amt"],
-            fx, d.get("note", ""), d["date"], timestamp,
+        # 1️⃣ Write partner ledger entry FIRST, get unique related_id
+        ledger_related_id = add_ledger_entry(
+            account_type="partner",
+            account_id=d["partner_id"],
+            entry_type="payment",
+            related_id=None,
+            amount=d["local_amt"],
+            currency=cur,
+            note=d.get("note", ""),
+            date=d["date"],
+            timestamp=timestamp,
+            fee_perc=d["fee_perc"],
+            fee_amt=d["fee_amt"],
+            fx_rate=fx,
+            usd_amt=d["usd_amt"],
         )
-        # 2️⃣ Write payout to DB, saving related_id as the reference number
+        # 2️⃣ Write owner's ledger entry, link with same related_id
+        add_ledger_entry(
+            account_type="owner",
+            account_id=OWNER_ACCOUNT_ID,
+            entry_type="payout_sent",
+            related_id=ledger_related_id,
+            amount=-d["usd_amt"],
+            currency="USD",
+            note=f"Payout to partner {d['partner_id']}. {d.get('note', '')}",
+            date=d["date"],
+            timestamp=timestamp,
+            fee_perc=d["fee_perc"],
+            fee_amt=d["fee_amt"],
+            fx_rate=fx,
+            usd_amt=d["usd_amt"],
+        )
+        # 3️⃣ Write payout row in DB, store related_id for future UI/edits
         payout_id = secure_db.insert("partner_payouts", {
             "partner_id": d["partner_id"],
             "local_amt":  d["local_amt"],
@@ -260,13 +244,14 @@ async def confirm_add_payout(update: Update, context: ContextTypes.DEFAULT_TYPE)
             "note":       d.get("note", ""),
             "date":       d["date"],
             "timestamp":  timestamp,
-            "related_id": related_id,
+            "related_id": ledger_related_id,
         })
     except Exception as e:
         logger.error(f"Payout ledger write failed: {e}", exc_info=True)
-        # Roll back both ledger and DB insert, if any
-        if related_id is not None:
-            _ledger_delete_payout(d["partner_id"], related_id)
+        # Roll back ledger and DB insert if any
+        if ledger_related_id is not None:
+            delete_ledger_entries_by_related("partner", d["partner_id"], ledger_related_id)
+            delete_ledger_entries_by_related("owner", OWNER_ACCOUNT_ID, ledger_related_id)
         if payout_id is not None:
             secure_db.remove("partner_payouts", [payout_id])
         await update.callback_query.edit_message_text(
@@ -338,7 +323,7 @@ async def render_view_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ref = str(r.get('related_id', r.doc_id))
             dt = datetime.strptime(r.get('date','01011970'), "%d%m%Y").strftime("%d/%m/%y") if r.get('date') else "--/--/--"
             lines.append(
-                f"{ref}: {dt}: {fmt_money(r['local_amt'], cur)} → {fmt_money(r.get('usd_amt',0),'USD')} "
+                f"{ref}: {dt}: {fmt_money(r['local_amt'], cur)} → {fmt_money(r.get('usd_amt',0), 'USD')} "
                 f"(fee {r.get('fee_perc',0):.2f}%={fmt_money(r.get('fee_amt',0),cur)})"
             )
         text = f"💸 Payouts  P{page} / {(total+ROWS_PER_PAGE-1)//ROWS_PER_PAGE}\n\n" + "\n".join(lines)
@@ -423,151 +408,182 @@ async def edit_page_nav(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return await render_edit_page(update,context)
 
 async def edit_pick_doc(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_input = update.message.text.strip()
+    try:
+        rid = int(update.message.text.strip())
+    except Exception:
+        await update.message.reply_text("❌ Enter numeric reference number.")
+        return PO_EDIT_PAGE
     q = Query()
-    # First try related_id, then fallback to doc_id (legacy)
-    recs = secure_db.table("partner_payouts").search(q.related_id == user_input)
-    rec = recs[0] if recs else secure_db.table("partner_payouts").get(doc_id=int(user_input))  # fallback
+    # Search using related_id, fallback to doc_id for legacy records
+    rec = secure_db.table("partner_payouts").get((q.related_id == rid) | (q.doc_id == rid))
     if not rec or rec["partner_id"] != context.user_data["edit_pid"]:
-        await update.message.reply_text("❌ Invalid reference number; try again:"); return PO_EDIT_PAGE
-    context.user_data.update({
-        "edit_rec":  rec,
-        "local_amt": rec["local_amt"],
-        "fee_perc":  rec.get("fee_perc", 0),
-        "fee_amt":   rec.get("fee_amt", 0),
-        "usd_amt":   rec.get("usd_amt", 0),
-        "note":      rec.get("note", ""),
-        "date":      rec.get("date", datetime.now().strftime("%d%m%Y")),
-    })
-    await update.message.reply_text("New local amount:"); return PO_EDIT_LOCAL
+        await update.message.reply_text("❌ Invalid reference number; try again:")
+        return PO_EDIT_PAGE
+    context.user_data["edit_rec"] = rec
+    context.user_data["edit_related_id"] = rec.get("related_id", rec.doc_id)
+    context.user_data["edit_doc_id"] = rec.doc_id
 
-# (continues with edit, delete flows...)
+    # Prompt user for field to edit
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("Local Amount", callback_data="edit_local_amt")],
+        [InlineKeyboardButton("Fee %",        callback_data="edit_fee_perc")],
+        [InlineKeyboardButton("USD Paid",     callback_data="edit_usd_amt")],
+        [InlineKeyboardButton("Note",         callback_data="edit_note")],
+        [InlineKeyboardButton("Date",         callback_data="edit_date")],
+        [InlineKeyboardButton("❌ Cancel",     callback_data="edit_cancel")],
+    ])
+    await update.message.reply_text("Select field to edit:", reply_markup=kb)
+    return PO_EDIT_FIELD
 
-async def edit_new_local(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        amt = float(update.message.text); assert amt > 0
-    except Exception:
-        await update.message.reply_text("Positive number please."); return PO_EDIT_LOCAL
-    context.user_data["local_amt"] = amt
-    await update.message.reply_text("New handling fee % (0–99):"); return PO_EDIT_FEE
+async def edit_field_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+    action = update.callback_query.data
+    context.user_data["edit_field"] = action.replace("edit_", "")
+    prompts = {
+        "local_amt": "Enter new local amount:",
+        "fee_perc": "Enter new fee percent (0-99):",
+        "usd_amt": "Enter new USD amount paid:",
+        "note": "Enter new note (or leave blank):",
+        "date": "Enter new date (DDMMYYYY):",
+    }
+    if action == "edit_cancel":
+        await show_payout_menu(update, context)
+        return ConversationHandler.END
+    await update.callback_query.edit_message_text(prompts[context.user_data["edit_field"]])
+    return PO_EDIT_CONFIRM
 
-async def edit_new_fee(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        pct = float(update.message.text); assert 0 <= pct < 100
-    except Exception:
-        await update.message.reply_text("0–99 please."); return PO_EDIT_FEE
-    d = context.user_data
-    d["fee_perc"] = pct
-    d["fee_amt"]  = d["local_amt"] * pct / 100
-    await update.message.reply_text("New USD paid:"); return PO_EDIT_USD
+async def edit_save_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    value = update.message.text.strip()
+    field = context.user_data["edit_field"]
+    rec = context.user_data["edit_rec"]
+    doc_id = rec.doc_id
+    related_id = rec.get("related_id", rec.doc_id)
+    partner_id = rec["partner_id"]
 
-async def edit_new_usd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        usd = float(update.message.text)
-    except Exception:
-        await update.message.reply_text("Number please."); return PO_EDIT_USD
-    context.user_data["usd_amt"] = usd
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton("➖ Skip note", callback_data="po_edit_note_skip")]])
-    await update.message.reply_text("New note or Skip:", reply_markup=kb)
-    return PO_EDIT_NOTE
+    # Prepare update dict
+    update_fields = {}
+    cur = _partner_currency(partner_id)
 
-async def edit_new_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    note = "" if (update.callback_query and update.callback_query.data.endswith("skip")) else update.message.text.strip()
-    if update.callback_query:
-        await update.callback_query.answer()
-    context.user_data["note"] = note
-    today = datetime.now().strftime("%d%m%Y")
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton("📅 Skip", callback_data="po_edit_date_skip")]])
-    await update.message.reply_text(f"New date DDMMYYYY or Skip ({fmt_date(today)}):", reply_markup=kb)
-    return PO_EDIT_DATE
-
-async def edit_new_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.callback_query:
-        await update.callback_query.answer()
-        date=datetime.now().strftime("%d%m%Y")
-    else:
-        date=update.message.text.strip()
+    # Validate and update only the selected field
+    if field == "local_amt":
         try:
-            datetime.strptime(date,"%d%m%Y")
-        except ValueError:
-            await update.message.reply_text("Format DDMMYYYY."); return PO_EDIT_DATE
-    context.user_data["date"]=date
-    d=context.user_data; cur=_partner_currency(context.user_data["edit_pid"])
-    net = d["local_amt"] - d["fee_amt"]
-    fx  = _calc_fx(d["local_amt"], d["fee_amt"], d["usd_amt"])
-    summary = (f"Local: {fmt_money(d['local_amt'],cur)}\n"
-               f"Fee: {d['fee_perc']:.2f}% ({fmt_money(d['fee_amt'],cur)})\n"
-               f"USD Paid: {fmt_money(d['usd_amt'],'USD')}\n"
-               f"FX Rate: {fx:.4f}\n"
-               f"Note: {d.get('note') or '—'}\n"
-               f"Date: {fmt_date(d['date'])}\n\nSave?")
-    kb=InlineKeyboardMarkup([[InlineKeyboardButton("✅ Save",callback_data="po_edit_conf_yes"),
-                              InlineKeyboardButton("❌ Cancel",callback_data="po_edit_conf_no")]])
-    await (update.callback_query.edit_message_text if update.callback_query else update.message.reply_text)(
-        summary,reply_markup=kb)
+            update_fields["local_amt"] = float(value)
+        except:
+            await update.message.reply_text("❌ Number required. Try again:"); return PO_EDIT_CONFIRM
+    elif field == "fee_perc":
+        try:
+            pct = float(value); assert 0 <= pct < 100
+            update_fields["fee_perc"] = pct
+            update_fields["fee_amt"] = rec["local_amt"] * pct / 100
+        except:
+            await update.message.reply_text("❌ 0–99 required. Try again:"); return PO_EDIT_CONFIRM
+    elif field == "usd_amt":
+        try:
+            update_fields["usd_amt"] = float(value)
+        except:
+            await update.message.reply_text("❌ Number required. Try again:"); return PO_EDIT_CONFIRM
+    elif field == "note":
+        update_fields["note"] = value
+    elif field == "date":
+        try:
+            datetime.strptime(value, "%d%m%Y")
+            update_fields["date"] = value
+        except:
+            await update.message.reply_text("❌ Format is DDMMYYYY. Try again:"); return PO_EDIT_CONFIRM
+
+    # Recalculate fx and fee_amt if relevant fields were changed
+    new_local = update_fields.get("local_amt", rec["local_amt"])
+    new_fee = update_fields.get("fee_amt", rec.get("fee_amt", 0))
+    new_usd = update_fields.get("usd_amt", rec["usd_amt"])
+    new_fx = (new_local - new_fee) / new_usd if new_usd else 0
+    update_fields["fx_rate"] = new_fx
+
+    # Confirmation
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Save", callback_data="edit_save_yes"),
+         InlineKeyboardButton("❌ Cancel", callback_data="edit_save_no")],
+    ])
+    summary = (
+        f"Save new value for {field}?\n"
+        f"Local: {fmt_money(new_local, cur)} | Fee: {fmt_money(new_fee, cur)} | USD: {fmt_money(new_usd, 'USD')} | FX: {new_fx:.4f}"
+    )
+    await update.message.reply_text(summary, reply_markup=kb)
+    context.user_data["update_fields"] = update_fields
     return PO_EDIT_CONFIRM
 
 @require_unlock
-async def edit_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def edit_save_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
-    if update.callback_query.data.endswith("_no"):
-        await payout_back(update, context); return ConversationHandler.END
-    rec=context.user_data["edit_rec"]; d=context.user_data
-    cur = _partner_currency(rec["partner_id"])
-    net = d["local_amt"] - d["fee_amt"]
-    fx  = _calc_fx(d["local_amt"], d["fee_amt"], d["usd_amt"])
-    related_id = str(rec.get('related_id', rec.doc_id))
-    try:
-        # --- LEDGER REMOVE old entries ---
-        _ledger_delete_payout(rec["partner_id"], related_id)
-        # --- Update payout record ---
-        secure_db.update("partner_payouts",{
-            "local_amt": d["local_amt"],
-            "fee_perc":  d["fee_perc"],
-            "fee_amt":   d["fee_amt"],
-            "usd_amt":   d["usd_amt"],
-            "fx_rate":   fx,
-            "note":      d.get("note", ""),
-            "date":      d["date"],
-            "related_id": related_id,
-            "timestamp": rec.get("timestamp", datetime.utcnow().isoformat()),
-        }, [rec.doc_id])
-        # --- LEDGER ADD new ---
-        _ledger_add_payout(
-            partner_id=rec["partner_id"],
-            payout_id=related_id,
-            local_amt=d["local_amt"],
-            usd_amt=d["usd_amt"],
-            cur=cur,
-            fee_perc=d["fee_perc"],
-            fee_amt=d["fee_amt"],
-            fx=fx,
-            note=d.get("note", ""),
-            date=d["date"],
-            timestamp=rec.get("timestamp", datetime.utcnow().isoformat())
-        )
-    except Exception as e:
-        logger.error(f"Edit payout failed, rolling back: {e}", exc_info=True)
-        await update.callback_query.edit_message_text(
-            "❌ Edit failed: ledger/database error.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back",callback_data="payout_menu")]])
-        )
+    if update.callback_query.data.endswith("no"):
+        await show_payout_menu(update, context)
         return ConversationHandler.END
-    await update.callback_query.edit_message_text(
-        "✅ Payout updated (ledger synced).",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back",callback_data="payout_menu")]]))
+
+    rec = context.user_data["edit_rec"]
+    doc_id = rec.doc_id
+    related_id = rec.get("related_id", rec.doc_id)
+    partner_id = rec["partner_id"]
+    update_fields = context.user_data["update_fields"]
+
+    # Remove old ledger entries
+    delete_ledger_entries_by_related("partner", partner_id, related_id)
+    delete_ledger_entries_by_related("owner", OWNER_ACCOUNT_ID, related_id)
+
+    # Update DB
+    secure_db.update("partner_payouts", update_fields, [doc_id])
+
+    # Insert new ledger entries
+    cur = _partner_currency(partner_id)
+    payout = secure_db.table("partner_payouts").get(doc_id=doc_id)
+    try:
+        # Partner ledger entry
+        add_ledger_entry(
+            account_type="partner",
+            account_id=partner_id,
+            entry_type="payment",
+            related_id=related_id,
+            amount=payout["local_amt"],
+            currency=cur,
+            note=payout.get("note", ""),
+            date=payout.get("date", ""),
+            timestamp=payout.get("timestamp", ""),
+            fee_perc=payout.get("fee_perc", 0),
+            fee_amt=payout.get("fee_amt", 0),
+            fx_rate=payout.get("fx_rate", 0),
+            usd_amt=payout.get("usd_amt", 0),
+        )
+        # Owner ledger entry
+        add_ledger_entry(
+            account_type="owner",
+            account_id=OWNER_ACCOUNT_ID,
+            entry_type="payout_sent",
+            related_id=related_id,
+            amount=-payout["usd_amt"],
+            currency="USD",
+            note=f"Payout to partner {partner_id}. {payout.get('note', '')}",
+            date=payout.get("date", ""),
+            timestamp=payout.get("timestamp", ""),
+            fee_perc=payout.get("fee_perc", 0),
+            fee_amt=payout.get("fee_amt", 0),
+            fx_rate=payout.get("fx_rate", 0),
+            usd_amt=payout.get("usd_amt", 0),
+        )
+        await update.callback_query.edit_message_text("✅ Payout updated.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="payout_menu")]]))
+    except Exception as e:
+        logger.error(f"Failed to update payout: {e}")
+        await update.callback_query.edit_message_text(f"❌ Error: Failed to update payout: {e}")
     return ConversationHandler.END
+
 
 # ======================================================================
 #                          DELETE  FLOW  (Partner → Period → Pages)
 # ======================================================================
 @require_unlock
-async def del_payout_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def remove_payout_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     partners = secure_db.all("partners")
     if not partners:
         await update.callback_query.edit_message_text(
-            "No partners.",
+            "No partners found.",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="payout_menu")]]))
         return ConversationHandler.END
     buttons = [InlineKeyboardButton(p["name"], callback_data=f"po_del_part_{p.doc_id}") for p in partners]
@@ -578,84 +594,123 @@ async def del_payout_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def del_choose_period(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
-    context.user_data["del_pid"]=int(update.callback_query.data.split("_")[-1])
-    kb=InlineKeyboardMarkup([
-        [InlineKeyboardButton("📆 Last 3 M",callback_data="po_del_filt_3m")],
-        [InlineKeyboardButton("📆 Last 6 M",callback_data="po_del_filt_6m")],
-        [InlineKeyboardButton("🗓️ All",    callback_data="po_del_filt_all")],
-        [InlineKeyboardButton("🔙 Back",   callback_data="remove_payout")]])
-    await update.callback_query.edit_message_text("Choose period:",reply_markup=kb)
+    context.user_data["del_pid"] = int(update.callback_query.data.split("_")[-1])
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📆 Last 3 M", callback_data="po_del_filt_3m")],
+        [InlineKeyboardButton("📆 Last 6 M", callback_data="po_del_filt_6m")],
+        [InlineKeyboardButton("🗓️ All",     callback_data="po_del_filt_all")],
+        [InlineKeyboardButton("🔙 Back",    callback_data="remove_payout")]
+    ])
+    await update.callback_query.edit_message_text("Choose period:", reply_markup=kb)
     return PO_DEL_TIME
 
 async def del_set_filter(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
-    context.user_data["del_period"]=update.callback_query.data.split("_")[-1]
-    context.user_data["del_page"]=1
-    return await render_del_page(update,context)
+    context.user_data["del_period"] = update.callback_query.data.split("_")[-1]
+    context.user_data["del_page"] = 1
+    return await render_del_page(update, context)
 
 async def render_del_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    pid=context.user_data["del_pid"]; period=context.user_data["del_period"]; page=context.user_data["del_page"]
-    cur=_partner_currency(pid)
-    rows=[r for r in secure_db.all("partner_payouts") if r["partner_id"]==pid]
-    if period!="all": rows=_months_filter(rows,int(period.rstrip("m")))
-    rows.sort(key=lambda r:datetime.strptime(r["date"],"%d%m%Y"),reverse=True)
-    total=len(rows); start,end=(page-1)*ROWS_PER_PAGE, page*ROWS_PER_PAGE
-    chunk=rows[start:end]
-    if not chunk: text="No payouts."
+    pid = context.user_data["del_pid"]
+    period = context.user_data["del_period"]
+    page = context.user_data["del_page"]
+    cur = _partner_currency(pid)
+
+    rows = [r for r in secure_db.all("partner_payouts") if r["partner_id"] == pid]
+    if period != "all":
+        rows = _months_filter(rows, int(period.rstrip("m")))
+    rows.sort(key=lambda r: datetime.strptime(r["date"], "%d%m%Y"), reverse=True)
+
+    total = len(rows)
+    start, end = (page - 1) * ROWS_PER_PAGE, page * ROWS_PER_PAGE
+    chunk = rows[start:end]
+
+    if not chunk:
+        text = "No payouts to remove for that period."
     else:
-        lines=[]
+        lines = []
         for r in chunk:
             ref = str(r.get('related_id', r.doc_id))
-            dt = datetime.strptime(r.get('date','01011970'), "%d%m%Y").strftime("%d/%m/%y") if r.get('date') else "--/--/--"
-            lines.append(f"{ref}: {dt}: {fmt_money(r['local_amt'],cur)} → {fmt_money(r.get('usd_amt',0),'USD')}")
-        text=(f"🗑️ Delete Payouts  P{page}/{(total+ROWS_PER_PAGE-1)//ROWS_PER_PAGE}\n\n"
-              + "\n".join(lines)
-              + "\n\nReply with reference number (leftmost) or use ⬅️➡️")
-    nav=[]
-    if start>0: nav.append(InlineKeyboardButton("⬅️ Prev",callback_data="po_del_prev"))
-    if end<total: nav.append(InlineKeyboardButton("➡️ Next",callback_data="po_del_next"))
-    kb=InlineKeyboardMarkup([nav,[InlineKeyboardButton("🔙 Back",callback_data="remove_payout")]])
-    await update.callback_query.edit_message_text(text,reply_markup=kb)
+            dt = datetime.strptime(r.get('date', '01011970'), "%d%m%Y").strftime("%d/%m/%y") if r.get('date') else "--/--/--"
+            lines.append(
+                f"{ref}: {dt}: {fmt_money(r['local_amt'], cur)} → {fmt_money(r.get('usd_amt', 0), 'USD')}"
+            )
+        text = f"🗑️ Remove Payouts  P{page}/{(total + ROWS_PER_PAGE - 1) // ROWS_PER_PAGE}\n\n" + "\n".join(lines)
+        text += "\n\nReply with reference number (leftmost) or use ⬅️➡️"
+
+    nav = []
+    if start > 0: nav.append(InlineKeyboardButton("⬅️ Prev", callback_data="po_del_prev"))
+    if end < total: nav.append(InlineKeyboardButton("➡️ Next", callback_data="po_del_next"))
+    kb = InlineKeyboardMarkup([nav, [InlineKeyboardButton("🔙 Back", callback_data="remove_payout")]])
+
+    await update.callback_query.edit_message_text(text, reply_markup=kb)
     return PO_DEL_PAGE
 
-async def del_page_nav(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def del_paginate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
-    context.user_data["del_page"] += (-1 if update.callback_query.data.endswith("prev") else 1)
-    return await render_del_page(update,context)
+    if update.callback_query.data.endswith("prev"):
+        context.user_data["del_page"] -= 1
+    elif update.callback_query.data.endswith("next"):
+        context.user_data["del_page"] += 1
+    return await render_del_page(update, context)
 
 async def del_pick_doc(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_input = update.message.text.strip()
+    try:
+        rid = int(update.message.text.strip())
+    except Exception:
+        await update.message.reply_text("❌ Enter numeric reference number.")
+        return PO_DEL_PAGE
+
     q = Query()
-    recs = secure_db.table("partner_payouts").search(q.related_id == user_input)
-    rec = recs[0] if recs else secure_db.table("partner_payouts").get(doc_id=int(user_input))
+    # Search by related_id or doc_id (legacy)
+    rec = secure_db.table("partner_payouts").get((q.related_id == rid) | (q.doc_id == rid))
     if not rec or rec["partner_id"] != context.user_data["del_pid"]:
-        await update.message.reply_text("❌ Invalid reference number; try again:"); return PO_DEL_PAGE
-    context.user_data["del_rec"]=rec
-    kb=InlineKeyboardMarkup([[InlineKeyboardButton("✅ Yes",callback_data="po_del_conf_yes"),
-                              InlineKeyboardButton("❌ No", callback_data="po_del_conf_no")]])
-    await update.message.reply_text(f"Delete Payout [{rec.get('related_id', rec.doc_id)}]?",reply_markup=kb)
+        await update.message.reply_text("❌ Invalid reference number; try again:")
+        return PO_DEL_PAGE
+
+    context.user_data["del_rec"] = rec
+    context.user_data["del_related_id"] = rec.get("related_id", rec.doc_id)
+    context.user_data["del_doc_id"] = rec.doc_id
+
+    # ...continue with your confirmation prompt...
+
+
+    cur = _partner_currency(rec["partner_id"])
+    dt = datetime.strptime(rec.get('date', '01011970'), "%d%m%Y").strftime("%d/%m/%y") if rec.get('date') else "--/--/--"
+    confirm = (
+        f"🗑️ Confirm DELETE:\n"
+        f"{rec.get('related_id', rec.doc_id)}: {dt}: {fmt_money(rec['local_amt'], cur)} → {fmt_money(rec.get('usd_amt', 0), 'USD')}\n\n"
+        "Are you sure?"
+    )
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Yes, delete", callback_data="po_del_conf_yes"),
+         InlineKeyboardButton("❌ Cancel", callback_data="po_del_conf_no")]
+    ])
+    await update.message.reply_text(confirm, reply_markup=kb)
     return PO_DEL_CONFIRM
 
 @require_unlock
-async def del_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def confirm_delete_payout(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
-    if update.callback_query.data.endswith("_no"):
-        await payout_back(update, context); return ConversationHandler.END
-    rec=context.user_data["del_rec"]
-    related_id = str(rec.get('related_id', rec.doc_id))
-    try:
-        _ledger_delete_payout(rec["partner_id"], related_id)
-        secure_db.remove("partner_payouts",[rec.doc_id])
-    except Exception as e:
-        logger.error(f"Payout delete failed: {e}", exc_info=True)
-        await update.callback_query.edit_message_text(
-            "❌ Payout delete failed: ledger/database error.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back",callback_data="payout_menu")]])
-        )
+    if update.callback_query.data.endswith("no"):
+        await payout_back(update, context)
         return ConversationHandler.END
-    await update.callback_query.edit_message_text(
-        "✅ Payout deleted (ledger updated).",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back",callback_data="payout_menu")]]))
+
+    rec = context.user_data["del_rec"]
+    related_id = rec.get("related_id", rec.doc_id)
+    partner_id = rec["partner_id"]
+    doc_id = rec.doc_id
+
+    try:
+        # Remove from ledger (both partner and owner accounts)
+        delete_ledger_entries_by_related("partner", partner_id, related_id)
+        delete_ledger_entries_by_related("owner", OWNER_ACCOUNT_ID, related_id)
+        # Remove payout row
+        secure_db.remove("partner_payouts", [doc_id])
+        await update.callback_query.edit_message_text("✅ Payout deleted.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="payout_menu")]]))
+    except Exception as e:
+        logger.error(f"Failed to delete payout: {e}")
+        await update.callback_query.edit_message_text(f"❌ Error: Failed to delete payout: {e}")
     return ConversationHandler.END
 
 
@@ -665,25 +720,57 @@ async def del_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def register_payout_handlers(app: Application):
     """Attach Payout submenu + all conversations to the Telegram app."""
 
+    # Main menu
     app.add_handler(CallbackQueryHandler(show_payout_menu, pattern="^payout_menu$"))
 
-    # ─────────────────────────── View conversation ───────────────────────────
+    # ----------- Add payout -------------
+    add_conv = ConversationHandler(
+        entry_points=[
+            CommandHandler("add_payout", add_payout),
+            CallbackQueryHandler(add_payout, pattern="^add_payout$")
+        ],
+        states={
+            PO_ADD_PARTNER: [CallbackQueryHandler(get_add_partner, pattern="^po_add_part_\\d+$"),
+                             CallbackQueryHandler(payout_back, pattern="^payout_menu$")],
+            PO_ADD_LOCAL:   [MessageHandler(filters.TEXT & ~filters.COMMAND, get_add_local),
+                             CallbackQueryHandler(payout_back, pattern="^payout_menu$")],
+            PO_ADD_FEE:     [MessageHandler(filters.TEXT & ~filters.COMMAND, get_add_fee),
+                             CallbackQueryHandler(payout_back, pattern="^payout_menu$")],
+            PO_ADD_USD:     [MessageHandler(filters.TEXT & ~filters.COMMAND, get_add_usd),
+                             CallbackQueryHandler(payout_back, pattern="^payout_menu$")],
+            PO_ADD_NOTE: [
+                CallbackQueryHandler(get_add_note, pattern="^po_add_note_skip$"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, get_add_note),
+                CallbackQueryHandler(payout_back, pattern="^payout_menu$")
+            ],
+            PO_ADD_DATE: [
+                CallbackQueryHandler(get_add_date, pattern="^po_add_date_skip$"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, get_add_date),
+                CallbackQueryHandler(payout_back, pattern="^payout_menu$")
+            ],
+            PO_ADD_CONFIRM: [
+                CallbackQueryHandler(confirm_add_payout, pattern="^po_add_conf_"),
+                CallbackQueryHandler(payout_back, pattern="^payout_menu$")
+            ],
+        },
+        fallbacks=[CommandHandler("cancel", payout_back)],
+        per_message=False,
+    )
+    app.add_handler(add_conv)
+
+    # ----------- View payout -------------
     view_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(view_payout_start, pattern="^view_payout$")],
         states={
-            PO_VIEW_PARTNER: [
-                CallbackQueryHandler(view_choose_period, pattern="^po_view_part_\\d+$"),
-                CallbackQueryHandler(payout_back,        pattern="^payout_menu$"),
-            ],
-            PO_VIEW_TIME: [
-                CallbackQueryHandler(view_set_filter,    pattern="^po_view_filt_"),
-                CallbackQueryHandler(view_payout_start,  pattern="^view_payout$"),
-                CallbackQueryHandler(payout_back,        pattern="^payout_menu$"),
-            ],
+            PO_VIEW_PARTNER: [CallbackQueryHandler(view_choose_period, pattern="^po_view_part_\\d+$"),
+                              CallbackQueryHandler(payout_back, pattern="^payout_menu$")],
+            PO_VIEW_TIME:    [CallbackQueryHandler(view_set_filter, pattern="^po_view_filt_"),
+                              CallbackQueryHandler(view_payout_start, pattern="^view_payout$"),
+                              CallbackQueryHandler(payout_back, pattern="^payout_menu$")],
             PO_VIEW_PAGE: [
-                CallbackQueryHandler(view_paginate,      pattern="^po_view_(prev|next)$"),
-                CallbackQueryHandler(view_payout_start,  pattern="^view_payout$"),
-                CallbackQueryHandler(payout_back,        pattern="^payout_menu$"),
+                CallbackQueryHandler(view_paginate, pattern="^po_view_(prev|next)$"),
+                CallbackQueryHandler(view_payout_start, pattern="^view_payout$"),
+                CallbackQueryHandler(payout_back, pattern="^payout_menu$")
             ],
         },
         fallbacks=[CommandHandler("cancel", payout_back)],
@@ -692,56 +779,27 @@ def register_payout_handlers(app: Application):
     )
     app.add_handler(view_conv)
 
-    # ─────────────────────────── Edit conversation ───────────────────────────
+    # ----------- Edit payout -------------
     edit_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(edit_payout_start, pattern="^edit_payout$")],
         states={
-            PO_EDIT_PARTNER: [
-                CallbackQueryHandler(edit_choose_period, pattern="^po_edit_part_\\d+$"),
-                CallbackQueryHandler(payout_back,        pattern="^payout_menu$"),
-            ],
-            PO_EDIT_TIME: [
-                CallbackQueryHandler(edit_set_filter,    pattern="^po_edit_filt_"),
-                CallbackQueryHandler(edit_payout_start,  pattern="^edit_payout$"),
-                CallbackQueryHandler(payout_back,        pattern="^payout_menu$"),
-            ],
+            PO_EDIT_PARTNER: [CallbackQueryHandler(edit_choose_period, pattern="^po_edit_part_\\d+$"),
+                              CallbackQueryHandler(payout_back, pattern="^payout_menu$")],
+            PO_EDIT_TIME:    [CallbackQueryHandler(edit_set_filter, pattern="^po_edit_filt_"),
+                              CallbackQueryHandler(edit_payout_start, pattern="^edit_payout$"),
+                              CallbackQueryHandler(payout_back, pattern="^payout_menu$")],
             PO_EDIT_PAGE: [
-                CallbackQueryHandler(edit_page_nav,      pattern="^po_edit_(prev|next)$"),
+                CallbackQueryHandler(edit_page_nav, pattern="^po_edit_(prev|next)$"),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, edit_pick_doc),
-                CallbackQueryHandler(edit_payout_start,  pattern="^edit_payout$"),
-                CallbackQueryHandler(payout_back,        pattern="^payout_menu$"),
+                CallbackQueryHandler(edit_payout_start, pattern="^edit_payout$"),
+                CallbackQueryHandler(payout_back, pattern="^payout_menu$")
             ],
-            PO_EDIT_LOCAL: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, edit_new_local),
-                CallbackQueryHandler(edit_payout_start,  pattern="^edit_payout$"),
-                CallbackQueryHandler(payout_back,        pattern="^payout_menu$"),
-            ],
-            PO_EDIT_FEE: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, edit_new_fee),
-                CallbackQueryHandler(edit_payout_start,  pattern="^edit_payout$"),
-                CallbackQueryHandler(payout_back,        pattern="^payout_menu$"),
-            ],
-            PO_EDIT_USD: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, edit_new_usd),
-                CallbackQueryHandler(edit_payout_start,  pattern="^edit_payout$"),
-                CallbackQueryHandler(payout_back,        pattern="^payout_menu$"),
-            ],
-            PO_EDIT_NOTE: [
-                CallbackQueryHandler(edit_new_note,      pattern="^po_edit_note_skip$"),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, edit_new_note),
-                CallbackQueryHandler(edit_payout_start,  pattern="^edit_payout$"),
-                CallbackQueryHandler(payout_back,        pattern="^payout_menu$"),
-            ],
-            PO_EDIT_DATE: [
-                CallbackQueryHandler(edit_new_date,      pattern="^po_edit_date_skip$"),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, edit_new_date),
-                CallbackQueryHandler(edit_payout_start,  pattern="^edit_payout$"),
-                CallbackQueryHandler(payout_back,        pattern="^payout_menu$"),
-            ],
+            PO_EDIT_FIELD: [CallbackQueryHandler(edit_field_select)],
             PO_EDIT_CONFIRM: [
-                CallbackQueryHandler(edit_save,          pattern="^po_edit_conf_"),
-                CallbackQueryHandler(edit_payout_start,  pattern="^edit_payout$"),
-                CallbackQueryHandler(payout_back,        pattern="^payout_menu$"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, edit_save_value),
+                CallbackQueryHandler(edit_save_confirm),
+                CallbackQueryHandler(edit_payout_start, pattern="^edit_payout$"),
+                CallbackQueryHandler(payout_back, pattern="^payout_menu$")
             ],
         },
         fallbacks=[CommandHandler("cancel", payout_back)],
@@ -750,29 +808,25 @@ def register_payout_handlers(app: Application):
     )
     app.add_handler(edit_conv)
 
-    # ─────────────────────────── Delete conversation ──────────────────────────
+    # ----------- Delete payout -------------
     del_conv = ConversationHandler(
-        entry_points=[CallbackQueryHandler(del_payout_start, pattern="^remove_payout$")],
+        entry_points=[CallbackQueryHandler(remove_payout_start, pattern="^remove_payout$")],
         states={
-            PO_DEL_PARTNER: [
-                CallbackQueryHandler(del_choose_period,  pattern="^po_del_part_\\d+$"),
-                CallbackQueryHandler(payout_back,        pattern="^payout_menu$"),
-            ],
-            PO_DEL_TIME: [
-                CallbackQueryHandler(del_set_filter,     pattern="^po_del_filt_"),
-                CallbackQueryHandler(del_payout_start,   pattern="^remove_payout$"),
-                CallbackQueryHandler(payout_back,        pattern="^payout_menu$"),
-            ],
+            PO_DEL_PARTNER: [CallbackQueryHandler(del_choose_period,  pattern="^po_del_part_\\d+$"),
+                             CallbackQueryHandler(payout_back, pattern="^payout_menu$")],
+            PO_DEL_TIME:    [CallbackQueryHandler(del_set_filter,     pattern="^po_del_filt_"),
+                             CallbackQueryHandler(remove_payout_start,   pattern="^remove_payout$"),
+                             CallbackQueryHandler(payout_back,        pattern="^payout_menu$")],
             PO_DEL_PAGE: [
-                CallbackQueryHandler(del_page_nav,       pattern="^po_del_(prev|next)$"),
+                CallbackQueryHandler(del_paginate, pattern="^po_del_(prev|next)$"),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, del_pick_doc),
-                CallbackQueryHandler(del_payout_start,   pattern="^remove_payout$"),
-                CallbackQueryHandler(payout_back,        pattern="^payout_menu$"),
+                CallbackQueryHandler(remove_payout_start,   pattern="^remove_payout$"),
+                CallbackQueryHandler(payout_back,        pattern="^payout_menu$")
             ],
             PO_DEL_CONFIRM: [
-                CallbackQueryHandler(del_confirm,        pattern="^po_del_conf_"),
-                CallbackQueryHandler(del_payout_start,   pattern="^remove_payout$"),
-                CallbackQueryHandler(payout_back,        pattern="^payout_menu$"),
+                CallbackQueryHandler(confirm_delete_payout),
+                CallbackQueryHandler(remove_payout_start,   pattern="^remove_payout$"),
+                CallbackQueryHandler(payout_back,        pattern="^payout_menu$")
             ],
         },
         fallbacks=[CommandHandler("cancel", payout_back)],
@@ -780,46 +834,3 @@ def register_payout_handlers(app: Application):
         per_message=False,
     )
     app.add_handler(del_conv)
-
-    # Add-flow ConversationHandler (unchanged; re-entry not needed)
-    add_conv = ConversationHandler(
-        entry_points=[
-            CommandHandler("add_payout", add_payout),
-            CallbackQueryHandler(add_payout, pattern="^add_payout$")
-        ],
-        states={
-            PO_ADD_PARTNER: [
-                CallbackQueryHandler(get_add_partner, pattern="^po_add_part_\\d+$"),
-                CallbackQueryHandler(payout_back,     pattern="^payout_menu$"),
-            ],
-            PO_ADD_LOCAL: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, get_add_local),
-                CallbackQueryHandler(payout_back,     pattern="^payout_menu$"),
-            ],
-            PO_ADD_FEE: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, get_add_fee),
-                CallbackQueryHandler(payout_back,     pattern="^payout_menu$"),
-            ],
-            PO_ADD_USD: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, get_add_usd),
-                CallbackQueryHandler(payout_back,     pattern="^payout_menu$"),
-            ],
-            PO_ADD_NOTE: [
-                CallbackQueryHandler(get_add_note, pattern="^po_add_note_skip$"),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, get_add_note),
-                CallbackQueryHandler(payout_back,  pattern="^payout_menu$"),
-            ],
-            PO_ADD_DATE: [
-                CallbackQueryHandler(get_add_date, pattern="^po_add_date_skip$"),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, get_add_date),
-                CallbackQueryHandler(payout_back,  pattern="^payout_menu$"),
-            ],
-            PO_ADD_CONFIRM: [
-                CallbackQueryHandler(confirm_add_payout, pattern="^po_add_conf_"),
-                CallbackQueryHandler(payout_back,        pattern="^payout_menu$"),
-            ],
-        },
-        fallbacks=[CommandHandler("cancel", payout_back)],
-        per_message=False,
-    )
-    app.add_handler(add_conv)
