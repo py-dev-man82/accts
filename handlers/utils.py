@@ -48,7 +48,7 @@ def fmt_money(amount: float, code: str | None = "USD") -> str:
 # ── Date ───────────────────────────────────────────────────────
 def fmt_date(ddmmyyyy: str | None) -> str:
     """
-    '15062025' → '15/06/2025'.
+    '15062025' → '15/06/25'.
     If parsing fails, return the original string unchanged.
     """
     if not ddmmyyyy:
