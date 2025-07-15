@@ -1,21 +1,9 @@
-# handlers/payouts.py
-
 """
-Payouts module – now with:
-• Universal Back-button re-entry
-• Thousands-separated money with currency symbol (fmt_money)
-• Readable dates DD/MM/YYYY (fmt_date)
-• FULL LEDGER INTEGRATION (partner + owner, safe rollback, rollback on ledger error)
-
-Prereqs
-───────
-handlers/utils.py must provide:
-    fmt_money(amount: float, code:str='USD') -> str
-    fmt_date (ddmmyyyy:str)                 -> str
-
-handlers/ledger.py must provide:
-    add_ledger_entry(...)
-    delete_ledger_entries_by_related(...)
+Payouts module – ledger-linked related_id pattern (2025-07-15).
+- Every payout writes to ledger first; gets back a related_id (ledger doc_id).
+- The main DB row stores related_id.
+- All edits/deletes use related_id for ledger ops.
+- All list displays and selections use related_id as the reference number, fallback to doc_id for legacy.
 """
 
 import logging
@@ -31,15 +19,13 @@ from telegram.ext import (
     filters,
 )
 from tinydb import Query
-from handlers.utils import require_unlock, fmt_money, fmt_date  # ← helpers
+from handlers.utils import require_unlock, fmt_money, fmt_date  # helpers
 from handlers.ledger import add_ledger_entry, delete_ledger_entries_by_related
 from secure_db import secure_db
 
 logger = logging.getLogger("payouts")
 
-# ────────────────────────────────────────────────────────────
-#  Conversation-state constants
-# ────────────────────────────────────────────────────────────
+# Conversation-state constants
 (
     PO_ADD_PARTNER, PO_ADD_LOCAL, PO_ADD_FEE,  PO_ADD_USD,
     PO_ADD_NOTE,    PO_ADD_DATE,  PO_ADD_CONFIRM,
@@ -55,9 +41,6 @@ logger = logging.getLogger("payouts")
 
 ROWS_PER_PAGE = 20
 
-# ────────────────────────────────────────────────────────────
-#  Helpers
-# ────────────────────────────────────────────────────────────
 def _months_filter(rows, months: int):
     if months <= 0:
         return rows
@@ -79,17 +62,20 @@ def _partner_currency(pid: int) -> str:
 
 OWNER_ACCOUNT_ID = "POT"
 
-def _ledger_delete_payout(partner_id, payout_id):
-    delete_ledger_entries_by_related("partner", partner_id, payout_id)
-    delete_ledger_entries_by_related("owner", OWNER_ACCOUNT_ID, payout_id)
+def _ledger_delete_payout(partner_id, related_id):
+    # Always use related_id for ledger deletions
+    delete_ledger_entries_by_related("partner", partner_id, related_id)
+    delete_ledger_entries_by_related("owner", OWNER_ACCOUNT_ID, related_id)
 
-def _ledger_add_payout(partner_id, payout_id, local_amt, usd_amt, cur, fee_perc, fee_amt, fx, note, date, timestamp):
-    # Partner ledger: payout received (credit)
-    add_ledger_entry(
+def _ledger_add_payout(partner_id, local_amt, usd_amt, cur, fee_perc, fee_amt, fx, note, date, timestamp):
+    """
+    Add partner and owner ledger entries for payout.
+    Returns: related_id (ledger doc_id) of the partner entry.
+    """
+    related_id = add_ledger_entry(
         account_type="partner",
         account_id=partner_id,
-        entry_type="payment",  # <--- so it shows in partner report
-        related_id=payout_id,
+        entry_type="payment",  # so it shows in partner report
         amount=local_amt,
         currency=cur,
         note=note,
@@ -99,13 +85,13 @@ def _ledger_add_payout(partner_id, payout_id, local_amt, usd_amt, cur, fee_perc,
         fee_amt=fee_amt,
         fx_rate=fx,
         usd_amt=usd_amt,
+        return_id=True,   # must be supported by your ledger module
     )
-    # Owner ledger: payout paid (debit in USD)
     add_ledger_entry(
         account_type="owner",
         account_id=OWNER_ACCOUNT_ID,
         entry_type="payout_sent",
-        related_id=payout_id,
+        related_id=related_id,
         amount=-usd_amt,
         currency="USD",
         note=f"Payout to partner {partner_id}. {note}",
@@ -116,6 +102,7 @@ def _ledger_add_payout(partner_id, payout_id, local_amt, usd_amt, cur, fee_perc,
         fx_rate=fx,
         usd_amt=usd_amt,
     )
+    return related_id
 
 # ────────────────────────────────────────────────────────────
 #  Sub-menu  +  universal Back handler
@@ -255,8 +242,14 @@ async def confirm_add_payout(update: Update, context: ContextTypes.DEFAULT_TYPE)
     fx  = _calc_fx(d["local_amt"], d["fee_amt"], d["usd_amt"])
     timestamp = datetime.utcnow().isoformat()
     payout_id = None
+    related_id = None
     try:
-        # Insert payout record
+        # 1️⃣ Write to ledger first, get related_id (the canonical reference number)
+        related_id = _ledger_add_payout(
+            d["partner_id"], d["local_amt"], d["usd_amt"], cur, d["fee_perc"], d["fee_amt"],
+            fx, d.get("note", ""), d["date"], timestamp,
+        )
+        # 2️⃣ Write payout to DB, saving related_id as the reference number
         payout_id = secure_db.insert("partner_payouts", {
             "partner_id": d["partner_id"],
             "local_amt":  d["local_amt"],
@@ -267,26 +260,15 @@ async def confirm_add_payout(update: Update, context: ContextTypes.DEFAULT_TYPE)
             "note":       d.get("note", ""),
             "date":       d["date"],
             "timestamp":  timestamp,
+            "related_id": related_id,
         })
-        # Add to ledger (partner and owner)
-        _ledger_add_payout(
-            partner_id=d["partner_id"],
-            payout_id=payout_id,
-            local_amt=d["local_amt"],
-            usd_amt=d["usd_amt"],
-            cur=cur,
-            fee_perc=d["fee_perc"],
-            fee_amt=d["fee_amt"],
-            fx=fx,
-            note=d.get("note", ""),
-            date=d["date"],
-            timestamp=timestamp,
-        )
     except Exception as e:
         logger.error(f"Payout ledger write failed: {e}", exc_info=True)
+        # Roll back both ledger and DB insert, if any
+        if related_id is not None:
+            _ledger_delete_payout(d["partner_id"], related_id)
         if payout_id is not None:
             secure_db.remove("partner_payouts", [payout_id])
-            _ledger_delete_payout(d["partner_id"], payout_id)
         await update.callback_query.edit_message_text(
             "❌ Error: Failed to write payout or ledger. Nothing recorded.",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="payout_menu")]])
@@ -353,13 +335,14 @@ async def render_view_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         lines=[]
         for r in chunk:
-            lines.append(f"[{r.doc_id}] "
-                         f"{fmt_money(r['local_amt'], cur)} "
-                         f"→ {fmt_money(r.get('usd_amt',0),'USD')} "
-                         f"(fee {r.get('fee_perc',0):.2f}%="
-                         f"{fmt_money(r.get('fee_amt',0),cur)}) "
-                         f"on {fmt_date(r.get('date',''))}")
+            ref = str(r.get('related_id', r.doc_id))
+            dt = datetime.strptime(r.get('date','01011970'), "%d%m%Y").strftime("%d/%m/%y") if r.get('date') else "--/--/--"
+            lines.append(
+                f"{ref}: {dt}: {fmt_money(r['local_amt'], cur)} → {fmt_money(r.get('usd_amt',0),'USD')} "
+                f"(fee {r.get('fee_perc',0):.2f}%={fmt_money(r.get('fee_amt',0),cur)})"
+            )
         text = f"💸 Payouts  P{page} / {(total+ROWS_PER_PAGE-1)//ROWS_PER_PAGE}\n\n" + "\n".join(lines)
+        text += "\n\nReply with reference number (leftmost) or use ⬅️➡️"
 
     nav=[]
     if start>0: nav.append(InlineKeyboardButton("⬅️ Prev",callback_data="po_view_prev"))
@@ -419,10 +402,14 @@ async def render_edit_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chunk=rows[start:end]
     if not chunk: text="No payouts."
     else:
-        lines=[f"[{r.doc_id}] {fmt_money(r['local_amt'],cur)} → {fmt_money(r.get('usd_amt',0),'USD')}" for r in chunk]
+        lines=[]
+        for r in chunk:
+            ref = str(r.get('related_id', r.doc_id))
+            dt = datetime.strptime(r.get('date','01011970'), "%d%m%Y").strftime("%d/%m/%y") if r.get('date') else "--/--/--"
+            lines.append(f"{ref}: {dt}: {fmt_money(r['local_amt'],cur)} → {fmt_money(r.get('usd_amt',0),'USD')}")
         text=(f"✏️ Edit Payouts  P{page}/{(total+ROWS_PER_PAGE-1)//ROWS_PER_PAGE}\n\n"
               + "\n".join(lines)
-              + "\n\nSend DocID to edit:")
+              + "\n\nReply with reference number (leftmost) or use ⬅️➡️")
     nav=[]
     if start>0: nav.append(InlineKeyboardButton("⬅️ Prev",callback_data="po_edit_prev"))
     if end<total: nav.append(InlineKeyboardButton("➡️ Next",callback_data="po_edit_next"))
@@ -436,13 +423,13 @@ async def edit_page_nav(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return await render_edit_page(update,context)
 
 async def edit_pick_doc(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        pid=int(update.message.text.strip())
-        rec=secure_db.table("partner_payouts").get(doc_id=pid); assert rec
-        if rec["partner_id"]!=context.user_data["edit_pid"]:
-            raise ValueError
-    except Exception:
-        await update.message.reply_text("❌ Invalid ID; try again:"); return PO_EDIT_PAGE
+    user_input = update.message.text.strip()
+    q = Query()
+    # First try related_id, then fallback to doc_id (legacy)
+    recs = secure_db.table("partner_payouts").search(q.related_id == user_input)
+    rec = recs[0] if recs else secure_db.table("partner_payouts").get(doc_id=int(user_input))  # fallback
+    if not rec or rec["partner_id"] != context.user_data["edit_pid"]:
+        await update.message.reply_text("❌ Invalid reference number; try again:"); return PO_EDIT_PAGE
     context.user_data.update({
         "edit_rec":  rec,
         "local_amt": rec["local_amt"],
@@ -453,6 +440,8 @@ async def edit_pick_doc(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "date":      rec.get("date", datetime.now().strftime("%d%m%Y")),
     })
     await update.message.reply_text("New local amount:"); return PO_EDIT_LOCAL
+
+# (continues with edit, delete flows...)
 
 async def edit_new_local(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -527,9 +516,10 @@ async def edit_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cur = _partner_currency(rec["partner_id"])
     net = d["local_amt"] - d["fee_amt"]
     fx  = _calc_fx(d["local_amt"], d["fee_amt"], d["usd_amt"])
+    related_id = str(rec.get('related_id', rec.doc_id))
     try:
         # --- LEDGER REMOVE old entries ---
-        _ledger_delete_payout(rec["partner_id"], rec.doc_id)
+        _ledger_delete_payout(rec["partner_id"], related_id)
         # --- Update payout record ---
         secure_db.update("partner_payouts",{
             "local_amt": d["local_amt"],
@@ -539,9 +529,23 @@ async def edit_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "fx_rate":   fx,
             "note":      d.get("note", ""),
             "date":      d["date"],
+            "related_id": related_id,
+            "timestamp": rec.get("timestamp", datetime.utcnow().isoformat()),
         }, [rec.doc_id])
         # --- LEDGER ADD new ---
-        _ledger_add_payout(rec["partner_id"], rec.doc_id, d["local_amt"], d["usd_amt"], cur, d["fee_amt"], fx, d.get("note", ""), d["date"])
+        _ledger_add_payout(
+            partner_id=rec["partner_id"],
+            payout_id=related_id,
+            local_amt=d["local_amt"],
+            usd_amt=d["usd_amt"],
+            cur=cur,
+            fee_perc=d["fee_perc"],
+            fee_amt=d["fee_amt"],
+            fx=fx,
+            note=d.get("note", ""),
+            date=d["date"],
+            timestamp=rec.get("timestamp", datetime.utcnow().isoformat())
+        )
     except Exception as e:
         logger.error(f"Edit payout failed, rolling back: {e}", exc_info=True)
         await update.callback_query.edit_message_text(
@@ -599,10 +603,14 @@ async def render_del_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chunk=rows[start:end]
     if not chunk: text="No payouts."
     else:
-        lines=[f"[{r.doc_id}] {fmt_money(r['local_amt'],cur)} → {fmt_money(r.get('usd_amt',0),'USD')}" for r in chunk]
+        lines=[]
+        for r in chunk:
+            ref = str(r.get('related_id', r.doc_id))
+            dt = datetime.strptime(r.get('date','01011970'), "%d%m%Y").strftime("%d/%m/%y") if r.get('date') else "--/--/--"
+            lines.append(f"{ref}: {dt}: {fmt_money(r['local_amt'],cur)} → {fmt_money(r.get('usd_amt',0),'USD')}")
         text=(f"🗑️ Delete Payouts  P{page}/{(total+ROWS_PER_PAGE-1)//ROWS_PER_PAGE}\n\n"
               + "\n".join(lines)
-              + "\n\nSend DocID to delete:")
+              + "\n\nReply with reference number (leftmost) or use ⬅️➡️")
     nav=[]
     if start>0: nav.append(InlineKeyboardButton("⬅️ Prev",callback_data="po_del_prev"))
     if end<total: nav.append(InlineKeyboardButton("➡️ Next",callback_data="po_del_next"))
@@ -616,17 +624,16 @@ async def del_page_nav(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return await render_del_page(update,context)
 
 async def del_pick_doc(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        pid=context.user_data["del_pid"]
-        did=int(update.message.text.strip())
-        rec=secure_db.table("partner_payouts").get(doc_id=did); assert rec
-        if rec["partner_id"] != pid: raise ValueError
-    except Exception:
-        await update.message.reply_text("❌ Invalid ID; try again:"); return PO_DEL_PAGE
+    user_input = update.message.text.strip()
+    q = Query()
+    recs = secure_db.table("partner_payouts").search(q.related_id == user_input)
+    rec = recs[0] if recs else secure_db.table("partner_payouts").get(doc_id=int(user_input))
+    if not rec or rec["partner_id"] != context.user_data["del_pid"]:
+        await update.message.reply_text("❌ Invalid reference number; try again:"); return PO_DEL_PAGE
     context.user_data["del_rec"]=rec
     kb=InlineKeyboardMarkup([[InlineKeyboardButton("✅ Yes",callback_data="po_del_conf_yes"),
                               InlineKeyboardButton("❌ No", callback_data="po_del_conf_no")]])
-    await update.message.reply_text(f"Delete Payout [{did}]?",reply_markup=kb)
+    await update.message.reply_text(f"Delete Payout [{rec.get('related_id', rec.doc_id)}]?",reply_markup=kb)
     return PO_DEL_CONFIRM
 
 @require_unlock
@@ -635,10 +642,9 @@ async def del_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.callback_query.data.endswith("_no"):
         await payout_back(update, context); return ConversationHandler.END
     rec=context.user_data["del_rec"]
+    related_id = str(rec.get('related_id', rec.doc_id))
     try:
-        # --- LEDGER REMOVE entries ---
-        _ledger_delete_payout(rec["partner_id"], rec.doc_id)
-        # Remove payout record
+        _ledger_delete_payout(rec["partner_id"], related_id)
         secure_db.remove("partner_payouts",[rec.doc_id])
     except Exception as e:
         logger.error(f"Payout delete failed: {e}", exc_info=True)
@@ -651,6 +657,7 @@ async def del_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "✅ Payout deleted (ledger updated).",
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back",callback_data="payout_menu")]]))
     return ConversationHandler.END
+
 
 # ======================================================================
 #                      REGISTER  ALL  HANDLERS
@@ -680,7 +687,7 @@ def register_payout_handlers(app: Application):
             ],
         },
         fallbacks=[CommandHandler("cancel", payout_back)],
-        allow_reentry=True,          # ←—— NEW
+        allow_reentry=True,
         per_message=False,
     )
     app.add_handler(view_conv)
@@ -738,7 +745,7 @@ def register_payout_handlers(app: Application):
             ],
         },
         fallbacks=[CommandHandler("cancel", payout_back)],
-        allow_reentry=True,          # ←—— NEW
+        allow_reentry=True,
         per_message=False,
     )
     app.add_handler(edit_conv)
@@ -769,7 +776,7 @@ def register_payout_handlers(app: Application):
             ],
         },
         fallbacks=[CommandHandler("cancel", payout_back)],
-        allow_reentry=True,          # ←—— NEW
+        allow_reentry=True,
         per_message=False,
     )
     app.add_handler(del_conv)
