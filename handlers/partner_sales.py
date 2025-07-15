@@ -1,7 +1,7 @@
 # handlers/partner_sales.py
 # ────────────────────────────────────────────────────────────────
 #  Partner-Sales module  (Owner → Partner reconciliation)
-#  • One record per item (flatter schema, aligns with sales/stock-in).
+#  • One record per item (flatter schema, aligns with sales/stock-in). 
 #  • Double-entry ledger integration with safeguards / rollback.
 #  • INVENTORY NOW CALCULATED LIVE FROM LEDGER (no reliance on partner_inventory table).
 # ────────────────────────────────────────────────────────────────
