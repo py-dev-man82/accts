@@ -1,5 +1,5 @@
 # ======================================================================
-#   PAYMENTS MODULE – LEDGER-LINKED, RELATED-ID, AND UI CONSISTENT
+#   PAYMENTS MODULE – LEDGER-LINKED, RELATED-ID, AND UI CONSISTENT 
 # ======================================================================
 
 import logging
