@@ -2,7 +2,7 @@
 # ────────────────────────────────────────────────────────────────
 #  Stock-In module  (2025-07-07)  –  **Partner → Store** upgrade + Ledger Compatible
 #  • Mandatory Store picker between Partner and Item.
-#  • partner_inventory row includes store_id + unit_cost + currency.
+#  • partner_inventory row includes store_id + unit_cost + currency
 #  • store_inventory incremented / decremented on Add / Edit / Delete
 #  • All flows mirror handlers/sales.py: pagination, period filters, Back btns.
 #  • Ledger integration: every stock-in, edit, delete is also recorded in the ledger!
