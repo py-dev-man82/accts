@@ -13,6 +13,7 @@ import inspect
 import os
 from datetime import datetime
 from secure_db import secure_db
+from tinydb import Query
 
 logger = logging.getLogger("ledger")
 
@@ -26,6 +27,19 @@ if not logger.hasHandlers():
 
 LEDGER_TABLE = "ledger_entries"
 
+# ─────────────────────────────────────────────────────────────────────────
+#  SERIAL: Global never-reused serial for related_id
+# ─────────────────────────────────────────────────────────────────────────
+def get_next_related_id(secure_db):
+    meta_table = secure_db.table("system_meta")
+    meta = meta_table.get(Query().key == "next_related_id")
+    if meta:
+        related_id = meta["val"]
+        meta_table.update({ "val": related_id + 1 }, Query().key == "next_related_id")
+    else:
+        related_id = 1
+        meta_table.insert({ "key": "next_related_id", "val": 2 })
+    return related_id
 
 # ─────────────────────────────────────────────────────────────────────────
 #  DB bootstrap
@@ -48,6 +62,7 @@ def seed_tables(secure_db):
         secure_db.db.table(LEDGER_TABLE)
         secure_db.db.table("transactions")
         secure_db.db.table("accounts")
+        secure_db.db.table("system_meta")  # ensure meta table exists!
 
         logger.info("✅ Initial tables seeded successfully.")
     except Exception as e:
@@ -79,6 +94,10 @@ def add_ledger_entry(
     """
     Add a new entry to the ledger.
     """
+    # PATCH: Auto-generate unique related_id if not supplied (new rows)
+    if related_id is None:
+        related_id = get_next_related_id(secure_db)
+
     caller = inspect.stack()[1]
     logger.debug(
         "📨 add_ledger_entry called from %s:%s (%s)",
@@ -127,7 +146,17 @@ def add_ledger_entry(
     try:
         doc_id = secure_db.insert(LEDGER_TABLE, entry)
         logger.info("📝 Ledger entry #%s saved.", doc_id)
-        return doc_id
+
+        # ========== LEDGER DEBUG SECTION ==========
+        #  This section prints every ledger entry to terminal after insert.
+        #  COMMENT OUT or REMOVE after diagnostic testing is complete!
+        print("\nLEDGER DEBUG WRITE:")
+        for k, v in entry.items():
+            print(f"  {k}: {v}")
+        print("--- END LEDGER DEBUG ---\n")
+        # ========== END LEDGER DEBUG SECTION ==========
+
+        return related_id  # Return the unique serial for use in other tables!
     except Exception:
         logger.exception("❌ Failed inserting ledger entry")
 
