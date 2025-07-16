@@ -5,6 +5,41 @@ from secure_db import secure_db
 from telegram import Update
 from telegram.ext import ConversationHandler, ContextTypes
 from functools import wraps
+from config import ADMIN_TELEGRAM_ID
+
+def require_unlock_and_admin(func):
+    """
+    Decorator to ensure DB is unlocked and user is admin.
+    Combines require_unlock + admin check.
+    """
+    @wraps(func)
+    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        # Skip checks if encryption is disabled
+        if not getattr(config, "ENABLE_ENCRYPTION", True):
+            return await func(update, context)
+
+        # Require unlocked DB
+        try:
+            secure_db.ensure_unlocked()
+        except RuntimeError as e:
+            if update.callback_query:
+                await update.callback_query.answer(str(e), show_alert=True)
+            else:
+                await update.message.reply_text(str(e))
+            return ConversationHandler.END
+
+        # Require admin
+        user_id = update.effective_user.id
+        if user_id != ADMIN_TELEGRAM_ID:
+            warning = "❌ You are not authorized to perform this action."
+            if update.callback_query:
+                await update.callback_query.answer(warning, show_alert=True)
+            else:
+                await update.message.reply_text(warning)
+            return ConversationHandler.END
+
+        return await func(update, context)
+    return wrapper
 
 def require_unlock(func):
     @wraps(func)
