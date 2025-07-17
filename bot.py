@@ -5,6 +5,7 @@ import os
 import sys
 import subprocess
 import time
+import re
 
 import config
 from secure_db import secure_db, EncryptedJSONStorage
@@ -21,8 +22,24 @@ from telegram.ext import (
     ConversationHandler,
 )
 
+def is_strong_password(pw):
+    if len(pw) < 8:
+        return False
+    if not re.search(r'[A-Z]', pw):
+        return False
+    if not re.search(r'[a-z]', pw):
+        return False
+    if not re.search(r'[0-9]', pw):
+        return False
+    if not re.search(r'[^A-Za-z0-9]', pw):
+        return False
+    return True
+
+# Change PIN states (use high numbers to avoid conflict)
+CHANGE_PIN_OLD, CHANGE_PIN_NEW, CHANGE_PIN_CONFIRM = range(100, 103)
+
 # Core utilities
-from handlers.utils import require_unlock
+from handlers.utils import require_unlock, require_unlock_and_admin
 
 # States for initdb conversation
 CONFIRM_INITDB, ENTER_OLD_PIN, SET_NEW_PIN, CONFIRM_NEW_PIN = range(4)
@@ -34,7 +51,7 @@ from handlers.stores            import register_store_handlers,     show_store_m
 from handlers.partners          import register_partner_handlers,   show_partner_menu
 from handlers.sales             import register_sales_handlers
 from handlers.payments          import register_payment_handlers,   show_payment_menu
-from handlers.expenses          import register_expense_handlers,   show_expense_menu  # <-- Added
+from handlers.expenses          import register_expense_handlers,   show_expense_menu
 from handlers.payouts           import register_payout_handlers,    show_payout_menu
 from handlers.stockin           import register_stockin_handlers,   show_stockin_menu
 from handlers.partner_sales     import register_partner_sales_handlers, show_partner_sales_menu
@@ -56,6 +73,24 @@ from handlers.reports.owner_report    import register_owner_report_handlers
 # Owner module
 from handlers.owner import register_owner_handlers, show_owner_menu
 
+# ====== DIVIDENDS MODULE HANDLERS (UPDATED) ======
+from handlers.dividends import (
+    dividends_menu, handle_dividends_callback,
+    start_credit_dividends, credit_select_debit_project, credit_select_credit_project, credit_amount_input, credit_confirm,
+    start_withdraw_dividends, withdraw_select_project, withdraw_local_input, withdraw_fee_input, withdraw_usd_input, withdraw_confirm,
+    start_project_expense, expense_select_credit_project, expense_select_debit_project, expense_local_paid_input, expense_local_received_input, expense_fee_input, expense_desc_input, expense_confirm,
+    start_edit_delete,
+    start_view_report, report_select_project, report_date_input, send_project_report,
+    trace_all_messages,  # ✅ Add this here
+)
+
+from handlers.dividends import (
+    DIV_DEBIT_PROJECT_SELECT, DIV_CREDIT_PROJECT_SELECT, DIV_CREDIT_AMOUNT, DIV_CREDIT_CONFIRM,
+    DIV_WITHDRAW_PROJECT, DIV_WITHDRAW_LOCAL, DIV_WITHDRAW_FEE, DIV_WITHDRAW_USD, DIV_WITHDRAW_CONFIRM,
+    DIV_EXPENSE_PROJECT_SELECT, DIV_EXPENSE_DEBIT_PROJECT_SELECT, DIV_EXPENSE_LOCAL_PAID, DIV_EXPENSE_LOCAL_RECEIVED, DIV_EXPENSE_FEE, DIV_EXPENSE_DESC, DIV_EXPENSE_CONFIRM,
+    DIV_EDIT_TYPE,
+    DIV_REPORT_PROJECT, DIV_REPORT_DATE,
+)
 # ════════════════════════════════════════════════════════════
 # Admin-only helper commands
 # ════════════════════════════════════════════════════════════
@@ -71,10 +106,64 @@ async def kill_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     raise SystemExit(0)
 
 # ════════════════════════════════════════════════════════════
+# Change PIN flow
+# ════════════════════════════════════════════════════════════
+@require_unlock_and_admin
+async def changepin_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if hasattr(update, "message") and update.message:
+        await update.message.reply_text("🔒 Enter your CURRENT PIN:")
+    elif hasattr(update, "callback_query") and update.callback_query:
+        await update.callback_query.message.reply_text("🔒 Enter your CURRENT PIN:")
+    return CHANGE_PIN_OLD
+
+async def changepin_check_old(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    pin = update.message.text.strip()
+    if not secure_db.unlock(pin):
+        await update.message.reply_text("❌ Incorrect PIN. Aborting.")
+        return ConversationHandler.END
+    context.user_data['old_pin'] = pin
+    await update.message.reply_text("✅ Current PIN accepted.\nEnter your NEW PIN:")
+    return CHANGE_PIN_NEW
+
+async def changepin_new(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    new_pin = update.message.text.strip()
+    if not is_strong_password(new_pin):
+        await update.message.reply_text(
+            "❌ PIN must be at least 8 characters, include uppercase, lowercase, a number, and a special character. Try again:"
+        )
+        return CHANGE_PIN_NEW
+    context.user_data['new_pin'] = new_pin
+    await update.message.reply_text("🔑 Confirm your NEW PIN:")
+    return CHANGE_PIN_CONFIRM
+
+async def changepin_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    confirm_pin = update.message.text.strip()
+    if confirm_pin != context.user_data.get('new_pin'):
+        await update.message.reply_text("❌ New PINs do not match. Start over with /changepin.")
+        return ConversationHandler.END
+
+    old_pin = context.user_data.get('old_pin')
+    new_pin = context.user_data.get('new_pin')
+    try:
+        all_data = secure_db.db.storage.read()
+        secure_db.lock()
+        secure_db.fernet = secure_db._derive_key(new_pin)
+        secure_db.db = TinyDB(
+            config.DB_PATH,
+            storage=lambda p: EncryptedJSONStorage(p, secure_db.fernet)
+        )
+        secure_db.db.storage.write(all_data)
+        secure_db.lock()
+        await update.message.reply_text("✅ PIN changed successfully! Please use your new PIN from now on.")
+        await start(update, context)
+    except Exception as e:
+        await update.message.reply_text(f"❌ Failed to change PIN: {e}")
+    return ConversationHandler.END
+
+# ════════════════════════════════════════════════════════════
 # InitDB flow with secure setup script and enforced PIN
 # ════════════════════════════════════════════════════════════
 async def initdb_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Ask for confirmation before resetting DB."""
     if not config.ENABLE_ENCRYPTION:
         await update.message.reply_text(
             "❌ Encryption must be enabled to initialize DB. Set ENABLE_ENCRYPTION = True in config.py."
@@ -124,8 +213,10 @@ async def enter_old_pin(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def set_new_pin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pin = update.message.text.strip()
-    if len(pin) < 4:
-        await update.message.reply_text("❌ PIN must be at least 4 characters. Try again:")
+    if not is_strong_password(pin):
+        await update.message.reply_text(
+            "❌ PIN must be at least 8 characters, include uppercase, lowercase, a number, and a special character. Try again:"
+        )
         return SET_NEW_PIN
     context.user_data["new_db_pin"] = pin
     await update.message.reply_text("🔑 Confirm PIN by entering it again:")
@@ -134,7 +225,9 @@ async def set_new_pin(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def confirm_new_pin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     confirm_pin = update.message.text.strip()
     if confirm_pin != context.user_data.get("new_db_pin"):
-        await update.message.reply_text("❌ PINs do not match. Start over with /initdb.")
+        await update.message.reply_text(
+            "❌ PINs do not match. Start over with /initdb."
+        )
         return ConversationHandler.END
 
     if update.message:
@@ -159,11 +252,9 @@ async def confirm_new_pin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         storage=lambda p: EncryptedJSONStorage(p, secure_db.fernet)
     )
 
-    # 🌱 Seed initial tables
     seed_tables(secure_db)
     secure_db.lock()
 
-    # Lock down the salt file (read-only) after successful DB creation
     try:
         os.chmod("data/kdf_salt.bin", 0o444)
     except Exception as e:
@@ -175,11 +266,19 @@ async def confirm_new_pin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     subprocess.Popen([sys.executable, os.path.abspath(sys.argv[0]), "child"])
     raise SystemExit(0)
-
 # ════════════════════════════════════════════════════════════
 # Unlock command flow
 # ════════════════════════════════════════════════════════════
 async def unlock_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    admin_id = getattr(config, "ADMIN_TELEGRAM_ID", None)
+    user_id = (update.effective_user.id if update.effective_user else None)
+    if user_id != admin_id:
+        if hasattr(update, 'message') and update.message:
+            await update.message.reply_text("❌ You are not authorized to unlock the database.")
+        elif hasattr(update, 'callback_query') and update.callback_query:
+            await update.callback_query.edit_message_text("❌ You are not authorized to unlock the database.")
+        return ConversationHandler.END
+
     context.user_data["unlock_attempts"] = 0
     if hasattr(update, 'message') and update.message:
         await update.message.reply_text("🔑 *Enter your encryption PIN to unlock:*", parse_mode="Markdown")
@@ -188,10 +287,17 @@ async def unlock_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return UNLOCK_PIN
 
 async def unlock_process(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    admin_id = getattr(config, "ADMIN_TELEGRAM_ID", None)
+    user_id = (update.effective_user.id if update.effective_user else None)
+    if user_id != admin_id:
+        await update.message.reply_text("❌ You are not authorized to unlock the database.")
+        return ConversationHandler.END
+
     pin = update.message.text.strip()
     success = secure_db.unlock(pin)
     if success:
         await update.message.reply_text("✅ *Database unlocked successfully!*", parse_mode="Markdown")
+        await start(update, context)
         return ConversationHandler.END
     else:
         attempts = getattr(secure_db, "_failed_attempts", 0)
@@ -213,7 +319,7 @@ async def unlock_process(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Auto-lock background task
 # ════════════════════════════════════════════════════════════
 async def auto_lock_task():
-    AUTOLOCK_TIMEOUT = 180  # 3 minutes
+    AUTOLOCK_TIMEOUT = 1800  # 30 minutes
     while True:
         await asyncio.sleep(10)
         if secure_db.is_unlocked():
@@ -229,6 +335,7 @@ async def auto_lock_task():
 # ════════════════════════════════════════════════════════════
 # Main Menu and Nested Submenus
 # ════════════════════════════════════════════════════════════
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Main menu with DB status indicator and unlock/initdb shortcuts."""
     if not os.path.exists(config.DB_PATH):
@@ -243,6 +350,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
              InlineKeyboardButton("ADD FINANCIAL", callback_data="addfinancial_menu")],
             [InlineKeyboardButton("👑 Owner", callback_data="owner_menu"),
              InlineKeyboardButton("📊 Reports", callback_data="report_menu")],
+            [InlineKeyboardButton("🔑 Change PIN", callback_data="changepin_menu")],
         ])
     else:
         status_icon = "🔒 Locked"
@@ -262,6 +370,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text, reply_markup=kb, parse_mode="Markdown"
         )
 
+@require_unlock_and_admin
 async def show_adduser_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     kb = InlineKeyboardMarkup([
@@ -272,6 +381,7 @@ async def show_adduser_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ])
     await update.callback_query.edit_message_text("ADD USER Menu:", reply_markup=kb)
 
+@require_unlock_and_admin
 async def show_addfinancial_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     kb = InlineKeyboardMarkup([
@@ -281,10 +391,12 @@ async def show_addfinancial_menu(update: Update, context: ContextTypes.DEFAULT_T
         [InlineKeyboardButton("Payouts",        callback_data="payout_menu")],
         [InlineKeyboardButton("Stock-In",       callback_data="stockin_menu")],
         [InlineKeyboardButton("Partner Sales",  callback_data="partner_sales_menu")],
+        [InlineKeyboardButton("Dividends",      callback_data="dividends_menu")],
         [InlineKeyboardButton("🔙 Back",        callback_data="main_menu")],
     ])
     await update.callback_query.edit_message_text("ADD FINANCIAL Menu:", reply_markup=kb)
 
+@require_unlock_and_admin
 async def show_report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     kb = InlineKeyboardMarkup([
@@ -298,9 +410,131 @@ async def show_report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Reports: choose a type", reply_markup=kb
     )
 
-# ──────────────────────────────
+@require_unlock_and_admin
+async def show_changepin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await changepin_start(update, context)
+dividends_conv = ConversationHandler(
+    entry_points=[
+        CommandHandler("dividends", dividends_menu),
+        CallbackQueryHandler(handle_dividends_callback, pattern="^(div_credit|div_withdraw|div_expense|edit_delete|view_report|dividends_menu)$"),
+    ],
+    states={
+        # CREDIT FLOW
+        DIV_DEBIT_PROJECT_SELECT: [
+            CallbackQueryHandler(credit_select_debit_project, pattern="^credit_debit_project_\\d+$"),
+            CallbackQueryHandler(dividends_menu, pattern="^dividends_menu$"),
+            MessageHandler(filters.ALL, trace_all_messages),  # 👈 Debug catch-all
+        ],
+        DIV_CREDIT_PROJECT_SELECT: [
+            CallbackQueryHandler(credit_select_credit_project, pattern="^credit_credit_project_\\d+$"),
+            CallbackQueryHandler(dividends_menu, pattern="^dividends_menu$"),
+            MessageHandler(filters.ALL, trace_all_messages),
+        ],
+        DIV_CREDIT_AMOUNT: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, credit_amount_input),
+            CallbackQueryHandler(dividends_menu, pattern="^dividends_menu$"),
+            MessageHandler(filters.ALL, trace_all_messages),  # 👈 Debug catch-all
+        ],
+        DIV_CREDIT_CONFIRM: [
+            CallbackQueryHandler(credit_confirm, pattern="^credit_confirm$"),
+            CallbackQueryHandler(dividends_menu, pattern="^dividends_menu$"),
+            MessageHandler(filters.ALL, trace_all_messages),
+        ],
+
+        # WITHDRAW FLOW
+        DIV_WITHDRAW_PROJECT: [
+            CallbackQueryHandler(withdraw_select_project, pattern="^withdraw_project_\\d+$"),
+            CallbackQueryHandler(dividends_menu, pattern="^dividends_menu$"),
+            MessageHandler(filters.ALL, trace_all_messages),
+        ],
+        DIV_WITHDRAW_LOCAL: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, withdraw_local_input),
+            CallbackQueryHandler(dividends_menu, pattern="^dividends_menu$"),
+            MessageHandler(filters.ALL, trace_all_messages),
+        ],
+        DIV_WITHDRAW_FEE: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, withdraw_fee_input),
+            CallbackQueryHandler(dividends_menu, pattern="^dividends_menu$"),
+            MessageHandler(filters.ALL, trace_all_messages),
+        ],
+        DIV_WITHDRAW_USD: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, withdraw_usd_input),
+            CallbackQueryHandler(dividends_menu, pattern="^dividends_menu$"),
+            MessageHandler(filters.ALL, trace_all_messages),
+        ],
+        DIV_WITHDRAW_CONFIRM: [
+            CallbackQueryHandler(withdraw_confirm, pattern="^withdraw_confirm$"),
+            CallbackQueryHandler(dividends_menu, pattern="^dividends_menu$"),
+            MessageHandler(filters.ALL, trace_all_messages),
+        ],
+
+        # EXPENSE FLOW
+        DIV_EXPENSE_PROJECT_SELECT: [
+            CallbackQueryHandler(expense_select_credit_project, pattern="^expense_credit_project_\\d+$"),
+            CallbackQueryHandler(dividends_menu, pattern="^dividends_menu$"),
+            MessageHandler(filters.ALL, trace_all_messages),
+        ],
+        DIV_EXPENSE_DEBIT_PROJECT_SELECT: [
+            CallbackQueryHandler(expense_select_debit_project, pattern="^expense_debit_project_\\d+$"),
+            CallbackQueryHandler(dividends_menu, pattern="^dividends_menu$"),
+            MessageHandler(filters.ALL, trace_all_messages),
+        ],
+        DIV_EXPENSE_LOCAL_PAID: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, expense_local_paid_input),
+            CallbackQueryHandler(dividends_menu, pattern="^dividends_menu$"),
+            MessageHandler(filters.ALL, trace_all_messages),
+        ],
+        DIV_EXPENSE_LOCAL_RECEIVED: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, expense_local_received_input),
+            CallbackQueryHandler(dividends_menu, pattern="^dividends_menu$"),
+            MessageHandler(filters.ALL, trace_all_messages),
+        ],
+        DIV_EXPENSE_FEE: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, expense_fee_input),
+            CallbackQueryHandler(dividends_menu, pattern="^dividends_menu$"),
+            MessageHandler(filters.ALL, trace_all_messages),
+        ],
+        DIV_EXPENSE_DESC: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, expense_desc_input),
+            CallbackQueryHandler(dividends_menu, pattern="^dividends_menu$"),
+            MessageHandler(filters.ALL, trace_all_messages),
+        ],
+        DIV_EXPENSE_CONFIRM: [
+            CallbackQueryHandler(expense_confirm, pattern="^expense_confirm$"),
+            CallbackQueryHandler(dividends_menu, pattern="^dividends_menu$"),
+            MessageHandler(filters.ALL, trace_all_messages),
+        ],
+
+        # EDIT/DELETE
+        DIV_EDIT_TYPE: [
+            CallbackQueryHandler(start_edit_delete, pattern="^(edit_credits|edit_withdrawals|edit_expenses|dividends_menu)$"),
+            MessageHandler(filters.ALL, trace_all_messages),
+        ],
+
+        # REPORT FLOW
+        DIV_REPORT_PROJECT: [
+            CallbackQueryHandler(report_select_project, pattern="^report_project_\\d+$"),
+            CallbackQueryHandler(dividends_menu, pattern="^dividends_menu$"),
+            MessageHandler(filters.ALL, trace_all_messages),
+        ],
+        DIV_REPORT_DATE: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, report_date_input),
+            CallbackQueryHandler(dividends_menu, pattern="^dividends_menu$"),
+            MessageHandler(filters.ALL, trace_all_messages),
+        ],
+    },
+    fallbacks=[
+        CallbackQueryHandler(dividends_menu, pattern="^dividends_menu$"),
+        CommandHandler("dividends", dividends_menu),
+        MessageHandler(filters.ALL, dividends_menu),  # fallback for stray messages
+    ],
+    allow_reentry=True,
+    per_message=True,
+)
+
+# ════════════════════════════════════════════════════════════
 # Main bot runner
-# ──────────────────────────────
+# ════════════════════════════════════════════════════════════
 async def run_bot():
     logging.basicConfig(
         format="%(asctime)s — %(name)s — %(levelname)s — %(message)s",
@@ -325,7 +559,7 @@ async def run_bot():
         fallbacks=[],
     ))
 
-    # Unlock handler (handles both /unlock and menu button)
+    # Unlock handler
     app.add_handler(ConversationHandler(
         entry_points=[
             CommandHandler("unlock", unlock_start),
@@ -335,12 +569,28 @@ async def run_bot():
         fallbacks=[],
     ))
 
+    # Change PIN handler
+    app.add_handler(ConversationHandler(
+        entry_points=[
+            CommandHandler("changepin", changepin_start),
+            CallbackQueryHandler(changepin_start, pattern="^changepin_menu$"),
+        ],
+        states={
+            CHANGE_PIN_OLD:    [MessageHandler(filters.TEXT & ~filters.COMMAND, changepin_check_old)],
+            CHANGE_PIN_NEW:    [MessageHandler(filters.TEXT & ~filters.COMMAND, changepin_new)],
+            CHANGE_PIN_CONFIRM:[MessageHandler(filters.TEXT & ~filters.COMMAND, changepin_confirm)],
+        },
+        fallbacks=[],
+    ))
+
     # Root / back commands
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(start, pattern="^main_menu$"))
     app.add_handler(CallbackQueryHandler(show_adduser_menu, pattern="^adduser_menu$"))
     app.add_handler(CallbackQueryHandler(show_addfinancial_menu, pattern="^addfinancial_menu$"))
     app.add_handler(CallbackQueryHandler(show_report_menu, pattern="^report_menu$"))
+    app.add_handler(CallbackQueryHandler(show_changepin_menu, pattern="^changepin_menu$"))
+    app.add_handler(CallbackQueryHandler(dividends_menu, pattern="^dividends_menu$"))
 
     # **Register backup handlers BEFORE owner handlers!**
     from handlers.backup import register_backup_handlers
@@ -352,7 +602,7 @@ async def run_bot():
     register_partner_handlers(app)
     register_sales_handlers(app)
     register_payment_handlers(app)
-    register_expense_handlers(app)   # <--- Expenses module registration
+    register_expense_handlers(app)
     app.add_handler(CallbackQueryHandler(show_expense_menu, pattern="^expense_menu$"))
     register_payout_handlers(app)
     app.add_handler(CallbackQueryHandler(show_payout_menu, pattern="^payout_menu$"))
@@ -367,11 +617,13 @@ async def run_bot():
 
     # Reports
     register_customer_report_handlers(app)
+    app.add_handler(CallbackQueryHandler(show_report_menu, pattern="^report_menu$"))
     register_partner_report_handlers(app)
-    app.add_handler(CallbackQueryHandler(show_partner_report_menu, pattern="^rep_part$"))
     register_store_report_handlers(app)
-    app.add_handler(CallbackQueryHandler(show_store_report_menu, pattern="^rep_store$"))
     register_owner_report_handlers(app)
+
+    # ====== DIVIDENDS MODULE HANDLER (ADDED) ======
+    app.add_handler(dividends_conv)
 
     # Start polling and background auto-lock
     asyncio.create_task(auto_lock_task())
